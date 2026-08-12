@@ -1,0 +1,21 @@
+{
+  "name": "@june/demo",
+  "private": true,
+  "bin": {
+    "june": "./src/index.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@june/ai": "workspace:*",
+    "@june/core": "workspace:*",
+    "@june/schema": "workspace:*",
+    "@opentui/core": "^0.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
+  }
+}

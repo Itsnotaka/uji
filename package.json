@@ -3,16 +3,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck",
+    "check": "pnpm format:check && pnpm lint && turbo run typecheck",
+    "dev:grok-bot": "pnpm --filter @june/demo-grok-bot dev",
+    "dev:website": "pnpm --filter @june/demo-website dev",
     "format": "oxfmt .",
+    "june": "node packages/demo-cli/src/index.ts",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "oxfmt": "^0.63.0",
     "oxlint": "^1.78.0",
     "oxlint-tsgolint": "^7.0.2001",
+    "turbo": "^2.6.0",
     "typescript": "^7.0.2"
   },
   "packageManager": "pnpm@11.21.0"

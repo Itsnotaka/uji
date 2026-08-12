@@ -1,11 +1,5 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "compilerOptions": {
-    "module": "nodenext",
-    "noEmit": true,
-    "strict": true,
-    "target": "es2025",
-    "verbatimModuleSyntax": true
-  },
-  "include": ["src/**/*.ts"]
+  "extends": "./tsconfig.base.json",
+  "include": ["packages/*/src/**/*.ts"]
 }

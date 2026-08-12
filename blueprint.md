@@ -946,9 +946,9 @@ If removing Linear tomorrow would still leave the mechanism useful for Cursor-li
 
 ## Provider login funnel + cheap test model (Daniel, 2026-08-12)
 
-### What failed
+### Baseline state (corrected framing)
 
-First live run of the v0 agent on the box: no `OPENAI_API_KEY` in the environment. The box *is* signed into OpenAI — but via Codex CLI's ChatGPT OAuth (`~/.codex/auth.json`: `auth_mode`, `tokens.{id_token,access_token,refresh_token,account_id}`, `OPENAI_API_KEY: null`). v0 only speaks env API key, so it cannot run where codex runs fine. Lesson: **provider auth is a core block, not env-var plumbing** — the exact gap the Lucia/Arctic refs were pointing at.
+The box intentionally has no `OPENAI_API_KEY` — new repo, nothing configured, and Daniel does not want to mint API keys. The chosen path is ChatGPT OAuth (the box's codex sign-in shows the credential shape: `~/.codex/auth.json` with `tokens.{id_token,access_token,refresh_token,account_id}`, `OPENAI_API_KEY: null`). The v0 single-file agent only spoke env API key, so the login funnel is the first real feature, not a recovery from a mistake: **provider auth is a core block, not env-var plumbing** — the exact gap the Lucia/Arctic refs were pointing at.
 
 ### Test model decision
 
@@ -999,3 +999,61 @@ Package `@june/core` may still *export* both compositions. Clients never see the
 ### Why this matters for the demo bar
 
 If the demo forces the loop to import session/skills/UI concerns, we have already lost the Pi-simple harness. Compose those in; do not grow the loop.
+
+---
+
+## Decision 2026-08-12 — Monorepo cut landed; auth copies Pi syntax; @june/demo; no Effect
+
+### What landed (in-repo, verified live)
+
+Turborepo + pnpm workspace cut, opencode2-style layout, no build step (Node 24 type stripping; package `exports` point at `./src/index.ts`):
+
+| Package | Contents |
+|---|---|
+| `@june/schema` | Responses wire item types (June parts adapt from these later) |
+| `@june/ai` | Auth blocks + provider blocks + streamed Responses client |
+| `@june/core` | `openSession` (JSONL), `runAgent` loop, `bashTool` — loop imports only `@june/ai` + types; session composed in by the caller (core ↛ harness rule holds) |
+| `@june/demo` | `june login/logout/status/run` CLI — the funnel's first client |
+
+Verified live over the codex backend: `gpt-5.6-luna` medium, full loop (`user → function_call → function_call_output → message`), streamed deltas, bash round trip.
+
+### Auth: copy Pi's syntax, not OpenCode's
+
+Pi wins the steal (`pi-ai` `dist/auth/*`): the interfaces are small functions with explicit adapters — exactly the Lucia/Arctic posture. Copied shapes, near-verbatim:
+
+- `ModelAuth { apiKey?, headers?, baseUrl? }` — "if it can't be expressed as these three, it's provider config, not auth". The credential decides the transport.
+- `Credential = ApiKeyCredential | OAuthCredential` — one type-tagged credential per provider; the auth.json shape.
+- `CredentialStore { read, list, modify, delete }` — **`modify` is the only write path** (serialized read-modify-write); refresh runs inside `modify` so concurrent requests cannot double-refresh a rotated token.
+- `AuthInteraction { signal, prompt(AuthPrompt), notify(AuthEvent) }` — **this is the whole GUI/CLI login funnel contract.** Flows call `prompt`/`notify`; the CLI prints and reads lines, a GUI opens windows — same flow code. `AuthPrompt.signal` lets a `manual_code` prompt race the localhost callback server and lose gracefully.
+- `ApiKeyAuth { name, login?, resolve }` / `OAuthAuth { name, isSubscription?, login, refresh, toAuth }` / `ProviderAuth { apiKey?, oauth? }` — the refresh/toAuth split keeps the locked-refresh pattern in resolution, not in each provider.
+- `resolveProviderAuth`: stored credential owns the provider; env consulted only when nothing stored; 5-min min validity.
+
+June deviations from pi (recorded): `toAuth` returns the `chatgpt-account-id` header directly (pi re-derives it in the API layer from the JWT); `AuthContext` trimmed to an `env` function.
+
+### openai-codex provider facts (hard-won wire notes)
+
+- OAuth: `auth.openai.com`, PKCE S256, loopback `localhost:1455/auth/callback` racing manual paste; device-code flow (`/api/accounts/deviceauth/*`) for headless boxes like this one.
+- Requests: `https://chatgpt.com/backend-api/codex/responses`, `OpenAI-Beta: responses=experimental`, `chatgpt-account-id` header, `store:false, stream:true`, `include:["reasoning.encrypted_content"]`, own `instructions` string passes through fine (pi does the same).
+- **Quirk:** the codex backend sends `output: []` on `response.completed` — output items must be collected from `response.output_item.done` events (platform API emits those too, so collect uniformly).
+- Backend-served models on this box today: `gpt-5.6-{sol,terra,luna}`, `gpt-5.5`, `gpt-5.4(-mini)`, `gpt-5.3-codex-spark`. Default: **`gpt-5.6-luna` @ medium** (cheap test loops; matches the backend's own default effort for luna).
+
+### `@june/demo` (new package, deliberate non-OpenCode name)
+
+Demo grows in lockstep with core — every core block lands with the demo composition that proves it feels good (shadcn "registry demos teach composition" bet, now enforced by the repo layout). Today it is the funnel's CLI client + the coding-agent run; it becomes the composition site each new block must not make ugly. `cli` stays reserved for the real product CLI later.
+
+### Decision: no Effect v4 in June (June stays pure TypeScript, pi-style)
+
+The A/B was live: pi = pure TS, opencode2 = Effect v4. June follows pi. Reasons:
+
+1. **Distribution kills it.** June's bet is shadcn-style copy-paste blocks + "agents glue blocks well when docs are sharp". An Effect block is not copy-pastable into a non-Effect app: `Effect<A, E, R>` infects every signature and forces the consumer's whole call graph into the runtime. Owned-source distribution and a framework runtime are structurally at odds.
+2. **The contract is the wire, not the runtime.** Multi-client (incl. Swift) means the stable surface is `schema`/`protocol` HTTP+SSE. Effect's benefits (typed errors, Layers, structured concurrency) never reach that surface; its costs reach every contributor and every pasted block.
+3. **Pi proves plain TS carries the hard parts.** The credential store's serialized `modify`, refresh-under-lock, and signal-racing prompts are exactly the patterns people cite Effect for — pi expresses them in small interfaces we copied in an afternoon.
+4. **Blueprint priors already point here:** Lucia/Arctic small functions, "no hidden global framework magic", "if a knobs list needs a glossary, it failed the Pi test". Effect is a glossary.
+
+Costs accepted (eyes open): no typed error channel (mitigate: pi-style tagged error codes at the protocol boundary), no Layer DI (mitigate: explicit adapter params — already the posture), no structured concurrency (mitigate: `AbortSignal` everywhere, as the auth flows already do), and losing 1:1 crib-ability of opencode2's Effect-shaped server internals (their *shapes* still transfer; their code never did — handwritten rule).
+
+Escape hatch, narrow: if `@june/server` internals someday genuinely want Effect for runtime composition, that stays an implementation detail behind the protocol — it must never appear in `schema`, `protocol`, `ai`, or `core` public types. Default remains no.
+
+### Box ops note
+
+mise re-provisioned pnpm on 2026-08-12 and left binaries without exec bits (`pnpm`, tsgolint, the tsc native binary) — `chmod +x` + `mise reshim` fixes it if it recurs.

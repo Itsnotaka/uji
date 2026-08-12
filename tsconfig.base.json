@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "module": "nodenext",
+    "noEmit": true,
+    "strict": true,
+    "target": "es2025",
+    "types": ["node"],
+    "verbatimModuleSyntax": true
+  }
+}
