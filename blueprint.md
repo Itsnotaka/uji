@@ -258,9 +258,6 @@ useModel, useSandbox, useTool, useMcpConnection, useSkill, useSubagent, useInstr
 ### Tools
 defineTool/useTool (Valibot), sandbox builtins (read/write/edit/bash/grep/glob), framework tools (task, activate_skill, read_skill_resource), harness tools, durable tools via step.do
 
-### Skills
-Agent Skills SKILL.md; progressive disclosure; workspace `.agents/skills/`
-
 ### Subagents
 useSubagent / GeneralSubagent; fresh child context; parallel task; depth cap 4; durable child streams
 

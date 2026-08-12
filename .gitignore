@@ -2,3 +2,5 @@ node_modules/
 dist/
 .june/
 .turbo/
+
+.DS_Store
