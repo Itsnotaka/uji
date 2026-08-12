@@ -842,3 +842,27 @@ v0 stays coding-agent shaped. Core blocks must still be able to grow into Linear
 7. **Tool packs as shallow domain adapters + ontology**, not only FS/shell
 
 Fit with existing June posture: skills/resources already in the Pi-simple harness story; multi-client protocol already locked; tool packs as swappable blocks already named. The stress-test is whether those blocks stay open enough for progressive disclosure, durable mid-run approval, and ACL-scoped product tools — not whether we ship a Linear clone.
+
+## Harness vs product pipeline (Linear Aug 10 deep cut, 2026-08-12)
+
+Frame: from https://linear.app/now/how-we-built-linear-agent — what belongs in June **harness/core** vs what stays **product / user / composition** (skills, Loops, tool packs, UIs). Coding-sessions post (https://linear.app/now/coding-sessions-for-linear-agent) shows fix→PR is a configurable product loop, not harness law.
+
+### Harness / core (must support)
+- Durable agent loop + pause/resume (workflow-shaped)
+- Provider-agnostic thread/parts storage + stream parsing hooks for rich parts (mentions/widgets later)
+- Progressive skill load: inject tools + prompt fragments mid-run; design for provider prefix-cache friendliness
+- Contextual mid-run toolApproval (policy can see conversation history / who created the target — not only tool name)
+- Sub-agent as suspendable tool call (parent idle without burning a hot loop)
+- Session scope + ACL identity passed into tool host
+- Multi-client protocol so many UIs attach
+
+### Not harness — product / user / packs handle
+- Concrete domain tools (create issue, triage, customer requests)
+- Product ontology + best-practice prompt fragments (system skills *content*)
+- User/team skills and Guidance layers (workspace/team/personal/surface)
+- Surface chrome (Slack tone, comment composer, chat tabs, Diffs UI)
+- The **pipeline** triage → investigate → coding session → PR → review → merge: composed via triggers/Loops + a coding tool pack / external harness (Claude Code/Codex), not baked into June core as a fixed workflow
+- How far autonomy goes (draft only vs auto-PR) — user/org policy, not core
+
+### June rule of thumb
+If removing Linear tomorrow would still leave the mechanism useful for Cursor-like / Notion-like / OpenCode-like demos, it is harness. If it only makes sense as “the Linear product loop,” it is composition.
