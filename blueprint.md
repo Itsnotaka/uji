@@ -202,18 +202,21 @@ Custom harness needs: dynamic tool injection (cache-aware), conditional mid-run 
 
 ## Comparison matrix (coarse)
 
-| Concern | Pi | Flue | OpenCode | June target? |
+Cells answer **ownership / placement**, not whether we "want" the feature.
+
+| Concern | Pi | Flue | OpenCode | June boundary |
 | --- | --- | --- | --- | --- |
-| Durable session / crash resume | Harness spec strong | Durable streams / DO | Sessions + server; less formal than Pi harness | Steal Pi model |
-| Local tool host (FS/shell/LSP) | CLI/SDK local | Sandboxes (often remote/CF) | First-class local server | Must |
-| Cloud deploy | DIY | First-class | Secondary | Optional same protocol |
-| Typed client SDK for UI | Weak / RPC | `@flue/sdk` + React | `@opencode-ai/sdk` + OpenAPI | Must (OpenCode-shaped) |
-| Web chat UI | No | React hooks excellent | Web exists; desktop/TUI primary | Demo |
-| Desktop / Cursor-like GUI | No | No | Desktop beta | **Primary demo** |
-| Progressive skills | Skills/extensions | Skills | Agents/commands/MCP | Yes (Linear-style events) |
-| Mid-run approvals | Extension territory | App-level | Permissions API in server | First-class UI events |
-| Parts-based messages | Messages/events | Flue parts | Message + Part types | Shared part model |
-| Multi-client same session | RPC/modes | observe() many clients | TUI + IDE + desktop on one server | Must |
+| Durable session / crash resume | Harness owns loop + session backend; strong formal model | Durable streams / Durable Objects own resume | Sessions + server; less formal than Pi harness | **Core/harness** owns durable loop + session store; steal Pi's model |
+| Local tool host (FS/shell/LSP) | CLI/SDK process is the local host | Sandboxes often remote/CF; host is framework-placed | First-class local server process | **Tool host** is a swappable placement (machine/VM); same protocol |
+| Cloud deploy | DIY composition on top of Pi | First-class deploy adapters | Secondary to local server | **Composition** — same protocol, different host adapter; not a second core |
+| Typed client SDK for UI | Weak / RPC-shaped | `@flue/sdk` + React; client of Flue core | `@opencode-ai/sdk` + OpenAPI; client of server | `@june/protocol` + `@june/client`; **clients never own the loop** |
+| Web chat UI | None first-class | React hooks excellent | Web exists; desktop/TUI primary | **UI/registry demos** — peer client of the protocol |
+| Desktop / Cursor-like GUI | None | None | Desktop beta as another client | **UI/registry demos** — primary demo client; still not the loop |
+| Progressive skills | Skills + extensions (see Pi docs) | Skills / activate_skill | Agents/commands/MCP + plugins | **Split skills vs plugins**: core owns load/inject/catalog events; packs own content — see [Progressive skills + plugins](#progressive-skills--plugins-follow-pi--opencode--amp) |
+| Mid-run approvals | Extension territory | App-level composition | Permissions API in server | **Core** owns policy + pause; **UI** owns cards; **protocol** carries ask/reply |
+| Parts-based messages | Messages/events | Flue parts | Message + Part types | `@june/schema` owns wire; **UIs render** |
+| Multi-client same session | RPC/modes | `observe()` many clients | TUI + IDE + desktop on one server | **Server/protocol** owns fan-out; UIs are peer clients |
+
 
 ---
 
@@ -630,15 +633,15 @@ Message split: `ModelMessage` = model context; `UIMessage` = parts for painting 
 
 | Concern | June Core | June UI / registry demos |
 | --- | --- | --- |
-| Permission / disclosure **chrome** | no | yes |
-| Approval **policy** + pause before tool runs | yes (v7 `toolApproval`-shaped) | no |
-| Progressive disclosure **presentation** | no (may expose catalogs) | yes |
-| Parts / stream protocol | yes | consumes |
-| Chat scroller / bubbles / Cursor shell | no | yes |
-| Instructions / skills ownership | yes | configures via protocol |
-| Triggers / ACL data / tool host placement | yes | configures / displays |
+| Permission / disclosure **chrome** | Emits permission/skill events on the wire; does not own chrome | Owns approval cards, disclosure UI, and capability chrome |
+| Approval **policy** + pause before tool runs | Owns policy evaluation + pause/resume (v7 `toolApproval`-shaped) | Renders ask cards and replies over the protocol; never decides policy |
+| Progressive disclosure **presentation** | Owns catalogs + activate/inject; may expose skill catalogs on the wire | Owns how catalogs/skills/tools are shown, hidden, and announced in the shell |
+| Parts / stream protocol | `@june/schema` + core/server own the wire and fan-out | Consumes parts and renders them; never defines the part model |
+| Chat scroller / bubbles / Cursor shell | None — not a UI concern | Owns chat chrome, diffs, file tree, to-dos, Cursor-like shell |
+| Instructions / skills ownership | Owns load/inject/catalog lifecycle; product packs own skill *content* | Configures/selects via protocol; may author UI-only presentation of packs |
+| Triggers / ACL data / tool host placement | Owns trigger/ACL data model + which tool-host adapter is attached | Configures and displays; does not host FS/shell or own ACL enforcement |
 
-Litmus aligned with v7: **pixels and human prompts = UI**; **loop, tools, policies, durable state, wire parts = core**.
+Boolean yes/no is the wrong question — write the owner. Litmus aligned with v7: **pixels and human prompts = UI**; **loop, tools, policies, durable state, wire parts = core**.
 
 
 
@@ -789,6 +792,76 @@ Package cut remains OpenCode-named (`@june/schema|protocol|core|server|client|ai
 
 ---
 
+## Progressive skills + plugins (follow Pi · OpenCode · Amp)
+
+"Progressive skills: yes" is not a design. Steal the split from Pi extensions, OpenCode plugins, and Amp plugins/skills: **skills are content packs** (prompt fragment + optional tools/resources); **plugins/extensions are code** that register tools/commands/hooks. Core owns discovery, trust, mid-run load/inject, and events; packs and plugins own what gets loaded.
+
+Refs:
+- Pi extensions: https://pi.dev/docs/latest/extensions
+- Pi extensions source: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md
+- OpenCode plugins: https://opencode.ai/docs/plugins/
+- OpenCode v2 plugins: https://opencode.ai/v2/docs/build/plugins
+- Amp manual: https://ampcode.com/manual
+- Amp plugin API: https://ampcode.com/manual/plugin-api
+- Amp agent skills: https://ampcode.com/manual/agent-skills.md
+
+### Skill vs plugin/extension
+
+| | Skill | Plugin / extension |
+| --- | --- | --- |
+| **What** | Metadata + prompt fragment (+ optional tools/resources); progressive disclosure content | In-process TypeScript module: `registerTool` / `registerCommand` / `on` lifecycle hooks |
+| **When it loads** | Catalog (name+description) early; full body + tools on activate / mid-run need | At host startup (or reload); then hooks fire for the session lifetime |
+| **Who authors** | Product packs, project/team, or user — usually markdown/`SKILL.md`, not a runtime SDK | Extension authors using `@june/plugin` (Pi/OpenCode/Amp-shaped) |
+
+Pattern across Pi + OpenCode + Amp: keep **guidance packs** (skills) separate from **code that mutates the harness** (plugins/extensions). Do not collapse both into one "capability blob."
+
+### Discovery + trust
+
+| Source | Role | Trust |
+| --- | --- | --- |
+| Hermetic product home | Built-in / product-shipped skills + plugins under the product home | **Default win** — user global must not fight the product |
+| Project (if trusted) | Project `.agents/skills`, project plugin dirs | Load only after explicit project trust (Pi-shaped) |
+| User config | User-wide skills/plugins | Allowed as override after product hermetic base; never silently replace product packs |
+| Package installs | Published plugins or skill packs | Explicit install/config; treat as code from a publisher you trust |
+
+Hermetic product home wins over user-global fighting the product (Pi lesson already noted elsewhere in this doc).
+
+### Mid-run progressive load
+
+Prefix-cache-aware sequence (Linear pressure + Pi/Amp skill disclosure):
+
+1. **Catalog** — expose name + description only (cheap; always in context or queryable)
+2. **Activate** — agent or harness chooses a skill when the task needs it
+3. **Inject** — append prompt fragment + register tools without restuffing the entire system prompt (preserve provider prefix cache)
+4. **Emit events** — `skill.available` / `skill.activated` / `tools.changed` so every peer UI can update capability chrome
+
+Core owns steps 1-4. Product packs own the catalog entries and injected content. UI owns rendering the capability change — not deciding load policy.
+
+### What `@june/plugin` is for
+
+SDK surface for in-process extensions (follow Pi `ExtensionAPI` / Amp `PluginAPI` / OpenCode plugin hooks):
+
+- `registerTool` / `registerCommand` / `on(...)` lifecycle hooks
+- Optional session helpers; not a second agent loop
+- **UI chrome stays client-side** — plugins may emit events or request UI prompts over the protocol; they do not own Cursor-shell pixels inside core
+
+Skills are not authored through `@june/plugin`; they are content discovered and injected by core.
+
+### Boundary checklist
+
+| Concern | Owner |
+| --- | --- |
+| Catalog (name + description) | **Core** exposes; packs author entries |
+| Skill content (prompt fragment, resources) | **Product pack / project / user** |
+| Mid-run inject + prefix-cache policy | **Core / harness** |
+| Plugin hooks (`registerTool` / `on`) | **`@june/plugin` authors**; core hosts the runner |
+| Capability / approval chrome | **UI / registry demos** |
+| Hermetic product home vs user global | **Core** enforces precedence; product home wins |
+
+Closing: writing "Progressive skills: yes" in a matrix is not a design — name the owners (core load/inject/events vs pack content vs plugin SDK vs UI chrome) or the cell is empty.
+
+---
+
 ## Linear Agent as complexity stress-test (2026-08-12)
 
 Refs:
@@ -833,7 +906,7 @@ Custom stack: provider-agnostic client, durable workflow agent loop, streaming/s
 
 v0 stays coding-agent shaped. Core blocks must still be able to grow into Linear-shaped product agents without a rewrite:
 
-1. **Progressive skills** — tools + prompt fragments loadable mid-run
+1. **Progressive skills** — catalog → activate → inject (tools + prompt fragments) mid-run; see [Progressive skills + plugins](#progressive-skills--plugins-follow-pi--opencode--amp)
 2. **Durable pause/resume** + contextual `toolApproval` policy
 3. **Multi-client protocol** — same wire, many UIs (already a June goal)
 4. **Identity/ACL on every tool host call**
