@@ -1,0 +1,9 @@
+{
+  "name": "June",
+  "user": "ubuntu",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "install": "mise trust --yes && mise install && mise exec -- pnpm install --frozen-lockfile"
+}
