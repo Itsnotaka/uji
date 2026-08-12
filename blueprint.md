@@ -705,13 +705,16 @@ Syntax inspiration (Lucia/Arctic): small functions, explicit adapters, no hidden
 const core = createJune({
   store: sqliteStore(path),
   host: localHost({ cwd }),
-  log: pinoLogger(),
+  // observability: compose a layer/context — NOT a pino logger()
+  // Pi-shaped: telemetry: TelemetryContext (noop | otel adapter)
+  // or OpenCode2-shaped: Effect Observability.layer (Logger + OTLP)
   providers: [anthropic, openai],
   tools: [fsTools, gitTools],
 });
 ```
 
-Cloudflare is one block (`host` / `store`), not a fork of June.
+Cloudflare is one block (`host` / `store`), not a fork of June. Remote clients still hit the same `@june/protocol` HTTP/SSE surface.
+
 
 ### Fit with shadcn distribution
 
@@ -774,6 +777,21 @@ Implications:
 
 
 ---
+
+
+## Observability / telemetry (Daniel, 2026-08-12)
+
+Do **not** ship a `logger()` / pino-style injectable as the composition face.
+
+**How the refs do it**
+- **Pi:** session **event stream** is the product log (JSON mode / harness events). Separately `@earendil-works/pi-telemetry` = vendor-neutral `TelemetryContext.startSpan(cb)` passed explicitly; `NOOP_TELEMETRY_CONTEXT` by default; adapters for OTel/etc. No ambient ALS required in the contract. Optional community `pi-otel` for OTLP.
+- **OpenCode2:** Effect `Observability.layer` — Effect `Logger` + OTLP tracing composed into `AppRuntime`, not a constructor `log:` field. Spans via `Effect.fn("Service.method")`.
+
+**June bet**
+1. Protocol event log (parts/events clients already see) is the first-class audit/stream.
+2. Process diagnostics = **TelemetryContext** (Pi) and/or **Effect Logger/OTLP layer** (OpenCode2) — swappable adapter block.
+3. Never require apps to pass `pino()` into `createJune`.
+4. Hosting on Cloudflare does not change the story: same protocol; telemetry adapter may be CF-appropriate (OTLP export, Workers analytics) behind the same context/layer interface.
 
 ## Local box workspace notes (2026-08-12)
 
