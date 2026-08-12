@@ -708,6 +708,7 @@ const core = createJune({
   // observability: compose a layer/context — NOT a pino logger()
   // Pi-shaped: telemetry: TelemetryContext (noop | otel adapter)
   // or OpenCode2-shaped: Effect Observability.layer (Logger + OTLP)
+  // export: OTel/OTLP standard; Sentry = adapter, not a second API
   providers: [anthropic, openai],
   tools: [fsTools, gitTools],
 });
@@ -789,9 +790,11 @@ Do **not** ship a `logger()` / pino-style injectable as the composition face.
 
 **June bet**
 1. Protocol event log (parts/events clients already see) is the first-class audit/stream.
-2. Process diagnostics = **TelemetryContext** (Pi) and/or **Effect Logger/OTLP layer** (OpenCode2) — swappable adapter block.
-3. Never require apps to pass `pino()` into `createJune`.
-4. Hosting on Cloudflare does not change the story: same protocol; telemetry adapter may be CF-appropriate (OTLP export, Workers analytics) behind the same context/layer interface.
+2. Process diagnostics = **TelemetryContext** (Pi-shaped) and/or **Effect Observability layer** (OpenCode2-shaped).
+3. **OpenTelemetry is the standard export** — OTLP traces/metrics/logs. Adapters plug backends (Jaeger, Grafana, Honeycomb, Cloudflare analytics, …).
+4. **Sentry is a backend adapter**, not a parallel instrumentation API. Prefer Sentry's OTel integration / OTLP ingest, or a thin Sentry adapter that implements the same TelemetryContext. App code never imports `@sentry/*` inside core.
+5. Never require apps to pass `pino()` into `createJune`.
+6. Hosting on Cloudflare does not change the story: same protocol; OTLP (or CF-native exporter) behind the same context/layer interface.
 
 ## Local box workspace notes (2026-08-12)
 
