@@ -786,3 +786,59 @@ Tooling installed there for on-the-fly work:
 GitHub CLI device login was rate-limited on the box; prefer authenticating `gh` with a token or committing from Daniel's Mac when the desktop app is connected.
 
 Package cut remains OpenCode-named (`@june/schema|protocol|core|server|client|ai|util`) with Pi-simple harness inside `core`, multi-client wire including Swift.
+
+---
+
+## Linear Agent as complexity stress-test (2026-08-12)
+
+Refs:
+- https://linear.app/now/how-we-built-linear-agent
+- https://linear.app/docs/linear-agent
+
+Linear Agent is a useful **complexity stress-test** for June: many UIs, one agent, product ontology, progressive skills, durable mid-run orchestration, ACL-scoped action. **Do not build Linear in v0.** Ensure core blocks can recreate this shape later.
+
+### Product surfaces (many UIs, one agent)
+
+One agent behind many entry points:
+- dedicated chat (multi-tab, history)
+- `@mention` in comments / descriptions
+- Slack, Teams, mobile
+- coding sessions (delegate implementation)
+
+Tone and guidance can differ per surface — e.g. Slack issue-creation guidance is separate from in-app workspace guidance; personal guidance can apply across both.
+
+### Capability shape (opposite of coding agents)
+
+Coding agents: few deep primitives (`read` / `write` / `shell`) + strong model priors for code/FS.
+
+Linear Agent: **many shallow product tools** + **product ontology** + **best-practice fragments**. Each capability needs tools, an explanation of what the data means, and principles for using the feature well — not a thin wrapper over GraphQL/SDK (they deliberately avoided low-level primitives that invite speculative mistakes).
+
+Composition unit: **progressive system skills** — each bundles metadata + prompt fragment + tools. Preload by invocation context (prompt + surface); load more mid-run as the task reveals needs. User skills (personal/team) and **Loops** (scheduled / event triggers) sit on top of that system layer.
+
+### Harness pressures Linear called out
+
+Off-the-shelf harnesses assume prompt+tools upfront → `run` → done. Linear needed mid-run control:
+1. **Dynamic tool injection** via skills without blowing the provider **prefix cache**
+2. **Contextual mid-run approval** — not only tool-name rules (e.g. delete something just created vs delete an existing issue; post to most threads vs a public-synced thread)
+3. **Async sub-agent that looks sync to parent** — parent sees a tool call; underneath, suspend the durable workflow so idle wait does not hold server resources, then resume
+
+Custom stack: provider-agnostic client, durable workflow agent loop, streaming/storage that understands product-rich elements before the UI.
+
+### Permissions + guidance layers
+
+- Act **within the caller's ACL** — only see/change what the invoking user can
+- Guidance scoped **workspace / team / personal / surface** (layered instruction resources, not one global system prompt blob)
+
+### June implication (design, not implementation yet)
+
+v0 stays coding-agent shaped. Core blocks must still be able to grow into Linear-shaped product agents without a rewrite:
+
+1. **Progressive skills** — tools + prompt fragments loadable mid-run
+2. **Durable pause/resume** + contextual `toolApproval` policy
+3. **Multi-client protocol** — same wire, many UIs (already a June goal)
+4. **Identity/ACL on every tool host call**
+5. **Guidance as layered instruction resources** (workspace / team / personal / surface)
+6. **Triggers / wakes** (Loops-shaped: schedule + event)
+7. **Tool packs as shallow domain adapters + ontology**, not only FS/shell
+
+Fit with existing June posture: skills/resources already in the Pi-simple harness story; multi-client protocol already locked; tool packs as swappable blocks already named. The stress-test is whether those blocks stay open enough for progressive disclosure, durable mid-run approval, and ACL-scoped product tools — not whether we ship a Linear clone.
