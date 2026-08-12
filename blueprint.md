@@ -356,6 +356,7 @@ No first-party GUI/IDE, no LSP/index, no multi-file apply UX, no MCP marketplace
 2. Minimal core + extension levers
 3. Clear GUI integration seams
 4. Do not expect a TUI harness to be the Cursor shell
+5. **One-way decoupling** (Pi book ch.1 — *Decoupling: core doesn't know harness*): harness may depend on the loop; the loop must never import harness. See Decision 2026-08-12 below.
 
 ---
 
@@ -760,7 +761,7 @@ Do not ship `@june/parts`, `@june/agent`, `@june/store`, `@june/host-local` as t
 
 ### Decision (2026-08-12)
 
-Lock package names to OpenCode map. `@june/core` is the name (not `agent-core`). Inside `core`: Pi-simple harness — obvious system prompt / resources / skills, pluggable session backend. Steal Pi's session-backend idea as composition into `core`/`server`, keep OpenCode's `schema` / `protocol` / `server` / `client` / `ai` / `util` names.
+Lock package names to OpenCode map. `@june/core` is the name (not `agent-core`). Inside `core`: Pi-simple harness — obvious system prompt / resources / skills, pluggable session backend. **Dependency law inside `core`:** loop/primitives sit below; harness-ish session/skills/compaction compose *up* via `runAgentLoop` (or June's equivalent). Harness → loop only; loop ↛ harness. Light Agent and harness-heavy are sibling compositions over the same loop, not inheritance. Steal Pi's session-backend idea as composition into `core`/`server`, keep OpenCode's `schema` / `protocol` / `server` / `client` / `ai` / `util` names.
 
 ---
 
@@ -960,3 +961,61 @@ Frame: from https://linear.app/now/how-we-built-linear-agent — what belongs in
 
 ### June rule of thumb
 If removing Linear tomorrow would still leave the mechanism useful for Cursor-like / Notion-like / OpenCode-like demos, it is harness. If it only makes sense as “the Linear product loop,” it is composition.
+
+---
+
+## Provider login funnel + cheap test model (Daniel, 2026-08-12)
+
+### What failed
+
+First live run of the v0 agent on the box: no `OPENAI_API_KEY` in the environment. The box *is* signed into OpenAI — but via Codex CLI's ChatGPT OAuth (`~/.codex/auth.json`: `auth_mode`, `tokens.{id_token,access_token,refresh_token,account_id}`, `OPENAI_API_KEY: null`). v0 only speaks env API key, so it cannot run where codex runs fine. Lesson: **provider auth is a core block, not env-var plumbing** — the exact gap the Lucia/Arctic refs were pointing at.
+
+### Test model decision
+
+Default `JUNE_MODEL` = **`gpt-5.6-luna`**, `JUNE_EFFORT` = **`medium`** (Responses API `reasoning.effort`). $0.20/M input, $1.20/M output, ~1M context — cheap enough to leave test loops running. `gpt-5.1-codex`-class models stay an env override, not the default.
+
+### Login funnel bet
+
+Core owns a **client-agnostic login funnel**; GUI and CLI are just drivers of the same steps. OpenCode v2 (`sdk.provider.login({ mode })`, `opencode auth login --provider --method`, `auth.json` store) and Pi (`pi auth check/print-*`, refresh-expired-OAuth-on-read) both shape it this way.
+
+1. **Shape**: `provider.login({ mode })` returns a **step/state machine** — e.g. `{ type: "open-url", url, verifier }` → `{ type: "await-callback" | "poll" }` → `{ type: "stored", credential }`. Core never opens a browser or prints; the client renders each step (CLI prints URL / device code, GUI opens a window, remote GUI proxies the callback over the protocol).
+2. **Modes** (per provider, advertised not hardcoded): `api-key`, `oauth` (OpenAI ChatGPT sign-in — PKCE + localhost loopback callback, codex-style), `device`, plus env passthrough as an implicit source.
+3. **Credential decides transport**: OpenAI OAuth tokens are ChatGPT-plan tokens that route to the ChatGPT backend Codex endpoint (with account-id header), *not* `api.openai.com` — so base URL + wire quirks live inside the provider block next to its credential type (Arctic-style: provider = swappable OAuth block).
+4. **Storage**: auth store is an adapter composed into core/server (file `auth.json` first, keychain/DO later). Refresh-on-read like Pi. Priority: stored credential → env → config, matching OpenCode.
+5. **Protocol surface**: provider list / authorize / callback already sketched in the OpenCode surface notes — expose them on `@june/protocol` so any client language can drive the funnel.
+
+### Package cut trigger
+
+The funnel is the first block two clients genuinely share, so it triggers the monorepo cut: **turborepo, copying the `opencode2` (anomalyco/opencode v2) layout**, names per the locked package map. No `@june/auth` top-level (not in the OpenCode map): login modes live in **`@june/ai`** provider blocks, the store adapter composes into `core`/`server`, the wire surface is `@june/protocol`. Cut only what this needs first (`schema`, `ai`, `core`, `cli`-thin) — do not scaffold all seven empty.
+
+---
+
+## Decision 2026-08-12 — Core ↛ harness (Pi ch.1 decoupling)
+
+Source: https://books.antinomie.org/pi/chapter/01#decoupling-core-doesnt-know-harness
+
+### What Pi actually says
+
+Not mutual blindness. **One-way** dependence:
+
+- **Core does not know harness.** Delete `harness/` and the loop / light `Agent` layer need zero import changes (except barrel exports).
+- **Harness does know core** — and that is correct. `AgentHarness` imports exactly one core *value*: `runAgentLoop`. Everything else from core is `import type` (erased at compile time).
+- **`Agent` and `AgentHarness` do not know each other.** They are two compositions over the same loop primitive, not parent/child. Inheritance would weld the light in-memory lifecycle to the heavy session/compaction/mutex lifecycle; composition keeps the loop small.
+
+Evidence pattern: grep harness for imports of the light Agent module → zero hits; grep the loop for harness imports → zero hits.
+
+### June rule (locked)
+
+Inside `@june/core`:
+
+| Layer | May import | Must not import |
+| --- | --- | --- |
+| Loop / primitives (`runAgentLoop` equivalent, types, streamFn shape) | nothing harness-ish | session, compaction, skills loader, Node env, product tools |
+| Light in-memory agent composition (optional embed path) | loop only | harness modules |
+| Harness composition (durable session, skills, compaction, coding tools) | loop (+ `import type` from core public surface) | the light Agent class; lateral harness subdirs only via a harness types hub |
+
+Package `@june/core` may still *export* both compositions. Clients never see the split — they speak `@june/schema` / `@june/protocol` only.
+
+### Why this matters for the demo bar
+
+If the demo forces the loop to import session/skills/UI concerns, we have already lost the Pi-simple harness. Compose those in; do not grow the loop.
