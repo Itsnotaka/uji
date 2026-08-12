@@ -1,6 +1,5 @@
 import type * as T from "./types.ts";
-export const renderJson = (verdict: T.WatcherVerdict): string =>
-  `${JSON.stringify(verdict)}\n`;
+export const renderJson = (verdict: T.WatcherVerdict): string => `${JSON.stringify(verdict)}\n`;
 function ciCell(row: T.PrSnapshot): string {
   if (row.kind !== "open") return "\u2014";
   const was = row.ci.hadPreviousPassingCi ? ", was ✅" : "";
@@ -34,8 +33,7 @@ function mergeCell(row: T.PrSnapshot): string {
   if (row.kind === "merged") return "✅ merged";
   if (row.kind === "closed") return "❌ closed";
   if (row.facts.isDraft) return "⏸ draft";
-  if (row.facts.reviewDecision === "CHANGES_REQUESTED")
-    return "⚠️ changes requested";
+  if (row.facts.reviewDecision === "CHANGES_REQUESTED") return "⚠️ changes requested";
   return row.facts.mergeable === "CONFLICTING" ||
     row.facts.mergeStateStatus === "DIRTY" ||
     row.facts.mergeStateStatus === "CONFLICTING"
@@ -47,7 +45,7 @@ export function renderStatusTable(rows: T.NonEmpty<T.PrSnapshot>): string {
   for (const row of rows) {
     const url = `https://github.com/${row.context.owner}/${row.context.repo}/pull/${row.context.number}`;
     lines.push(
-      `| [#${row.context.number}](${url}) | ${ciCell(row)} | ${reviewCell(row)} | ${mergeCell(row)} |`
+      `| [#${row.context.number}](${url}) | ${ciCell(row)} | ${reviewCell(row)} | ${mergeCell(row)} |`,
     );
   }
   return `${lines.join("\n")}\n`;
@@ -89,13 +87,12 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
     case "failing-checks": {
       const failed = blocker.ci.kind === "ci-failing" ? blocker.ci.failed : [];
       const details = failed.map(
-        (check) =>
-          `${check.name} ${check.reportedState} ${check.description} ${check.link}`
+        (check) => `${check.name} ${check.reportedState} ${check.description} ${check.link}`,
       );
       if (blocker.ci.kind === "ci-github-rejected")
         details.push(
           `mergeStateStatus=${blocker.ci.github.mergeStateStatus}`,
-          `headRollupState=${blocker.ci.github.headRollupState}`
+          `headRollupState=${blocker.ci.github.headRollupState}`,
         );
       return [
         "BLOCKER: failing-checks",
@@ -111,11 +108,9 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
           : blocker.reason === "draft-pr"
             ? "mark the PR ready for review before waiting for the merge queue"
             : "resolve the changes-requested review before waiting for the merge queue";
-      return [
-        `BLOCKER: ${blocker.reason}`,
-        `pr=${blocker.pr.number}`,
-        `action=${action}`,
-      ].join("\n");
+      return [`BLOCKER: ${blocker.reason}`, `pr=${blocker.pr.number}`, `action=${action}`].join(
+        "\n",
+      );
     }
     case "status-query":
       return [
@@ -156,8 +151,7 @@ export function renderPretty(verdict: T.WatcherVerdict): string {
     case "COMPLETE":
       return `COMPLETE: queued stack merged (${verdict.queue.length} PR${verdict.queue.length === 1 ? "" : "s"})\n`;
     case "TIMEOUT":
-      if (verdict.reason.kind === "pending-checks")
-        return "TIMEOUT: checks still pending\n";
+      if (verdict.reason.kind === "pending-checks") return "TIMEOUT: checks still pending\n";
       if (verdict.reason.kind === "status-unavailable")
         return "TIMEOUT: GitHub status remained unavailable\n";
       return `TIMEOUT: queued stack still has ${verdict.reason.unmergedCount} PR${verdict.reason.unmergedCount === 1 ? "" : "s"} unmerged; frontier=#${verdict.reason.frontier.number}\n`;

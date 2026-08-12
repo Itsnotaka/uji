@@ -9,12 +9,7 @@ import {
   resolveChecks,
   resolveContext,
 } from "./github.ts";
-import {
-  fakeReader,
-  failedCheck,
-  passingCheck,
-  pendingCheck,
-} from "./fakes.test-helper.ts";
+import { fakeReader, failedCheck, passingCheck, pendingCheck } from "./fakes.test-helper.ts";
 import { parsePrNumber } from "./types.ts";
 
 const context = {
@@ -57,9 +52,7 @@ describe("checks fallback chain", () => {
       fastPath: { kind: "checks", checks: [] },
       rollupPages: [{ checks: [pendingCheck("fallback")], endCursor: null }],
     });
-    expect((await resolveChecks(reader, context)).checks[0].name).toBe(
-      "fallback"
-    );
+    expect((await resolveChecks(reader, context)).checks[0].name).toBe("fallback");
     expect(reader.calls).toEqual(["checksFastPath", "checkRollupPage:null"]);
   });
 
@@ -71,9 +64,7 @@ describe("checks fallback chain", () => {
         stderr: "credential cannot read checks",
       },
     });
-    await expect(resolveChecks(reader, context)).rejects.toBeInstanceOf(
-      ChecksUnavailable
-    );
+    await expect(resolveChecks(reader, context)).rejects.toBeInstanceOf(ChecksUnavailable);
     expect(reader.calls).toEqual(["checksFastPath", "checkRollupPage:null"]);
   });
 });
@@ -96,7 +87,7 @@ describe("rollup node mapping", () => {
           name: "ci",
           status,
           conclusion,
-        })
+        }),
       ).toMatchObject({ kind, reportedState });
     }
   });
@@ -108,14 +99,14 @@ describe("rollup node mapping", () => {
         name: "Code Review Gate",
         status: "IN_PROGRESS",
         conclusion: null,
-      })
+      }),
     ).toMatchObject({ kind: "code-review-gate" });
     expect(
       mapRollupNode({
         __typename: "StatusContext",
         context: "Code Review Gate",
         state: "PENDING",
-      })
+      }),
     ).toMatchObject({ kind: "code-review-gate" });
   });
 
@@ -125,14 +116,14 @@ describe("rollup node mapping", () => {
         __typename: "StatusContext",
         context: "ci",
         state: "EXPECTED",
-      })
+      }),
     ).toMatchObject({ kind: "pending", reportedState: "PENDING" });
     expect(
       mapRollupNode({
         __typename: "StatusContext",
         context: "ci",
         state: "FUTURE_VALUE",
-      })
+      }),
     ).toMatchObject({ kind: "failed", reportedState: "FUTURE_VALUE" });
     expect(mapRollupNode({ __typename: "FutureNode" })).toBeNull();
   });
@@ -153,32 +144,26 @@ describe("closed enum parsing", () => {
 
   it("accepts mergeStateStatus CONFLICTING", () => {
     expect(
-      parsePullRequest(
-        { ...rawPullRequest, mergeStateStatus: "CONFLICTING" },
-        context
-      ).mergeStateStatus
+      parsePullRequest({ ...rawPullRequest, mergeStateStatus: "CONFLICTING" }, context)
+        .mergeStateStatus,
     ).toBe("CONFLICTING");
   });
 
   it("reads gh's empty reviewDecision as no decision rather than a parse failure", () => {
     expect(
-      parsePullRequest({ ...rawPullRequest, reviewDecision: "" }, context)
-        .reviewDecision
+      parsePullRequest({ ...rawPullRequest, reviewDecision: "" }, context).reviewDecision,
     ).toBeNull();
   });
 
   it("still rejects an unknown reviewDecision", () => {
-    expect(() =>
-      parsePullRequest({ ...rawPullRequest, reviewDecision: "MAYBE" }, context)
-    ).toThrow(WatcherQueryError);
+    expect(() => parsePullRequest({ ...rawPullRequest, reviewDecision: "MAYBE" }, context)).toThrow(
+      WatcherQueryError,
+    );
   });
 
   it("rejects unknown enum values as retryable errors carrying the raw value", () => {
     try {
-      parsePullRequest(
-        { ...rawPullRequest, mergeStateStatus: "FUTURE_STATE" },
-        context
-      );
+      parsePullRequest({ ...rawPullRequest, mergeStateStatus: "FUTURE_STATE" }, context);
       throw new Error("expected parser to throw");
     } catch (error) {
       expect(error).toBeInstanceOf(WatcherQueryError);
@@ -265,7 +250,7 @@ describe("context and stack discovery", () => {
         owner: "explicit",
         repo: "repo",
         pr: context.number,
-      })
+      }),
     ).toEqual({ owner: "explicit", repo: "repo", number: context.number });
     expect(reader.calls).toEqual([]);
   });
@@ -278,7 +263,7 @@ describe("context and stack discovery", () => {
         owner: null,
         repo: null,
         pr: context.number,
-      })
+      }),
     ).toEqual({ owner: "local", repo: "checkout", number: context.number });
     expect(reader.calls).toEqual(["originRepo"]);
   });

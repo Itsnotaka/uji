@@ -1,11 +1,5 @@
 import { parsePrNumber } from "./types.ts";
-import type {
-  CiClean,
-  GitHubMergeAllowed,
-  PrContext,
-  ReadyPr,
-  TerminalVerdict,
-} from "./types.ts";
+import type { CiClean, GitHubMergeAllowed, PrContext, ReadyPr, TerminalVerdict } from "./types.ts";
 
 type ReadyVerdict = Extract<TerminalVerdict, { readonly kind: "READY" }>;
 

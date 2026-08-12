@@ -4,15 +4,8 @@ import { join } from "node:path";
 
 const scriptsDirectory = import.meta.dir;
 const nodeModulesDirectory = join(scriptsDirectory, "node_modules");
-const commanderPackagePath = join(
-  nodeModulesDirectory,
-  "commander",
-  "package.json"
-);
-const installKeyPath = join(
-  nodeModulesDirectory,
-  ".poteto-mode-tools-install-key"
-);
+const commanderPackagePath = join(nodeModulesDirectory, "commander", "package.json");
+const installKeyPath = join(nodeModulesDirectory, ".poteto-mode-tools-install-key");
 
 function currentInstallKey(): string {
   return createHash("sha256")
@@ -32,21 +25,16 @@ export function ensureDependenciesInstalled(): void {
     return;
   }
 
-  const result = Bun.spawnSync(
-    [process.execPath, "install", "--frozen-lockfile"],
-    { cwd: scriptsDirectory }
-  );
+  const result = Bun.spawnSync([process.execPath, "install", "--frozen-lockfile"], {
+    cwd: scriptsDirectory,
+  });
   if (result.exitCode !== 0) {
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
-    throw new Error(
-      `bun install --frozen-lockfile exited with status ${result.exitCode}`
-    );
+    throw new Error(`bun install --frozen-lockfile exited with status ${result.exitCode}`);
   }
   if (!existsSync(commanderPackagePath)) {
-    throw new Error(
-      "bun install --frozen-lockfile completed without installing commander"
-    );
+    throw new Error("bun install --frozen-lockfile completed without installing commander");
   }
 
   writeFileSync(installKeyPath, `${installKey}\n`);

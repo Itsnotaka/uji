@@ -15,7 +15,22 @@ export interface ResponsesRequest {
   /** Stable per-session id; codex backend session header + prompt cache key. */
   sessionId?: string;
   signal?: AbortSignal;
-  onTextDelta?: (text: string) => void;
+  onDelta?: (delta: ResponsesDelta) => void;
+}
+
+/** Streaming delta: assistant text or reasoning summary text. */
+export interface ResponsesDelta {
+  kind: "text" | "reasoning";
+  text: string;
+}
+
+/** Result of one streamed Responses call. */
+export interface ResponsesResult {
+  /** Completed output items (message / reasoning / function_call). */
+  items: ResponseItem[];
+  /** "length" when the response was cut off by the output token limit. */
+  stopReason: "stop" | "length";
+  usage?: { input: number; output: number; total: number };
 }
 
 function buildUrl(request: ResponsesRequest): string {
@@ -88,11 +103,12 @@ async function* readSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<SSEEve
 }
 
 /**
- * One streamed Responses call. Emits text deltas as they arrive and resolves
- * with the completed response's output items (message / reasoning /
- * function_call), ready to append to the session.
+ * One streamed Responses call. Emits text/reasoning deltas as they arrive and
+ * resolves with the completed response's output items, ready to append to the
+ * session. Throws on transport or provider failure; the agent-loop StreamFn
+ * contract (never throw) is enforced by the wrapper in @june/core.
  */
-export async function streamResponses(request: ResponsesRequest): Promise<ResponseItem[]> {
+export async function streamResponses(request: ResponsesRequest): Promise<ResponsesResult> {
   const response = await fetch(buildUrl(request), {
     method: "POST",
     headers: buildHeaders(request),
@@ -111,17 +127,37 @@ export async function streamResponses(request: ResponsesRequest): Promise<Respon
       type?: string;
       delta?: string;
       item?: ResponseItem;
-      response?: { output?: ResponseItem[]; error?: { message?: string } };
+      response?: {
+        output?: ResponseItem[];
+        status?: string;
+        incomplete_details?: { reason?: string };
+        usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
+        error?: { message?: string };
+      };
       message?: string;
     };
     const type = parsed.type ?? event;
     if (type === "response.output_text.delta" && parsed.delta !== undefined) {
-      request.onTextDelta?.(parsed.delta);
+      request.onDelta?.({ kind: "text", text: parsed.delta });
+    } else if (type === "response.reasoning_summary_text.delta" && parsed.delta !== undefined) {
+      request.onDelta?.({ kind: "reasoning", text: parsed.delta });
     } else if (type === "response.output_item.done" && parsed.item !== undefined) {
       items.push(parsed.item);
-    } else if (type === "response.completed") {
+    } else if (type === "response.completed" || type === "response.incomplete") {
       const output = parsed.response?.output;
-      return items.length > 0 ? items : (output ?? []);
+      const usage = parsed.response?.usage;
+      return {
+        items: items.length > 0 ? items : (output ?? []),
+        stopReason:
+          parsed.response?.incomplete_details?.reason === "max_output_tokens" ? "length" : "stop",
+        ...(usage !== undefined && {
+          usage: {
+            input: usage.input_tokens ?? 0,
+            output: usage.output_tokens ?? 0,
+            total: usage.total_tokens ?? 0,
+          },
+        }),
+      };
     } else if (type === "response.failed" || type === "error") {
       throw new Error(
         `${request.model}: ${parsed.response?.error?.message ?? parsed.message ?? "response failed"}`,

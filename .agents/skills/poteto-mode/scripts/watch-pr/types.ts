@@ -26,18 +26,8 @@ export type MergeStateStatus =
   | "HAS_HOOKS"
   | "UNKNOWN"
   | "UNSTABLE";
-export type RollupState =
-  | "ERROR"
-  | "EXPECTED"
-  | "FAILURE"
-  | "PENDING"
-  | "SUCCESS"
-  | null;
-export type ReviewDecision =
-  | "APPROVED"
-  | "CHANGES_REQUESTED"
-  | "REVIEW_REQUIRED"
-  | null;
+export type RollupState = "ERROR" | "EXPECTED" | "FAILURE" | "PENDING" | "SUCCESS" | null;
+export type ReviewDecision = "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
 export interface PullRequestFacts {
   readonly context: PrContext;
   readonly mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
@@ -175,10 +165,7 @@ export interface MergedPr {
   readonly context: PrContext;
   readonly mergedAt: string | null;
 }
-export type MergeGateReason =
-  | "closed-without-merge"
-  | "draft-pr"
-  | "changes-requested";
+export type MergeGateReason = "closed-without-merge" | "draft-pr" | "changes-requested";
 export type MergeBlocker =
   | {
       readonly kind: "merge-conflicts";
@@ -262,8 +249,7 @@ interface EventBase<K extends string, M extends WatchMode = WatchMode> {
   readonly mode: M;
   readonly kind: K;
 }
-interface Progress<K extends string, M extends WatchMode = WatchMode>
-  extends EventBase<K, M> {
+interface Progress<K extends string, M extends WatchMode = WatchMode> extends EventBase<K, M> {
   readonly terminal: false;
 }
 interface Terminal<
@@ -303,22 +289,13 @@ export type ProgressVerdict =
     });
 export type BlockerVerdict =
   | (Terminal<"BLOCKER", 2> & {
-      readonly blocker: Extract<
-        MergeBlocker,
-        { readonly kind: "merge-conflicts" }
-      >;
+      readonly blocker: Extract<MergeBlocker, { readonly kind: "merge-conflicts" }>;
     })
   | (Terminal<"BLOCKER", 3> & {
-      readonly blocker: Extract<
-        MergeBlocker,
-        { readonly kind: "review-threads" }
-      >;
+      readonly blocker: Extract<MergeBlocker, { readonly kind: "review-threads" }>;
     })
   | (Terminal<"BLOCKER", 4> & {
-      readonly blocker: Extract<
-        MergeBlocker,
-        { readonly kind: "failing-checks" }
-      >;
+      readonly blocker: Extract<MergeBlocker, { readonly kind: "failing-checks" }>;
     })
   | (Terminal<"BLOCKER", 6> & {
       readonly blocker: Extract<MergeBlocker, { readonly kind: "merge-gate" }>;
@@ -385,10 +362,7 @@ export interface GitHubReader {
   pullRequest(context: PrContext): Promise<PullRequestFacts>;
   openPullRequests(repository: Repository): Promise<readonly OpenPullRequest[]>;
   checksFastPath(context: PrContext): Promise<ChecksFastPath>;
-  checkRollupPage(
-    context: PrContext,
-    after: string | null
-  ): Promise<RollupPage>;
+  checkRollupPage(context: PrContext, after: string | null): Promise<RollupPage>;
   reviewThreads(context: PrContext): Promise<readonly ReviewThread[]>;
   commitRollups(context: PrContext): Promise<readonly CommitRollup[]>;
 }

@@ -20,7 +20,12 @@ export { getAccountId, openaiCodexOAuth } from "./auth/oauth/openai-codex.ts";
 export type { ModelInfo, Provider, ReasoningEffort, ResponsesApi } from "./provider.ts";
 export { openaiProvider } from "./providers/openai.ts";
 export { openaiCodexProvider } from "./providers/openai-codex.ts";
-export { streamResponses, type ResponsesRequest } from "./api/responses.ts";
+export {
+  streamResponses,
+  type ResponsesDelta,
+  type ResponsesRequest,
+  type ResponsesResult,
+} from "./api/responses.ts";
 
 import type { Provider } from "./provider.ts";
 import { openaiCodexProvider } from "./providers/openai-codex.ts";

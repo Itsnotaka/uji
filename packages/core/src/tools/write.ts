@@ -1,0 +1,108 @@
+/**
+ * Write tool ported from pi's tools/write.ts, adapted to June's AgentTool
+ * contract. TUI rendering code from pi is dropped.
+ */
+import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import type { AgentTool } from "../agent-loop.ts";
+import { withFileMutationQueue } from "./support/file-mutation-queue.ts";
+import { resolveToCwd } from "./support/path-utils.ts";
+
+export interface WriteToolInput {
+  /** Path to the file to write (relative or absolute) */
+  path: string;
+  /** Content to write to the file */
+  content: string;
+}
+
+/**
+ * Pluggable operations for the write tool.
+ * Override these to delegate file writing to remote systems (for example SSH).
+ */
+export interface WriteOperations {
+  /** Write content to a file */
+  writeFile: (absolutePath: string, content: string) => Promise<void>;
+  /** Create directory recursively */
+  mkdir: (dir: string) => Promise<void>;
+}
+
+const defaultWriteOperations: WriteOperations = {
+  writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
+  mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
+};
+
+export interface WriteToolOptions {
+  /** Custom operations for file writing. Default: local filesystem */
+  operations?: WriteOperations;
+}
+
+const writeParameters = {
+  type: "object",
+  properties: {
+    path: {
+      type: "string",
+      description: "Path to the file to write (relative or absolute)",
+    },
+    content: {
+      type: "string",
+      description: "Content to write to the file",
+    },
+  },
+  required: ["path", "content"],
+} as const;
+
+function parseWriteParams(params: unknown): WriteToolInput {
+  if (typeof params !== "object" || params === null) {
+    throw new Error("Invalid arguments for write: expected an object");
+  }
+  const { path, content } = params as Record<string, unknown>;
+  if (typeof path !== "string") {
+    throw new Error('Invalid arguments for write: "path" must be a string');
+  }
+  if (typeof content !== "string") {
+    throw new Error('Invalid arguments for write: "content" must be a string');
+  }
+  return { path, content };
+}
+
+export function createWriteTool(
+  cwd: string,
+  options?: WriteToolOptions,
+): AgentTool<unknown, undefined> {
+  const ops = options?.operations ?? defaultWriteOperations;
+  return {
+    name: "write",
+    label: "write",
+    description:
+      "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+    parameters: writeParameters as unknown as Record<string, unknown>,
+    async execute(_toolCallId, params, signal?, _onUpdate?) {
+      const { path, content } = parseWriteParams(params);
+      const absolutePath = resolveToCwd(path, cwd);
+      const dir = dirname(absolutePath);
+      return withFileMutationQueue(absolutePath, async () => {
+        // Do not reject from an abort event listener here: that would release the
+        // mutation queue while an in-flight filesystem operation may still finish.
+        // Checking signal.aborted after each await observes the same aborts while
+        // keeping the queue locked until the current operation has settled.
+        const throwIfAborted = (): void => {
+          if (signal?.aborted) throw new Error("Operation aborted");
+        };
+
+        throwIfAborted();
+        // Create parent directories if needed.
+        await ops.mkdir(dir);
+        throwIfAborted();
+
+        // Write the file contents.
+        await ops.writeFile(absolutePath, content);
+        throwIfAborted();
+
+        return {
+          content: `Successfully wrote ${content.length} bytes to ${path}`,
+          details: undefined,
+        };
+      });
+    },
+  };
+}
