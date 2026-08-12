@@ -2,7 +2,7 @@
 
 Living brainstorm notes. Not a finished plan. Goal: shape an engineer prompt.
 
-Updated: 2026-08-11
+Updated: 2026-08-12
 
 > Brain dump. Grow freely. Honk = flaw exhibit, not a product requirement.
 
@@ -54,7 +54,6 @@ It is a harness in the sense of **primitives that help you build a harness**, ai
 
 ### Local
 - Repo: https://github.com/Itsnotaka/june
-- Folder: `/Users/workgyver/Developer/june`
 
 ---
 
@@ -719,4 +718,52 @@ Cloudflare is one block (`host` / `store`), not a fork of June.
 ### Fit with handwritten rule
 
 We handwrite the blocks. We do not wrap Pi/OpenCode as the composition. Their *ideas* inform the shapes of the blocks.
+
+---
+
+## Package layout (OpenCode naming) — LOCKED
+
+Daniel's preference is to follow the OpenCode v2 package names under the `@june/*` scope.
+
+The v0 packages are:
+
+- `@june/schema` — parts, messages, events
+- `@june/protocol` — host API surface
+- `@june/core` — session, loop, and composition. The Pi-simple harness lives here, not in an `agent-core` package.
+- `@june/server` — local HTTP host
+- `@june/client` — typed TypeScript client
+- `@june/ai` — providers
+- `@june/util` — helpers
+
+Law: clients talk to schema and protocol only. They never depend on core or server internals.
+
+Store, log, and host swaps are adapters composed into core and server. Do not invent packages such as `@june/host-local` for them.
+
+Decision 2026-08-12: the `@june/core` name is locked. It contains the Pi-simple harness and a pluggable session backend.
+
+---
+
+## Multi-client protocol (Daniel, 2026-08-12)
+
+OpenCode v2's server is efficient because adding clients in another language does not require rewriting the API. June has the same hard goal. Any client, including native Swift apps for iOS and macOS, must be able to implement the protocol.
+
+Prefer a language-neutral wire protocol: OpenAPI over HTTP, with SSE for events. `@june/client` is the TypeScript SDK, not the protocol itself. Native apps bind the same protocol directly.
+
+The host API must not assume a React or TypeScript UI.
+
+---
+
+## Local box workspace notes (2026-08-12)
+
+The working copy lives on the sidekick computer at `~/Developer/june`.
+
+Tooling on that box:
+
+- Ghostty terminal
+- VSCodium editor
+- Node 24 through mise
+- pnpm 11
+- `claude`, `codex`, `pi`, and `agent` CLIs. `agent` is Cursor.
+
+Codex CLI is signed in there. GitHub CLI device login rate-limits on that box.
 
