@@ -1,6 +1,6 @@
 # June blueprint
 
-Living brainstorm notes. Not a finished plan. Goal: shape an engineer prompt.
+Living brainstorm notes. Not a finished plan. Product/architecture brain dump for June.
 
 Updated: 2026-08-11
 
@@ -239,13 +239,6 @@ Cells answer **ownership / placement**, not whether we "want" the feature.
 
 ---
 
-## Draft engineer prompt
-
-(still empty — fill after we talk through the bets and demos)
-
-
----
-
 ## Flue deep inventory (research pass)
 
 Source: flueframework.com + github.com/withastro/flue (Apache-2.0). Flue is built on Pi. Flue 2.0 = hooks-based dynamic agents; Vite owns build; conversation-scoped `@flue/sdk` + `@flue/react`.
@@ -373,19 +366,6 @@ Confirmed hybrid:
 Official: even BYOK still goes through Cursor backend for final prompt building. Indexing = Merkle sync + server embeddings + metadata; client reads bytes. Privacy Mode ≠ local LLM. Cloud Agents are the main feature that stores repo copies for a duration.
 
 **June vocabulary:** cloud brain ≠ blind to local. Blindness comes from choosing a **remote tool host**. Prefer naming **tool host placement** explicitly (local | cloud VM | my machine).
-
----
-
-## Synthesis for engineer prompt (still drafting)
-
-June delivers:
-
-1. **Host protocol** inspired by OpenCode v2 (HttpApi-shaped, admit/pending/events/permissions/parts)
-2. **Durable session/ops** inspired by Pi's *ideas* (handwritten; not their package)
-3. **Deploy/embed story** inspired by Flue (conversation streams, optional cloud target) without requiring Flue
-4. **GUI demos:** Cursor-like desktop client + cloud-agent UI, both speaking the same protocol to different tool hosts
-
-
 
 ---
 
@@ -533,7 +513,7 @@ References are for **ideas and critique only**:
 
 - steal vocabulary / lessons (admit/pending, effect sandwich, parts, client/server cut)
 - do not `import` their harness as June's brain
-- do not say "sit on Pi" or "embed OpenCode" in the engineer prompt
+- do not say "sit on Pi" or "embed OpenCode" as the product story
 
 June Core + June harness are authored in this repo (and/or copy-pasted out via the registry), end to end.
 
