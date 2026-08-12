@@ -110,12 +110,12 @@ Daniel's instinct is half right:
 
 June should probably make **host placement** explicit:
 
-| Piece | Can be local | Can be cloud |
+| Piece | Local placement | Cloud placement |
 | --- | --- | --- |
-| GUI client | yes | (web) |
-| Session / conversation store | yes | yes |
-| Model calls | via proxy | via proxy |
-| Tools / FS / shell | bound to a host | bound to a VM |
+| GUI client | Desktop / IDE client process | Web client in browser |
+| Session / conversation store | On-disk next to host (or local DB) | Remote durable store / DO — same protocol |
+| Model calls | Through host to provider (or local proxy) | Through host to provider (same path) |
+| Tools / FS / shell | Bound to this machine as tool host | Bound to a VM/worker as tool host |
 
 The interesting product is: same UI primitives against a local host **or** a cloud host.
 
