@@ -720,3 +720,69 @@ Cloudflare is one block (`host` / `store`), not a fork of June.
 
 We handwrite the blocks. We do not wrap Pi/OpenCode as the composition. Their *ideas* inform the shapes of the blocks.
 
+---
+
+## Package layout (OpenCode naming)
+
+Daniel preference: follow **OpenCode v2 package names**, not invent (`parts` / `agent` / `host-local`). Scope `@june/*`. Handwritten blocks still; names match the shape we like.
+
+OpenCode v2 packages we care about (from `anomalyco/opencode` `v2`):
+`schema`, `protocol`, `core`, `server`, `client`, `sdk-next`, `ai`, `util`, `plugin`, then UI later (`ui`, `session-ui`, `app`, `desktop`, `cli`, `tui`).
+
+Law to keep (OpenCode): clients talk **schema/protocol** only — never import `core` / `server` internals.
+
+### v0 packages (first cut)
+
+| Package | Role |
+|---|---|
+| `@june/schema` | Parts, messages, events, shared types |
+| `@june/protocol` | Host API surface (session, permissions, events) |
+| `@june/core` | Session + loop + composition (`createJune`-style wiring lives here as blocks, not a sealed kernel) |
+| `@june/server` | Local HTTP host binding |
+| `@june/client` | Typed client for UIs |
+| `@june/ai` | Model provider adapters |
+| `@june/util` | Tiny shared helpers |
+
+### Later (same names as OpenCode when we need them)
+
+`sdk` / `sdk-next`, `plugin`, `ui`, `session-ui`, `app`, `desktop`, `cli` — Cloudflare/host variants stay composition inside `server`/`core` (or a thin adapter package), not a rename away from this map.
+
+### Explicit non-names for June packages
+
+Do not ship `@june/parts`, `@june/agent`, `@june/store`, `@june/host-local` as top-level packages unless we later decide OpenCode's map is wrong. Store/log/host swaps are **adapters composed into** `core`/`server`, Lucia-style.
+
+### Decision (2026-08-12)
+
+Lock package names to OpenCode map. `@june/core` is the name (not `agent-core`). Inside `core`: Pi-simple harness — obvious system prompt / resources / skills, pluggable session backend. Steal Pi's session-backend idea as composition into `core`/`server`, keep OpenCode's `schema` / `protocol` / `server` / `client` / `ai` / `util` names.
+
+---
+
+## Multi-client protocol (Daniel, 2026-08-12)
+
+OpenCode2's server shape is efficient because **clients do not force a rewrite of the API per language**. One host speaks a stable protocol; TUI / desktop / IDE / web all attach as clients.
+
+June takes that further as a hard goal: the same protocol must be implementable from **any** client language/runtime — including a **Swift iOS/macOS app** — not only TypeScript. Typed TS client is first-party; Swift (and others) are first-class citizens of the wire, not afterthoughts.
+
+Implications:
+- **Protocol + schema are the product surface** clients bind to (OpenCode law: clients talk schema/protocol, not core internals)
+- Prefer language-neutral wire (OpenAPI / HTTP+SSE or equivalent) over TS-only RPC tricks that do not codegen cleanly
+- `@june/client` is the TS SDK; mobile/native apps use generated or hand-written clients against the same protocol
+- Do not bake React/TS UI assumptions into the host API
+
+
+---
+
+## Local box workspace notes (2026-08-12)
+
+Daniel's sidekick (June) keeps a working copy of this repo on the shared computer at `~/Developer/june`.
+
+Tooling installed there for on-the-fly work:
+- **Ghostty** as the terminal
+- **VSCodium** (`codium`) as the editor (pure OSS VS Code)
+- **mise**: Node 24 + pnpm 11 (see `mise.toml`)
+- CLIs on PATH: `claude` (Claude Code), `codex` (OpenAI), `pi` (earendil-works), `agent` / `cursor-agent` (Cursor CLI)
+- Codex CLI signed in on that machine
+
+GitHub CLI device login was rate-limited on the box; prefer authenticating `gh` with a token or committing from Daniel's Mac when the desktop app is connected.
+
+Package cut remains OpenCode-named (`@june/schema|protocol|core|server|client|ai|util`) with Pi-simple harness inside `core`, multi-client wire including Swift.
