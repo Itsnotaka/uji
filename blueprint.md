@@ -1054,3 +1054,28 @@ Escape hatch, narrow: if `@june/server` internals someday genuinely want Effect 
 ### Box ops note
 
 mise re-provisioned pnpm on 2026-08-12 and left binaries without exec bits (`pnpm`, tsgolint, the tsc native binary) — `chmod +x` + `mise reshim` fixes it if it recurs.
+
+---
+
+## Decision 2026-08-12 — New pi harness adopted directly; no old session model
+
+Daniel: adopt pi's **new** AgentHarness idea today — pi carries a back-port for its old stack; June has no users and keeps no compatibility layer. The old JSONL-transcript session and the light `Agent` wrapper are **removed**, not wrapped.
+
+### What `@june/core` is now
+
+- `agent-loop.ts` — standalone loop (unchanged; imports schema types only; pi loop semantics: steering/follow-up drain modes, sequential/parallel batches, before/after hooks, fail-all on `length`, prepareNextTurn).
+- `harness/` — the only composition over the loop, on pi's new durability model:
+  - **Storage contract** (`harness/session/types.ts`, from pi `harness/session/types.d.ts`): write-once **entry tree** (parentId linkage; lane pointers name leaves) + append-only **records ledger** (operation_started/finished, step_attempt, tool_started, queue_enqueued/cancelled, abort_requested, usage) + facts, all ordered by one total `seq`. JSONL backend (`JsonlSessionRepo`, one LogItem per line, replayed on open); SQLite/DO are future adapters of the same contract.
+  - **Effect sandwich**: `tool_started` intent (with a provisioned settlement-entry id and a `replay: "never" | "safe"` policy per tool) commits before the tool runs; the settlement is the `function_call_output` entry at that id. `step_attempt` brackets assistant streaming; `operation_started/finished` bracket runs.
+  - **Crash resume**: `findOpenOperations` on open → `resume()` settles unsettled intents (safe → re-execute; never → error entry telling the model to re-issue), then continues the loop from the durable branch. Queues are records, so steer/followUp survive crashes too.
+  - Result-typed rejections (`LaneBusy`, `NoActiveRun`, `NothingToResume`, `Closed`) via pi's `Result`/`TaggedError`.
+- Scope held to the smallest end-to-end slice: one lane ("main"), run operations only. Deferred (compose onto the same log later, no schema change): multiple lanes, compaction, branch navigation/fork, skills/templates, deferred-suspend, manual action stepping (`peekAction`/`executeAction`), labels/stats.
+- The harness drives `runAgentLoop` through the loop's hook surface (per the locked ch.1 rule) — note pi's current dist reducer no longer imports the loop; June keeps the one-way rule anyway because it holds the loop standalone.
+
+### Verified live on the box
+
+Print run over the codex backend produced the exact pi-shaped ledger (1 operation_started, 3 step_attempts, 2 tool intents, usage per step, 1 operation_finished). Crash drill: SIGKILL mid-`bash` left an open operation with an unsettled `replay: never` intent; `--resume` settled it with an interruption error, the model saw it, chose to re-run the command itself, and both the resumed run and a follow-up prompt completed. TUI (OpenTUI/Bun) boots and streams on the same harness.
+
+### Ops note
+
+Round-2 working-tree files (tool ports, loop, TUI) were discarded by a reset/pull before commit; they were recovered mechanically from session transcripts (Write/Edit tool-call extraction). Shell-applied fixes are not in transcripts — after any such recovery, re-run `pnpm check` and expect to re-fix small lint items.

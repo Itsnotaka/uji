@@ -10,8 +10,12 @@ build step — Node 24 runs TypeScript sources directly):
 - `packages/schema` — wire item types shared by everything
 - `packages/ai` — provider auth blocks (pi-shaped), OAuth flows, streamed
   Responses client
-- `packages/core` — session, tools, and the agent loop
-- `packages/demo-cli` — `@june/demo`, the login funnel CLI and coding-agent run
+- `packages/core` — standalone `agent-loop.ts`, the durable pi-style
+  `AgentHarness` (entry-tree sessions, effect-sandwich tool records, crash
+  resume), and the full pi tool set (read, bash, edit, write, grep, find, ls)
+- `packages/demo-cli` — `@june/demo`, a full-screen OpenTUI app (runs under
+  Bun): live transcript, steering, TUI login funnel; `-p` print mode and
+  readline `login` for headless boxes
 - `packages/demo/grok-bot` — clean-room Grok Bot chat showcase
 - `packages/demo/website` — cmdk-style index for June UI studies
 
@@ -30,8 +34,10 @@ pnpm check
 ## Try it
 
 ```sh
-pnpm june login            # ChatGPT OAuth (browser or device code); no API key needed
-pnpm june "list the files here and summarize"
+pnpm june                  # full-screen TUI; runs the login funnel if needed
+pnpm june login            # readline ChatGPT OAuth (browser or device code)
+pnpm june -p "list the files here and summarize"   # non-interactive
+pnpm june -p --resume "…"  # continue latest session (crash-resumes if needed)
 pnpm june status           # stored credentials
 ```
 
