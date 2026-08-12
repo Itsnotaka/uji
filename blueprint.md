@@ -4,13 +4,13 @@ Living brainstorm notes. Not a finished plan. Goal: shape an engineer prompt.
 
 Updated: 2026-08-11
 
-> Brain dump. Grow freely. Honk = flaw exhibit, not a product requirement.
+> Brain dump. Grow freely. Prior Core+Clients attempts are cautionary only — not product requirements.
 
 ---
 
 ## Thesis (Daniel)
 
-June is a **new, independent core for building cross-platform agentic UI**, distributed like shadcn: copy-pastable, composable source primitives. It should be able to **replace Honk Core** (`@honk/core`) as a drop-in host for Core+Clients products. It is not a Honk fork.
+June is a **new, independent core for building cross-platform agentic UI**, distributed like shadcn: copy-pastable, composable source primitives. Quality bar: drop-in host for Core+Clients products (desktop/web/CLI on one core). It is not a fork of any prior host attempt.
 
 Not "the chat product." Not "just an agent loop."
 
@@ -395,62 +395,62 @@ Gaps we care about vs that core:
 - Customizing the system prompt is **easy in Pi**, **hard in OpenCode's new core**
 - We want Pi-level steerability (SYSTEM.md / append / resources / hermetic config) without giving up OpenCode's client/server + GUI kit
 
-### Honk as lived experiment (`~/Developer/honk`)
+### Cautionary: prior Core+Clients cutovers
 
-Honk already ran this A/B in production code:
+A prior Core+Clients host attempt already lived the OpenCode ↔ Pi A/B:
 
-| When | Move |
+| Pattern | What happened |
 | --- | --- |
-| Mid-2026 | Core rewrite cutover (ADR 0011): multi-harness Core (pi / Claude / Cursor), HTTP+SSE SDK, desktop host |
-| ~Jul 29 | OpenCode-only cutover (`replace Core v1 with OpenCode SDK`, `OpenCode-only cutover`) — sidecar / packages/opencode era |
-| **Aug 11, 2026** | **`cut over chat, composer, and runtime off OpenCode`** → owned chat stack on **Pi AgentHarness** host (`@honk/core`) |
+| Multi-harness Core | pi / Claude / Cursor behind one HTTP+SSE SDK + desktop host |
+| OpenCode-only cutover | Replace owned core with OpenCode SDK / sidecar |
+| Bounce back to Pi | Cut chat/composer/runtime off OpenCode onto a Pi `AgentHarness` host |
 
-Current `spec/core.md` thesis (working draft):
+Working host thesis that survived those swings:
 
 1. One host process, one writer lease
-2. Every session contains a real Pi `AgentHarness` (do not copy session model into a second Honk model)
+2. Every session owns one harness instance (do **not** copy the session model into a second parallel model)
 3. Workspace trust is the **only** permission gate (YOLO after trust)
-4. Clients reload Pi session data and render messages themselves
+4. Clients reload session data and render messages themselves
 5. Host keeps running across UI reloads
 
-Honk Core does **not** depend on `pi-coding-agent` / `pi-tui`. It constructs `AgentHarness` with `systemPrompt`, tools, resources, models, JSONL repo.
+Construct the harness with `systemPrompt`, tools, resources, models, JSONL repo — do not depend on a coding-agent TUI package as the brain.
 
-What Honk still steals from OpenCode (even after leaving it):
+Useful ideas to steal from OpenCode (even after leaving it as the runtime):
 
-- Message snapshots / per-turn git checkpoints (refs/honk/checkpoints/…)
+- Message snapshots / per-turn git checkpoints
 - Per-file restore grain for undo
 - Websearch tool design notes
-- Earlier: "part opencode, part t3code" multi-harness idea (ADR 0006) — later simplified toward Pi-native
+- Multi-harness experiments that later simplify toward one durable harness
 
-Why Pi hermetic config mattered (ADR 0017, historical): Honk runs Pi under `HONK_HOME/harness/pi`, not `~/.pi/agent`, so user Pi extensions/settings cannot fight Honk or execute unowned code in-process. Project AGENTS.md/skills still load from cwd.
+Hermetic config lesson: run the harness under the product home, not the user’s global Pi home, so user extensions/settings cannot fight the product or execute unowned code in-process. Project AGENTS.md/skills still load from cwd.
 
 ### Lesson for June
 
 The OpenCode **shape** (core host + desktop/web clients + typed protocol) is right.
-The OpenCode **configurability / durability / prompt ownership** is why Honk bounced back to Pi.
+The OpenCode **configurability / durability / prompt ownership** is why that prior attempt bounced back to Pi.
 
 June should aim for:
 
 - OpenCode-like: core process, desktop GUI, multi-client protocol
-- Pi-like: AgentHarness durability, trivial system prompt / resources / skills ownership, hermetic but user-overridable config surfaces
-- From the Honk flaw exhibit: do not maintain two session models; trust gate once; handwritten harness; steal OpenCode checkpoint *ideas*
+- Pi-like: harness durability, trivial system prompt / resources / skills ownership, hermetic but user-overridable config surfaces
+- From the cautionary exhibit: do not maintain two session models; trust gate once; handwritten harness; steal OpenCode checkpoint *ideas*
 
 
 
 ---
 
-## Independence + Honk replaceability (Daniel, continued)
+## Independence + Core+Clients replaceability (Daniel, continued)
 
-June is a **new, fully independent** project. Not a Honk fork. Not a rename.
+June is a **new, fully independent** project. Not a fork or rename of a prior host.
 
-Success criterion for the core: **easily replace `@honk/core`**. Honk (or anything with that Core+Clients shape) should be able to swap its host for June Core without rewriting the product chrome from scratch.
+Success criterion for the core: **easily replace an existing Core+Clients host**. A product with that shape should be able to swap onto June Core without rewriting chrome from scratch.
 
 Implications:
 
 - Stable, boring client protocol (session CRUD, prompt/steer/queue/interrupt, reload/entries, events, permissions/trust, models)
 - Pi-grade prompt/config ownership (system prompt, resources, skills) as first-class, not buried
 - OpenCode-grade multi-client host (desktop/web/CLI attach to one core)
-- No Honk-specific product names required in the core; Honk becomes one consumer
+- No consumer product names in the core; products are consumers of June, not baked into it
 
 ### Demo section (non-negotiable + quick starts)
 
@@ -476,7 +476,7 @@ Not "install `@june/sdk` and call a black box." More like:
 
 Tension to manage (write it down, don't paper over it):
 
-- Honk-replaceability wants a **stable protocol contract**
+- Core+Clients replaceability wants a **stable protocol contract**
 - shadcn-feel wants **owned source**, not a versioned binary API forever
 
 Resolution bet: the **wire protocol + part schema** are the stable contract; the **React/desktop implementations** are registry code you copy. Core reference implementation can be a package *and* a template you can eject.
@@ -515,7 +515,7 @@ The Core wraps the harness (lease, trust, HTTP, clients). The harness itself sta
 
 This blueprint is a **brain dump**. It can keep growing. Do not optimize for short.
 
-Honk is **not** a customer June must satisfy. It is a demonstration of how a core (ours / prior attempts) develops flaws: OpenCode cutover, dual models, prompt ownership pain, bounce back to Pi. Use it as a cautionary exhibit, then move on.
+Prior Core+Clients hosts are **not** customers June must satisfy. They are a cautionary exhibit of how a core develops flaws: OpenCode cutover, dual session models, prompt ownership pain, bounce back to Pi. Take the lessons, then move on.
 
 
 
