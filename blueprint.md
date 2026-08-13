@@ -2,7 +2,7 @@
 
 Living brainstorm notes. Not a finished plan. Product/architecture brain dump for June.
 
-Updated: 2026-08-11
+Updated: 2026-08-13
 
 > Brain dump. Grow freely. Prior Core+Clients attempts are cautionary only — not product requirements.
 
@@ -318,7 +318,7 @@ sdk-next transitional; clustering/workspace placement reserved; no exactly-once 
 2. Admit/pending/steer/queue/interrupt vocabulary (not a boolean isRunning)
 3. Permissions + questions as first-class session APIs a GUI can bind
 4. session-ui / ui v2 as reference for Cursor-like chrome (or inspiration, not necessarily dependency)
-5. Location = workspace service scope, not ambient cwd
+5. Location is optional host context exposed through `sdk.workspace`, not an ambient cwd or a prerequisite for sessions
 
 ---
 
@@ -541,7 +541,7 @@ If June Core is "good," handwritten support for these exists (UI chrome can be d
 5. **Tool registry** deep (FS/shell) *and* shallow (product CRUD) tools
 6. **Progressive skills** (load capability packs without stuffing every turn)
 7. **Decision / trust signals** on the wire if needed (events the UI can bind) — **not** permission/disclosure UI (out of scope)
-8. **Workspace / Location** scope (cwd or workspace id, not ambient global)
+8. **Optional Workspace / Location** scope exposed through `sdk.workspace`; sessions do not require one
 9. **Identity & ACL** for product agents (Notion/Linear-shaped)
 10. **Triggers & schedules** for autonomous Custom-Agent-shaped runs
 11. **Checkpoints / revert** for coding-agent-shaped undo
@@ -554,6 +554,7 @@ If June Core is "good," handwritten support for these exists (UI chrome can be d
 Demos are not side quests. Each demo proves a slice of that checklist.
 
 - shadcn chat → 1–4, 12
+- bot / general assistant → 1–4, 12; no workspace required
 - Cursor-like UI → 1–8, 11–13
 - cloud agent UI → 13 (+ same protocol)
 - Linear-shaped demo → 5–7, 9, progressive skills
@@ -579,12 +580,14 @@ Not everything in the recreate-all products belongs in June Core.
 - Permission / approval **chrome** (cards, modals, disclosure UX)
 - Progressive disclosure **presentation** (how skills/tools are shown/hidden in the UI)
 - Tone / surface styling (Slack vs app chat look)
+- Whether the product asks for or attaches a workspace
 - Most Cursor-like IDE chrome (file tree layout, pixel mimic)
 - Chat hooks / scrollers / bubbles (shadcn, AI SDK UI territory)
 
 **Core-side (in scope):**
 - Harness + host + sessions + parts/events + tools + prompt/skills ownership + triggers + ACL **data**
 - Approval **policy** and pause/resume (can a tool run yet?) — not the card
+- Optional workspace context and the `sdk.workspace` protocol surface; never a required folder picker or ambient cwd
 - Protocol surface so UI can bind decisions/catalogs/status
 - Do **not** ship productized permission theater UI inside the core
 
@@ -644,13 +647,13 @@ AI SDK docs (harnesses): a harness owns workspace, built-in tools, native sessio
 
 ### What Daniel felt
 
-`sdk.session` / workspace-shaped APIs are **local host control planes**. AI SDK gave streaming chat + tool loops; it did not give a durable, attachable, multi-client coding host over the files on disk.
+`sdk.session` and optional `sdk.workspace` APIs are **host control planes**. AI SDK gave streaming chat + tool loops; it did not give a durable, attachable, multi-client coding host over the files on disk.
 
 ### June takeaway
 
-- Steal OpenCode's **host + session + workspace protocol** idea (handwritten).
+- Steal OpenCode's **host + session + optional workspace protocol** idea (handwritten).
 - AI SDK may help **UI demos** or model plumbing later; it is not a substitute for June Core.
-- Do not design June as "useChat + tools" and hope workspace falls out.
+- Do not make workspace implicit. Products that need one use `sdk.workspace`; products such as `bot` ignore it.
 
 Refs: https://opencode.ai/docs/sdk/ · https://opencode.ai/docs/server/ · https://ai-sdk.dev/docs/ai-sdk-harnesses/overview · https://vercel.com/changelog/ai-sdk-7
 
@@ -682,7 +685,7 @@ Syntax inspiration (Lucia/Arctic): small functions, explicit adapters, no hidden
 // sketch only — not an API promise
 const core = createJune({
   store: sqliteStore(path),
-  host: localHost({ cwd }),
+  host: localHost(),
   // observability: compose a layer/context — NOT a pino logger()
   // Pi-shaped: telemetry: TelemetryContext (noop | otel adapter)
   // or OpenCode2-shaped: Effect Observability.layer (Logger + OTLP)
@@ -721,7 +724,7 @@ Law to keep (OpenCode): clients talk **schema/protocol** only — never import `
 | Package | Role |
 |---|---|
 | `@june/schema` | Parts, messages, events, shared types |
-| `@june/protocol` | Host API surface (session, permissions, events) |
+| `@june/protocol` | Host API surface (session, optional workspace, permissions, events) |
 | `@june/core` | Session + loop + composition (`createJune`-style wiring lives here as blocks, not a sealed kernel) |
 | `@june/server` | Local HTTP host binding |
 | `@june/client` | Typed client for UIs |
@@ -753,6 +756,23 @@ Implications:
 - Prefer language-neutral wire (OpenAPI / HTTP+SSE or equivalent) over TS-only RPC tricks that do not codegen cleanly
 - `@june/client` is the TS SDK; mobile/native apps use generated or hand-written clients against the same protocol
 - Do not bake React/TS UI assumptions into the host API
+
+### Client SDK surface: workspace is optional
+
+The SDK exposes `sdk.workspace`, but the core never requires a workspace to create or run a session. The product UI decides whether workspace context belongs in its experience.
+
+| Namespace | Contract |
+| --- | --- |
+| `sdk.session` | Create, resume, prompt, steer, and observe sessions with no workspace requirement |
+| `sdk.workspace` | Resolve and manage workspace context for products that need files, shell, version control, or project-scoped resources |
+
+Rules:
+
+- `bot` and other general-assistant products can ignore `sdk.workspace`
+- A coding UI chooses when to ask for a workspace and when to attach it
+- Workspace-scoped tools receive explicit workspace context; they never inherit the host process cwd
+- A workspace-free session can use any tool pack that does not require workspace context
+- The protocol will define the exact `sdk.workspace` verbs and identifiers; the loop must not invent them
 
 
 ---

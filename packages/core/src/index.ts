@@ -1,4 +1,3 @@
-// Loop layer — standalone; knows nothing below this line (pi ch.1 rule).
 export {
   runAgentLoop,
   runAgentLoopContinue,
@@ -28,7 +27,6 @@ export {
   type TurnUsage,
 } from "./agent-loop.ts";
 
-// The durable harness — the only composition over the loop.
 export {
   AgentHarness,
   Closed,
@@ -48,10 +46,13 @@ export {
   type SuspendedOperation,
 } from "./harness/agent-harness.ts";
 export { Result, TaggedError } from "./harness/result.ts";
-export { JsonlSessionRepo, JsonlSessionStorage, newId } from "./harness/session/jsonl.ts";
+export {
+  SqliteSessionRepo,
+  SqliteSessionStorage,
+  type SqliteSessionRepoOptions,
+} from "./harness/session/sqlite.ts";
 export * from "./harness/session/types.ts";
 
 export { createProviderStreamFn, type ProviderStreamFnOptions } from "./stream-fn.ts";
 
-// Coding tool set (pi port).
 export * from "./tools/index.ts";

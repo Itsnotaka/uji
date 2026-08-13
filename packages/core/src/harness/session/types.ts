@@ -1,17 +1,12 @@
-/**
- * Durable session storage contract, ported from pi-agent-core
- * harness/session/types.ts and trimmed to June's current slice: entries are a
- * write-once tree, records are the append-only operation/effect ledger, lane
- * pointers and facts complete the log. One total `seq` orders everything.
- *
- * June deviations (recorded): AgentMessage → ResponseItem wire; no
- * compaction/branch_summary entries, navigation intents, write_deferred,
- * labels, or fork yet — they compose onto this same log later.
- */
+import { randomUUID } from "node:crypto";
 import type { ResponseItem } from "@june/schema";
 import type { TurnUsage } from "../../agent-loop.ts";
 
 export type { TurnUsage };
+
+export function newId(prefix: string): string {
+  return `${prefix}_${randomUUID().slice(0, 8)}`;
+}
 
 export type JsonValue =
   | null
@@ -52,7 +47,6 @@ export interface CustomEntry extends EntryBase {
 
 export type Entry = MessageEntry | ModelChangeEntry | ThinkingLevelEntry | CustomEntry;
 
-/** An entry authored before commit: storage assigns parentId/seq/timestamp. */
 export type ProvisionedEntry<TEntry extends Entry = Entry> = TEntry extends Entry
   ? Omit<TEntry, "parentId" | "seq" | "timestamp">
   : never;
@@ -69,9 +63,8 @@ export interface OperationStartedRecord extends RecordBase {
   sourceLeafId: string | null;
   intent: {
     kind: "run";
-    /** Normalized caller input, kept for suspended-operation resume. */
     originalPrompt: ResponseItem[];
-    /** Provisioned prompt entries (nextRun items first, then the prompt). */
+    /** nextRun items come first, then the prompt. */
     initialMessages: ProvisionedEntry[];
   };
 }
@@ -96,10 +89,9 @@ export interface StepAttemptRecord extends RecordBase {
 }
 
 /**
- * The intent half of the effect sandwich: committed before a tool executes.
- * `resultEntryId` provisions where the settlement entry will land; a
- * tool_started record with no entry at that id after a crash is an unsettled
- * effect, resolved by `replay` ("safe" re-executes, "never" fails the call).
+ * Must be committed before the tool executes. After a crash, a record whose
+ * `resultEntryId` has no entry is an unsettled effect: `replay` decides whether
+ * it re-runs or fails.
  */
 export interface ToolStartedRecord extends RecordBase {
   type: "tool_started";
@@ -166,33 +158,56 @@ export interface RecordQuery {
   afterSeq?: number;
 }
 
-/** App-owned durable storage. Everything the harness persists goes through here. */
+/**
+ * Entries and records are write-once; lane pointers and facts are the mutable
+ * registers. One `seq` per session orders all four, so a backend cannot give
+ * each table its own counter without breaking getLog and every afterSeq cursor.
+ */
 export interface SessionStorage {
   getMetadata(): Promise<SessionMetadata>;
-  /** Append an entry to a lane: parent = lane leaf; the lane pointer advances. */
+  /** Parents the entry on the lane leaf, then advances the lane to it. */
   appendEntry(entry: ProvisionedEntry, lane: string): Promise<Entry>;
   appendRecord<TRecord extends LaneRecord>(record: NewRecord<TRecord>): Promise<TRecord>;
   getEntry(id: string): Promise<Entry | undefined>;
   getLeafId(lane: string): Promise<string | null>;
-  /** Entries from the branch root to the lane leaf, oldest first. */
+  moveLane(lane: string, to: string | null): Promise<void>;
+  /** Oldest first. */
   getBranch(lane: string): Promise<Entry[]>;
+  findEntries(query?: EntryQuery): Promise<Entry[]>;
   findRecords<K extends LaneRecord["type"]>(
     query: RecordQuery & { type: K },
   ): Promise<Extract<LaneRecord, { type: K }>[]>;
   /**
-   * Unfinished operation starts, newest first. Zero results = idle; one =
-   * suspended; two or more = corruption.
+   * Newest first; callers resume the first result. At most one operation can be
+   * open on a lane, so more than one means the log is corrupt.
    */
   findOpenOperations(lane: string): Promise<OperationStartedRecord[]>;
   getLog(options?: { afterSeq?: number }): Promise<LogItem[]>;
   getName(): Promise<string | undefined>;
   setName(name: string): Promise<void>;
+  close(): Promise<void>;
 }
 
 export interface SessionRepo {
   create(options?: { id?: string }): Promise<SessionStorage>;
   open(id: string): Promise<SessionStorage>;
   list(): Promise<SessionMetadata[]>;
+}
+
+export interface SessionSearchHit {
+  sessionId: string;
+  entryId: string;
+  timestamp: number;
+  snippet: string;
+  /** Lower scores rank better. */
+  score: number;
+}
+
+export interface SessionSearch {
+  searchEntries(
+    text: string,
+    options?: { limit?: number; type?: Entry["type"] },
+  ): Promise<SessionSearchHit[]>;
 }
 
 export type SessionErrorCode = "not_found" | "invalid_entry" | "storage";

@@ -24,7 +24,7 @@ import {
   type ToolExecutionMode,
 } from "../agent-loop.ts";
 import { Result, TaggedError, type Result as ResultValue } from "./result.ts";
-import { newId } from "./session/jsonl.ts";
+import { newId } from "./session/types.ts";
 import type {
   JsonValue,
   MessageEntry,
