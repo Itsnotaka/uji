@@ -8,7 +8,7 @@ export async function runPrint(flags: RunFlags): Promise<void> {
   if (runtime === undefined) {
     throw new Error('no provider configured — run "pnpm june login" first');
   }
-  const { harness, suspended, sessionId } = await openHarness(runtime, flags);
+  const { harness, suspended, sessionId, repo } = await openHarness(runtime, flags);
   let needsNewline = false;
   harness.subscribe((event) => {
     if (event.type === "message_update" && event.delta.kind === "text") {
@@ -32,6 +32,7 @@ export async function runPrint(flags: RunFlags): Promise<void> {
     await harness.resume();
   }
   const result = await harness.prompt(flags.rest.join(" "));
+  await repo.close();
   if (needsNewline) process.stdout.write("\n");
   if (!result.ok) {
     console.error(`error: ${result.error.message}`);

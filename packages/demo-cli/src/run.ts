@@ -2,7 +2,12 @@ import { join } from "node:path";
 import process from "node:process";
 import { defaultProviders, FileCredentialStore, getProvider, resolveProviderAuth } from "@june/ai";
 import type { AuthResult, Provider } from "@june/ai";
-import { AgentHarness, createAllTools, createProviderStreamFn, JsonlSessionRepo } from "@june/core";
+import {
+  AgentHarness,
+  createAllTools,
+  createProviderStreamFn,
+  SqliteSessionRepo,
+} from "@june/core";
 import type { HarnessTool, SuspendedOperation, ThinkingLevel } from "@june/core";
 
 export const SYSTEM_PROMPT =
@@ -39,10 +44,6 @@ export interface ResolvedRuntime {
   store: FileCredentialStore;
 }
 
-/**
- * Pick a configured provider: the requested one, or the first with
- * credentials. Returns undefined when nothing is configured (login needed).
- */
 export async function resolveRuntime(flags: RunFlags): Promise<ResolvedRuntime | undefined> {
   const providers = defaultProviders();
   const store = new FileCredentialStore();
@@ -58,7 +59,6 @@ export async function resolveRuntime(flags: RunFlags): Promise<ResolvedRuntime |
   return undefined;
 }
 
-/** Read-only tools are safe to replay after a crash; mutating tools are not. */
 function harnessTools(cwd: string): HarnessTool[] {
   const safe = new Set(["read", "grep", "find", "ls"]);
   return createAllTools(cwd).map((tool) => ({
@@ -71,13 +71,14 @@ export interface OpenedHarness {
   harness: AgentHarness;
   suspended: SuspendedOperation[];
   sessionId: string;
+  repo: SqliteSessionRepo;
 }
 
 export async function openHarness(
   runtime: ResolvedRuntime,
   flags: RunFlags,
 ): Promise<OpenedHarness> {
-  const repo = new JsonlSessionRepo(join(process.cwd(), ".june", "sessions"));
+  const repo = new SqliteSessionRepo(join(process.cwd(), ".june", "sessions.db"));
   let session;
   if (flags.resume) {
     const latest = (await repo.list()).at(-1);
@@ -100,5 +101,5 @@ export async function openHarness(
     model,
     thinkingLevel: effort ?? runtime.provider.defaultEffort,
   });
-  return { harness, suspended, sessionId };
+  return { harness, suspended, sessionId, repo };
 }

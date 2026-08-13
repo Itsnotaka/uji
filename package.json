@@ -7,14 +7,13 @@
     "dev:grok-bot": "pnpm --filter @june/demo-grok-bot dev",
     "dev:website": "pnpm --filter @june/demo-website dev",
     "format": "oxfmt .",
-    "june": "bun packages/demo-cli/src/index.ts",
+    "june": "node packages/demo-cli/src/index.ts",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
-    "bun-types": "^1.3.14",
     "oxfmt": "^0.63.0",
     "oxlint": "^1.78.0",
     "oxlint-tsgolint": "^7.0.2001",

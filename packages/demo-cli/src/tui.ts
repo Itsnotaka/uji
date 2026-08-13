@@ -1,10 +1,3 @@
-/**
- * Full-screen TUI for the June demo, built on @opentui/core's imperative API
- * (OpenTUI is the opencode2 team's TUI engine; runs under Bun). Proves two
- * things: the agent event stream renders a live transcript, and the login
- * funnel's AuthInteraction contract needs no readline — prompts become
- * focused inputs and select lists, notifications become transcript entries.
- */
 import process from "node:process";
 import {
   BoxRenderable,
@@ -19,7 +12,7 @@ import {
 import type { CliRenderer } from "@opentui/core";
 import { defaultProviders, FileCredentialStore, getProvider } from "@june/ai";
 import type { AuthInteraction, AuthPrompt } from "@june/ai";
-import type { AgentHarness } from "@june/core";
+import type { AgentHarness, Entry, SqliteSessionRepo } from "@june/core";
 import type { RunFlags } from "./run.ts";
 import { openHarness, resolveRuntime } from "./run.ts";
 import type { ResolvedRuntime } from "./run.ts";
@@ -81,7 +74,7 @@ function buildUi(renderer: CliRenderer): Ui {
 
   const hints = new TextRenderable(renderer, {
     id: "hints",
-    content: " enter send · esc abort · ctrl+c quit",
+    content: " enter send · esc abort · /tree · /search · ctrl+c quit",
     fg: COLORS.dim,
   });
 
@@ -99,11 +92,6 @@ function appendText(ui: Ui, content: string, fg?: string): void {
   ui.transcript.add(new TextRenderable(ui.renderer, { id: ui.nextId(), content, fg }));
 }
 
-/**
- * AuthInteraction rendered in the TUI: notify events append to the
- * transcript; text/secret/manual prompts take over the input box; select
- * prompts mount a focused SelectRenderable. Same funnel code as readline.
- */
 function createTuiInteraction(ui: Ui, signal: AbortSignal): AuthInteraction {
   return {
     signal,
@@ -229,6 +217,80 @@ async function loginViaTui(ui: Ui, flags: RunFlags): Promise<ResolvedRuntime | u
   return resolveRuntime(flags);
 }
 
+function entryLabel(entry: Entry): string {
+  if (entry.type !== "message") return entry.type;
+  const { message } = entry;
+  const role = message.role ?? message.type ?? "item";
+  const content = message.content;
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.map((part) => part.text ?? "").join("")
+        : (message.output ?? "");
+  const line = String(text).replaceAll("\n", " ").trim();
+  return `${role}: ${line.length > 56 ? `${line.slice(0, 56)}…` : line}`;
+}
+
+function renderTree(ui: Ui, entries: Entry[], leafId: string | null): void {
+  if (entries.length === 0) {
+    appendText(ui, "  (no entries yet)", COLORS.dim);
+    return;
+  }
+  const children = new Map<string | null, Entry[]>();
+  for (const entry of entries) {
+    const siblings = children.get(entry.parentId) ?? [];
+    siblings.push(entry);
+    children.set(entry.parentId, siblings);
+  }
+  const walk = (parentId: string | null, depth: number): void => {
+    for (const entry of children.get(parentId) ?? []) {
+      const onBranch = entry.id === leafId;
+      appendText(
+        ui,
+        `${"  ".repeat(depth + 1)}${onBranch ? "●" : "○"} ${entry.id}  ${entryLabel(entry)}`,
+        onBranch ? COLORS.ok : COLORS.dim,
+      );
+      walk(entry.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+}
+
+async function runCommand(
+  ui: Ui,
+  harness: AgentHarness,
+  repo: SqliteSessionRepo,
+  text: string,
+): Promise<void> {
+  const [command = "", ...rest] = text.slice(1).split(/\s+/);
+  const argument = rest.join(" ");
+  const session = harness.session;
+
+  if (command === "tree") {
+    if (argument === "") {
+      renderTree(ui, await session.findEntries(), await session.getLeafId("main"));
+      appendText(ui, "  /tree <entry-id> to fork there · /tree root to start over", COLORS.dim);
+      return;
+    }
+    const target = argument === "root" ? null : argument;
+    await session.moveLane("main", target);
+    appendText(ui, `moved to ${target ?? "root"}; the next message starts a branch`, COLORS.ok);
+    return;
+  }
+
+  if (command === "search") {
+    const hits = await repo.searchEntries(argument, { limit: 10 });
+    if (hits.length === 0) appendText(ui, "  no matches", COLORS.dim);
+    for (const hit of hits) {
+      appendText(ui, `  ${hit.entryId}  ${hit.snippet.replaceAll("\n", " ")}`, COLORS.dim);
+    }
+    return;
+  }
+
+  appendText(ui, `unknown command: /${command} (try /tree or /search)`, COLORS.error);
+}
+
 function wireHarness(ui: Ui, harness: AgentHarness, providerLabel: string): void {
   let streamingText: TextRenderable | undefined;
   let reasoningLine: TextRenderable | undefined;
@@ -319,7 +381,7 @@ export async function runTui(flags: RunFlags): Promise<void> {
     throw new Error("login failed");
   }
 
-  const { harness, suspended, sessionId } = await openHarness(runtime, flags);
+  const { harness, suspended, sessionId, repo } = await openHarness(runtime, flags);
   const model = harness.state.model ?? runtime.provider.defaultModel;
   wireHarness(ui, harness, `${runtime.provider.id}/${model}`);
   appendText(ui, `session ${sessionId} · ${runtime.provider.id}/${model}`, COLORS.dim);
@@ -333,7 +395,15 @@ export async function runTui(flags: RunFlags): Promise<void> {
     if (text === "") return;
     ui.input.value = "";
     appendText(ui, `> ${text}`, COLORS.user);
-    if (harness.state.isStreaming) {
+    if (text.startsWith("/")) {
+      void runCommand(ui, harness, repo, text).catch((error: unknown) => {
+        appendText(
+          ui,
+          `error: ${error instanceof Error ? error.message : String(error)}`,
+          COLORS.error,
+        );
+      });
+    } else if (harness.state.isStreaming) {
       void harness.steer({ role: "user", content: text });
       appendText(ui, "(queued as steering message)", COLORS.dim);
     } else {
@@ -353,12 +423,16 @@ export async function runTui(flags: RunFlags): Promise<void> {
         appendText(ui, "(aborted — ctrl+c again to quit)", COLORS.dim);
         return;
       }
-      renderer.destroy();
-      process.exit(0);
+      void harness
+        .close()
+        .then(() => repo.close())
+        .finally(() => {
+          renderer.destroy();
+          process.exit(0);
+        });
     }
   });
 
-  // Keep the process alive until the renderer is destroyed.
   await new Promise<void>((resolve) => {
     renderer.on("destroy", () => resolve());
   });
