@@ -1,21 +1,23 @@
 /**
- * Bash tool ported from pi's tools/bash.ts (earendil-works/pi), adapted to
- * June's AgentTool contract. TUI rendering, extension/session context, and
- * experimental sampling are dropped; the BashOperations abstraction is kept
+ * Bash tool ported from pi's harness bash tool, adapted to June's AgentTool
+ * contract. The BashOperations seam stands in for pi's ExecutionEnv shell
+ * boundary (env.executeShell) until June grows an execution-env abstraction,
  * so command execution can be delegated to remote systems (for example SSH).
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/tools/bash.ts
+ * and https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/utils/shell-output.ts
  */
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
-import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "../agent-loop.ts";
+import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "../types.ts";
+import { toolResultContent } from "../utils/tool-result.ts";
 import { OutputAccumulator } from "./support/output-accumulator.ts";
 import {
   getShellConfig,
   getShellEnv,
   killProcessTree,
   sanitizeBinaryOutput,
-  trackDetachedChildPid,
-  untrackDetachedChildPid,
   waitForChildProcess,
 } from "./support/shell.ts";
 import {
@@ -135,7 +137,6 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
         child.stdin?.on("error", () => {});
         child.stdin?.end(command);
       }
-      if (child.pid) trackDetachedChildPid(child.pid);
       let timedOut = false;
       let timeoutHandle: NodeJS.Timeout | undefined;
       const onAbort = () => {
@@ -169,7 +170,6 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
         }
         return { exitCode };
       } finally {
-        if (child.pid) untrackDetachedChildPid(child.pid);
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (signal) signal.removeEventListener("abort", onAbort);
       }
@@ -211,7 +211,7 @@ const BASH_UPDATE_THROTTLE_MS = 100;
 export function createBashTool(
   cwd: string,
   options?: BashToolOptions,
-): AgentTool<unknown, BashToolDetails | undefined> {
+): AgentTool<BashToolInput, BashToolDetails | undefined> {
   const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
   const commandPrefix = options?.commandPrefix;
   const spawnHook = options?.spawnHook;
@@ -220,13 +220,13 @@ export function createBashTool(
     label: "bash",
     description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
     parameters: bashParameters,
+    prepareArguments: parseBashToolInput,
     async execute(
       _toolCallId: string,
-      params: unknown,
+      { command, timeout }: BashToolInput,
       signal?: AbortSignal,
       onUpdate?: AgentToolUpdateCallback<BashToolDetails | undefined>,
     ): Promise<AgentToolResult<BashToolDetails | undefined>> {
-      const { command, timeout } = parseBashToolInput(params);
       const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
       const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
       const output = new OutputAccumulator({ tempFilePrefix: "june-bash" });
@@ -241,7 +241,7 @@ export function createBashTool(
         lastUpdateAt = Date.now();
         const snapshot = output.snapshot({ persistIfTruncated: true });
         onUpdate({
-          content: sanitizeBinaryOutput(snapshot.content) || "",
+          content: toolResultContent(sanitizeBinaryOutput(snapshot.content) || ""),
           details: {
             truncation: snapshot.truncation.truncated ? snapshot.truncation : undefined,
             fullOutputPath: snapshot.fullOutputPath,
@@ -272,7 +272,7 @@ export function createBashTool(
       };
 
       if (onUpdate) {
-        onUpdate({ content: "", details: undefined });
+        onUpdate({ content: [], details: undefined });
       }
 
       const handleData = (data: Buffer) => {
@@ -345,7 +345,7 @@ export function createBashTool(
         if (exitCode !== 0 && exitCode !== null) {
           throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
         }
-        return { content: outputText, details };
+        return { content: toolResultContent(outputText), details };
       } finally {
         clearUpdateTimer();
       }

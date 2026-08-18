@@ -1,7 +1,14 @@
-import { accessSync, constants } from "node:fs";
+/**
+ * Path helpers for the coding tools, ported from pi (earendil-works).
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/utils/paths.ts
+ * and https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/tools/path-utils.ts
+ * (June resolves read-path variants locally where pi asks its ExecutionEnv).
+ */
+import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
+import { isAbsolute, join, resolve as nodeResolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // --- Inlined path helpers (from pi's utils/paths.ts) ---
@@ -73,22 +80,6 @@ export function resolvePath(
     : nodeResolvePath(normalizedBaseDir, normalized);
 }
 
-export function getCwdRelativePath(filePath: string, cwd: string): string | undefined {
-  const resolvedCwd = resolvePath(cwd);
-  const resolvedPath = resolvePath(filePath, resolvedCwd);
-  const relativePath = relative(resolvedCwd, resolvedPath);
-  const isInsideCwd =
-    relativePath === "" ||
-    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
-
-  return isInsideCwd ? relativePath || "." : undefined;
-}
-
-export function formatPathRelativeToCwdOrAbsolute(filePath: string, cwd: string): string {
-  const absolutePath = resolvePath(filePath, cwd);
-  return (getCwdRelativePath(absolutePath, cwd) ?? absolutePath).split(sep).join("/");
-}
-
 // --- Tool path utilities (from pi's tools/path-utils.ts) ---
 
 const NARROW_NO_BREAK_SPACE = " ";
@@ -108,15 +99,6 @@ function tryCurlyQuoteVariant(filePath: string): string {
   return filePath.replace(/'/g, "’");
 }
 
-function fileExists(filePath: string): boolean {
-  try {
-    accessSync(filePath, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function pathExists(filePath: string): Promise<boolean> {
   try {
     await access(filePath, constants.F_OK);
@@ -126,50 +108,12 @@ export async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
-export function expandPath(filePath: string): string {
-  return normalizePath(filePath, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
-}
-
 /**
  * Resolve a path relative to the given cwd.
  * Handles ~ expansion and absolute paths.
  */
 export function resolveToCwd(filePath: string, cwd: string): string {
   return resolvePath(filePath, cwd, { normalizeUnicodeSpaces: true, stripAtPrefix: true });
-}
-
-export function resolveReadPath(filePath: string, cwd: string): string {
-  const resolved = resolveToCwd(filePath, cwd);
-
-  if (fileExists(resolved)) {
-    return resolved;
-  }
-
-  // Try macOS AM/PM variant (narrow no-break space before AM/PM)
-  const amPmVariant = tryMacOSScreenshotPath(resolved);
-  if (amPmVariant !== resolved && fileExists(amPmVariant)) {
-    return amPmVariant;
-  }
-
-  // Try NFD variant (macOS stores filenames in NFD form)
-  const nfdVariant = tryNFDVariant(resolved);
-  if (nfdVariant !== resolved && fileExists(nfdVariant)) {
-    return nfdVariant;
-  }
-
-  // Try curly quote variant (macOS uses U+2019 in screenshot names)
-  const curlyVariant = tryCurlyQuoteVariant(resolved);
-  if (curlyVariant !== resolved && fileExists(curlyVariant)) {
-    return curlyVariant;
-  }
-
-  // Try combined NFD + curly quote (for French macOS screenshots like "Capture d'écran")
-  const nfdCurlyVariant = tryCurlyQuoteVariant(nfdVariant);
-  if (nfdCurlyVariant !== resolved && fileExists(nfdCurlyVariant)) {
-    return nfdCurlyVariant;
-  }
-
-  return resolved;
 }
 
 export async function resolveReadPathAsync(filePath: string, cwd: string): Promise<string> {

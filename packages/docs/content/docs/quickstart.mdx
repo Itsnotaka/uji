@@ -1,0 +1,325 @@
+---
+title: Quickstart
+description: Clone the workspace, log in to a provider, get a streaming run in the terminal, then embed the same loop in your own code
+---
+
+import { Step, Steps } from "fumadocs-ui/components/steps";
+
+This page goes from a fresh clone to a streaming agent run, then to calling the same machinery from your own code. Every command and flag below is read from `packages/demo/cli/src`. That CLI is a demo composition, not a product: it is the shortest readable example of wiring `@june/ai` credentials into `@june/core`'s harness.
+
+## Requirements
+
+`mise.toml` pins the toolchain. Install mise first, then let it provide the versions.
+
+| Tool           | Version | Pinned in                                                    | Needed for                                                            |
+| -------------- | ------- | ------------------------------------------------------------ | --------------------------------------------------------------------- |
+| Node           | 26      | `mise.toml`                                                  | Everything. Type stripping, `node:sqlite`, and `node:ffi` for the TUI |
+| pnpm           | 11.21.0 | `mise.toml`, and `packageManager` in the root `package.json` | Workspace install and scripts                                         |
+| bun            | 1.3.14  | `mise.toml`                                                  | Nothing on this page. No package script invokes it                    |
+| ripgrep (`rg`) | any     | not pinned                                                   | The `grep` and `find` tools shell out to `rg` on `PATH`               |
+
+Nothing on this page needs a build step. `@june/schema`, `@june/ai`, and `@june/core` each set `"exports": { ".": "./src/index.ts" }` and ship no compiled output, so `pnpm june` runs `tsx --experimental-ffi src/index.ts`. (The docs site and the demo apps under `packages/demo/` do have their own `build` scripts; the CLI does not.) The session store is `node:sqlite`. The TUI needs `node:ffi`, which is why the pin is 26 and the script passes `--experimental-ffi`.
+
+## Set up
+
+<Steps>
+<Step>
+### Clone and install the toolchain
+
+```bash
+git clone https://github.com/Itsnotaka/june.git
+cd june
+mise install
+```
+
+</Step>
+
+<Step>
+### Install workspace dependencies
+
+```bash
+pnpm install
+```
+
+</Step>
+
+<Step>
+### Verify the tree
+
+```bash
+pnpm check
+```
+
+`check` runs `oxfmt --check .`, then `oxlint`, then `turbo run typecheck`. It compiles nothing and emits nothing.
+
+</Step>
+</Steps>
+
+## Log in
+
+The CLI lives in `packages/demo/cli`. From that directory, `pnpm june` runs `tsx --experimental-ffi src/index.ts`. Three subcommands are matched on the first argument, before any flag parsing.
+
+| Command                       | Effect                                                                              |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| `pnpm june login [provider]`  | Run the interactive login funnel over readline. Provider defaults to `openai-codex` |
+| `pnpm june logout [provider]` | Delete the stored credential for that provider                                      |
+| `pnpm june status`            | Print one `providerId: type` line per stored credential, or `no stored credentials` |
+
+Two providers ship in `defaultProviders()`, and their auth shapes differ:
+
+| Provider id    | Auth                                               | Models                                                    | Default model  | Default effort |
+| -------------- | -------------------------------------------------- | --------------------------------------------------------- | -------------- | -------------- |
+| `openai-codex` | ChatGPT OAuth only. No API-key path exists         | `gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.5` | `gpt-5.6-luna` | `medium`       |
+| `openai`       | API key: a stored key, or ambient `OPENAI_API_KEY` | `gpt-5.6-luna`, `gpt-5.6`, `gpt-5.1-codex`                | `gpt-5.6-luna` | `medium`       |
+
+### The ChatGPT OAuth funnel
+
+`pnpm june login` picks `openai-codex`, sees that the provider block has `oauth` and no `apiKey`, and calls `openaiCodexOAuth.login`. That flow asks which method to use:
+
+```text
+  1. Browser login (default)
+  2. Device code login (headless)
+Select OpenAI Codex login method: [1]
+```
+
+**Browser login** generates a PKCE verifier and a random `state`, then does two things at once. It starts an HTTP server on `127.0.0.1:1455` that answers `/auth/callback`, and it prints the authorization URL for `https://auth.openai.com/oauth/authorize`. Nothing opens a browser for you. Copy the URL.
+
+The callback server races a `manual_code` prompt, so you can instead paste the authorization code or the whole redirect URL back into the terminal; whichever settles first wins, and the loser is aborted. A callback whose `state` does not match renders an error page and is ignored. The code is then exchanged at `https://auth.openai.com/oauth/token` for an access and refresh token.
+
+**Device code login** is the headless path: no local port is opened. It posts to the device-auth endpoint, prints `Visit https://auth.openai.com/codex/device and enter code: <code>`, then polls for up to 15 minutes at the server-supplied interval (backing off 5 seconds on HTTP 429) until the authorization code comes back.
+
+Either way the credential is written through `FileCredentialStore` to `$JUNE_HOME/auth.json`, defaulting to `~/.june/auth.json`, created mode `0600` inside a `0700` directory.
+
+<Callout title="OAuth refresh is automatic">
+  Auth is re-resolved on every provider call. When the stored access token has under five minutes of
+  validity left, `resolveProviderAuth` refreshes it inside the store's serialized `modify`, so
+  concurrent requests cannot double-refresh a rotated token. You do not log in again on expiry.
+</Callout>
+
+### The API-key path
+
+`pnpm june login openai` prompts for a key and stores it. You can also skip login entirely for that provider: its `resolve()` reads `OPENAI_API_KEY` from the environment when no key is stored. A stored credential wins over the environment.
+
+`openai-codex` has no such path. If `status` shows nothing and `OPENAI_API_KEY` is unset, a print-mode run fails with `Couldn't find a stored credential. Run pnpm june login.` The TUI instead opens the login funnel first, and only fails with `login failed` when that funnel produces no credential.
+
+## Run it
+
+The CLI has three modes and picks between them with no flag of its own:
+
+| Condition                                                                                    | Mode                    |
+| -------------------------------------------------------------------------------------------- | ----------------------- |
+| `--print` / `-p` passed, or stdout is not a TTY and at least one positional argument remains | Print mode              |
+| Print mode with no positional argument                                                       | Usage text, exit code 1 |
+| stdout is not a TTY and no positional argument                                               | Usage text, exit code 1 |
+| Otherwise                                                                                    | Full-screen TUI         |
+
+```bash
+cd packages/demo/cli
+
+# full-screen TUI, including the login funnel if nothing is stored
+pnpm june
+
+# one non-interactive run; deltas stream to stdout
+pnpm june -p "summarize the files in packages/core/src"
+
+# continue in the newest session in this directory
+pnpm june -p --resume "now list what changed"
+```
+
+### Flags
+
+| Flag               | Alias | Effect                                                   |
+| ------------------ | ----- | -------------------------------------------------------- |
+| `--print`          | `-p`  | Non-interactive run: stream to stdout and exit           |
+| `--resume`         | `-c`  | Open the newest existing session instead of creating one |
+| `--provider <id>`  | none  | Force a provider instead of auto-selecting               |
+| `--model <id>`     | none  | Model passed to the harness                              |
+| `--effort <level>` | none  | Thinking level passed to the harness                     |
+
+Anything that is not a recognized flag is collected as positional text and joined with single spaces to build the prompt. There is no `--help`; the usage block only prints on the two failure paths in the table above.
+
+### Defaults and environment overrides
+
+| Setting          | Resolution order                                                                      | Effective default             |
+| ---------------- | ------------------------------------------------------------------------------------- | ----------------------------- |
+| Provider         | `--provider`, else the first entry of `defaultProviders()` whose auth resolves        | `openai-codex`, then `openai` |
+| Model            | `--model`, then `JUNE_MODEL`, then `provider.defaultModel` inside the stream function | `gpt-5.6-luna`                |
+| Thinking level   | `--effort`, then `JUNE_EFFORT`, then `provider.defaultEffort`                         | `medium`                      |
+| Credential file  | `$JUNE_HOME/auth.json`                                                                | `~/.june/auth.json`           |
+| Session database | fixed: `<cwd>/.june/sessions.db`                                                      | not configurable              |
+
+<Callout type="warn" title="--effort is not validated">
+  The value is cast to `ThinkingLevel` and forwarded as-is. The levels the loop defines are `off`,
+  `minimal`, `low`, `medium`, `high`, and `xhigh`; `off` omits the reasoning field entirely. Any
+  other string reaches the provider unchanged.
+</Callout>
+
+### Sessions on disk
+
+One SQLite file, `<cwd>/.june/sessions.db`, holds every session started from that directory. Without `--resume` each invocation creates a new session. With `--resume` the CLI opens the last entry of `repo.list()`, which is ordered by creation time, so it is the newest session, not the one you last typed in, if those differ. If that directory has no session yet, `--resume` falls back to creating one.
+
+Opening a session claims a fenced, expiring writer lease. A second process opening the same session while the lease is live throws `SessionError("storage", "Session already has an active writer: <id>")`. Reads are unaffected by the lease.
+
+If a previous run crashed mid-flight, `AgentHarness.create` reports it in `suspended` and resumes nothing on its own. Both CLI modes then call `harness.resume()` explicitly, which re-appends missing prompt entries and settles unfinished tool intents by each tool's replay policy. The CLI marks `read`, `grep`, `find`, and `ls` as `replay: "safe"` and `bash`, `edit`, and `write` as `replay: "never"`.
+
+### Inside the TUI
+
+| Key or command     | Effect                                                                                                |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `enter`            | Send. While a run is streaming the text is queued with `harness.steer` instead of starting a run      |
+| `esc`              | `harness.abort()` on the active run                                                                   |
+| `ctrl+c`           | While streaming, the first press aborts; otherwise it closes the harness and the repo, then exits     |
+| `/tree`            | Print the entry tree with the current lane leaf marked                                                |
+| `/tree <entry-id>` | Move the lane leaf; the next message branches from there. `/tree root` starts a new branch from empty |
+| `/search <text>`   | Full-text search over entry payloads, 10 hits. Queries under three characters return nothing          |
+
+## Embed it
+
+There are two entry points, and which one you want depends on whether the conversation has to survive a crash.
+
+### Minimal: the loop with no storage
+
+`runAgentLoop` is standalone. It knows nothing about sessions, storage, or providers: you inject a `StreamFn`, an array of `AgentTool`, and an event sink. `createProviderStreamFn` is the adapter that turns an `@june/ai` provider plus a credential store into that `StreamFn`.
+
+```ts title="minimal.ts"
+import process from "node:process";
+import { defaultProviders, FileCredentialStore, getProvider } from "@june/ai";
+import { createProviderStreamFn, runAgentLoop, toolResultContent } from "@june/core";
+import type { AgentTool } from "@june/core";
+
+const provider = getProvider(defaultProviders(), "openai-codex");
+const streamFn = createProviderStreamFn({
+  provider,
+  auth: { store: new FileCredentialStore() },
+});
+
+const now: AgentTool = {
+  name: "now",
+  label: "Current time",
+  description: "Return the current time as an ISO 8601 string.",
+  parameters: { type: "object", properties: {}, additionalProperties: false },
+  execute: () =>
+    Promise.resolve({ content: toolResultContent(new Date().toISOString()), details: undefined }),
+};
+
+const newItems = await runAgentLoop(
+  [{ role: "user", content: "What time is it? Use the now tool." }],
+  { systemPrompt: "You are a terse assistant.", messages: [], tools: [now] },
+  { thinkingLevel: "low" },
+  (event) => {
+    if (event.type === "message_update" && event.delta.kind === "text") {
+      process.stdout.write(event.delta.text);
+    }
+    if (event.type === "tool_execution_start") {
+      console.log(`\n[${event.toolName}] ${JSON.stringify(event.args)}`);
+    }
+  },
+  undefined,
+  streamFn,
+);
+
+console.log(`\n${String(newItems.length)} new items`);
+```
+
+Run it with `node minimal.ts` from a workspace package that depends on both `@june/core` and `@june/ai`.
+
+Three contracts hold that file together:
+
+| Contract            | Rule                                                                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `StreamFn`          | Must never throw. Failures are encoded as `stopReason: "error"` or `"aborted"` plus `errorMessage`. `createProviderStreamFn` already honors this |
+| `AgentTool.execute` | The inverse: throw on failure. The loop catches it, marks the result `isError`, and writes `Error: <message>` back to the model                  |
+| `AgentEventSink`    | Awaited for every event. `runAgentLoop` returns only the new items, not the whole context                                                        |
+
+### Durable: session storage plus the harness
+
+`AgentHarness` composes the same loop over a `SessionStorage`. It brackets each run with `operation_started` / `operation_finished` records and commits a `tool_started` intent, naming the entry id the result will use, before any tool executes. That is what makes crash resume possible.
+
+```ts title="durable.ts"
+import { join } from "node:path";
+import process from "node:process";
+import { defaultProviders, FileCredentialStore, getProvider } from "@june/ai";
+import {
+  AgentHarness,
+  createProviderStreamFn,
+  createReadOnlyTools,
+  SqliteSessionRepo,
+} from "@june/core";
+import type { HarnessTool } from "@june/core";
+
+const repo = new SqliteSessionRepo(join(process.cwd(), ".june", "sessions.db"));
+const session = await repo.create();
+const provider = getProvider(defaultProviders(), "openai-codex");
+
+const tools: HarnessTool[] = createReadOnlyTools(process.cwd()).map((tool) => ({
+  ...tool,
+  replay: "safe",
+}));
+
+const { harness, suspended } = await AgentHarness.create({
+  session,
+  streamFn: createProviderStreamFn({ provider, auth: { store: new FileCredentialStore() } }),
+  systemPrompt: "You are june. Answer questions about files in the working directory.",
+  tools,
+  thinkingLevel: "medium",
+});
+
+harness.subscribe((event) => {
+  if (event.type === "message_update" && event.delta.kind === "text") {
+    process.stdout.write(event.delta.text);
+  }
+});
+
+if (suspended.length > 0) await harness.resume();
+
+const result = await harness.prompt("Which files are in src? Answer in one line.");
+if (!result.ok) {
+  console.error(`rejected: ${result.error._tag}: ${result.error.message}`);
+} else if (result.value.kind === "failed") {
+  console.error(`run failed (${result.value.error.code}): ${result.value.error.message}`);
+} else {
+  console.error(`run ${result.value.kind}; leaf entry ${result.value.leafId ?? "none"}`);
+}
+
+await harness.close();
+await repo.close();
+```
+
+`createReadOnlyTools` returns `read`, `grep`, `find`, and `ls`. `HarnessTool` is an `AgentTool` plus one field, `replay`, which decides what happens to a tool call that was durably started but never settled. `replay` defaults to `"never"`, and a `"never"` call settles on resume with a message saying it was interrupted and not replayed.
+
+Which method you may call depends on the lane state, and the tagged error tells you which rule you broke:
+
+| Method                             | Precondition                          | Error when violated           |
+| ---------------------------------- | ------------------------------------- | ----------------------------- |
+| `prompt(input)`                    | No run is active                      | `LaneBusy`                    |
+| `steer(input)` / `followUp(input)` | A run is active                       | `NoActiveRun`                 |
+| `nextRun(input)`                   | None. Drained by the next `prompt()`  | never rejects on precondition |
+| `abort()`                          | A run is active                       | `NoActiveRun`                 |
+| `resume()`                         | An operation was left open by a crash | `NothingToResume`             |
+
+Every method also rejects with `Closed` after `close()`. Those rejections are never thrown; they arrive as `{ ok: false, error }`. A run that fails inside the provider or the harness is not a rejection: it resolves as `Result.ok` carrying `{ kind: "failed", error }`, and storage failures throw `SessionError` instead. [The harness page](/docs/core/harness#lifecycle-api) is the single statement of those three channels.
+
+## Next
+
+<Cards>
+  <Card
+    title="Core"
+    href="/docs/core"
+    description="The package surface: loop, harness, session storage, tools, and the provider StreamFn"
+  />
+  <Card
+    title="Agent loop"
+    href="/docs/core/agent-loop"
+    description="Turns, tool batches, stop reasons, and the steering and follow-up queues"
+  />
+  <Card
+    title="Harness"
+    href="/docs/core/harness"
+    description="Durable run brackets, the tool intent commit, and how crash resume decides what to replay"
+  />
+  <Card
+    title="Architecture"
+    href="/docs/architecture"
+    description="Why the loop may not import the harness, which packages exist today, and where new code goes"
+  />
+</Cards>

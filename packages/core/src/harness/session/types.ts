@@ -1,6 +1,13 @@
+/**
+ * Session storage model — write-once entries and records over mutable lane
+ * pointers and facts, one seq counter per session — after pi's harness storage
+ * design, scoped to June's slice of it.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/docs/harness.md
+ */
 import { randomUUID } from "node:crypto";
 import type { ResponseItem } from "@june/schema";
-import type { TurnUsage } from "../../agent-loop.ts";
+import type { TurnUsage } from "../../types.ts";
 
 export type { TurnUsage };
 
@@ -15,6 +22,76 @@ export type JsonValue =
   | string
   | JsonValue[]
   | { [key: string]: JsonValue };
+
+/** Clone a runtime value only if live execution and durable JSON replay are equivalent. */
+export function toJsonValue(value: unknown): JsonValue {
+  return cloneJsonValue(value, "$", new Set());
+}
+
+function cloneJsonValue(value: unknown, path: string, seen: Set<object>): JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError(`${path} must be a finite JSON number`);
+    if (Object.is(value, -0))
+      throw new TypeError(`${path} cannot be negative zero in durable JSON`);
+    return value;
+  }
+  if (typeof value !== "object") {
+    throw new TypeError(`${path} cannot be represented as JSON`);
+  }
+  if (seen.has(value)) throw new TypeError(`${path} contains a repeated or circular reference`);
+
+  seen.add(value);
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype || !Object.isExtensible(value)) {
+      throw new TypeError(`${path} must be a plain JSON array`);
+    }
+    for (const key of Reflect.ownKeys(value)) {
+      if (key === "length") continue;
+      const index = typeof key === "string" ? Number(key) : Number.NaN;
+      if (!Number.isInteger(index) || index < 0 || index >= value.length || String(index) !== key) {
+        throw new TypeError(`${path} cannot contain non-index array properties`);
+      }
+    }
+    return Array.from({ length: value.length }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (
+        descriptor === undefined ||
+        !descriptor.enumerable ||
+        !descriptor.configurable ||
+        !("value" in descriptor) ||
+        !descriptor.writable
+      ) {
+        throw new TypeError(`${path}[${index}] must be a mutable enumerable data property`);
+      }
+      return cloneJsonValue(descriptor.value, `${path}[${index}]`, seen);
+    });
+  }
+
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype || !Object.isExtensible(value)) {
+    throw new TypeError(`${path} must be a plain JSON object`);
+  }
+
+  const entries: Array<[string, JsonValue]> = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") {
+      throw new TypeError(`${path} cannot contain symbol keys`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      descriptor === undefined ||
+      !descriptor.enumerable ||
+      !descriptor.configurable ||
+      !("value" in descriptor) ||
+      !descriptor.writable
+    ) {
+      throw new TypeError(`${path}.${key} must be a mutable enumerable data property`);
+    }
+    entries.push([key, cloneJsonValue(descriptor.value, `${path}.${key}`, seen)]);
+  }
+  return Object.fromEntries(entries);
+}
 
 export interface EntryBase {
   type: string;
@@ -65,7 +142,7 @@ export interface OperationStartedRecord extends RecordBase {
     kind: "run";
     originalPrompt: ResponseItem[];
     /** nextRun items come first, then the prompt. */
-    initialMessages: ProvisionedEntry[];
+    initialMessages: ProvisionedEntry<MessageEntry>[];
   };
 }
 
@@ -107,7 +184,7 @@ export interface QueueEnqueuedRecord extends RecordBase {
   type: "queue_enqueued";
   queue: "steer" | "followUp" | "nextRun";
   runId?: string;
-  target: ProvisionedEntry;
+  target: ProvisionedEntry<MessageEntry>;
 }
 
 export interface QueueCancelledRecord extends RecordBase {

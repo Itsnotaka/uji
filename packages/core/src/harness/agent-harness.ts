@@ -11,23 +11,28 @@
  *
  * Per the locked core↛harness rule this composition drives the standalone
  * loop; the loop knows nothing about it.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/agent-harness.ts
+ * and https://github.com/earendil-works/pi/blob/main/packages/agent/docs/harness.md
  */
-import type { ResponseItem } from "@june/schema";
-import {
-  runAgentLoopContinue,
-  type AgentEvent,
-  type AgentTool,
-  type AssistantTurn,
-  type QueueMode,
-  type StreamFn,
-  type ThinkingLevel,
-  type ToolExecutionMode,
-} from "../agent-loop.ts";
-import { Result, TaggedError, type Result as ResultValue } from "./result.ts";
-import { newId } from "./session/types.ts";
+import type { ResponseItem, ToolResultPart } from "@june/schema";
+import { runAgentLoopContinue } from "../agent-loop.ts";
 import type {
-  JsonValue,
+  AgentEvent,
+  AnyAgentTool,
+  AssistantTurn,
+  QueueMode,
+  StreamFn,
+  ThinkingLevel,
+  ToolExecutionMode,
+  TurnUsage,
+} from "../types.ts";
+import { toolResultContent } from "../utils/tool-result.ts";
+import { Result, TaggedError, type Result as ResultValue } from "./result.ts";
+import { newId, toJsonValue } from "./session/types.ts";
+import type {
   MessageEntry,
+  OperationStartedRecord,
   ProvisionedEntry,
   QueueEnqueuedRecord,
   SessionStorage,
@@ -56,7 +61,10 @@ export type RunOutcome =
 export type RunResult = ResultValue<{ runId: string } & RunOutcome, LaneBusy | Closed>;
 export type QueueResult = ResultValue<{ entryId: string }, NoActiveRun | Closed>;
 export type AbortResult = ResultValue<{ runId: string }, NoActiveRun | Closed>;
-export type ResumeResult = ResultValue<{ runId: string } & RunOutcome, NothingToResume | Closed>;
+export type ResumeResult = ResultValue<
+  { runId: string } & RunOutcome,
+  NothingToResume | LaneBusy | Closed
+>;
 
 export interface SuspendedOperation {
   lane: string;
@@ -66,7 +74,7 @@ export interface SuspendedOperation {
 }
 
 /** A loop tool plus its crash-replay policy (pi HarnessTool). */
-export type HarnessTool = AgentTool & { replay?: "never" | "safe" };
+export type HarnessTool = AnyAgentTool & { replay?: "never" | "safe" };
 
 export interface AgentHarnessOptions {
   session: SessionStorage;
@@ -102,6 +110,7 @@ export class AgentHarness {
 
   private readonly options: AgentHarnessOptions;
   private readonly listeners = new Set<HarnessListener>();
+  private pendingPrompt?: Promise<RunResult>;
   private activeRun?: ActiveRun;
   private closed = false;
   private isStreaming = false;
@@ -143,8 +152,8 @@ export class AgentHarness {
     };
   }
 
-  waitForIdle(): Promise<unknown> {
-    return this.activeRun?.promise ?? Promise.resolve();
+  waitForIdle(): Promise<RunResult | void> {
+    return this.activeRun?.promise ?? this.pendingPrompt ?? Promise.resolve();
   }
 
   async close(): Promise<void> {
@@ -153,17 +162,32 @@ export class AgentHarness {
   }
 
   /** Start a run: durably record intent + prompt entries, then drive the loop. */
-  async prompt(input: string | ResponseItem | ResponseItem[]): Promise<RunResult> {
-    if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
-    if (this.activeRun !== undefined) {
-      return Result.err(
-        new LaneBusy({ lane: LANE, message: "a run is already active — steer() or followUp()" }),
+  prompt(input: string | ResponseItem | ResponseItem[]): Promise<RunResult> {
+    if (this.closed) {
+      return Promise.resolve(Result.err(new Closed({ message: "harness is closed" })));
+    }
+    if (this.activeRun !== undefined || this.pendingPrompt !== undefined) {
+      return Promise.resolve(
+        Result.err(
+          new LaneBusy({ lane: LANE, message: "a run is already active — steer() or followUp()" }),
+        ),
       );
     }
+
     const prompt = this.normalize(input);
+    const pending = this.acceptPrompt(prompt);
+    this.pendingPrompt = pending;
+    const clearPending = () => {
+      if (this.pendingPrompt === pending) this.pendingPrompt = undefined;
+    };
+    void pending.then(clearPending, clearPending);
+    return pending;
+  }
+
+  private async acceptPrompt(prompt: ResponseItem[]): Promise<RunResult> {
     const nextRun = await this.drainQueue("nextRun", undefined, "all");
     const initialMessages: ProvisionedEntry<MessageEntry>[] = [
-      ...nextRun.map((item) => item.target as ProvisionedEntry<MessageEntry>),
+      ...nextRun.map((item) => item.target),
       ...prompt.map((message) => ({ type: "message" as const, id: newId("e"), message })),
     ];
     const op = await this.session.appendRecord({
@@ -178,7 +202,8 @@ export class AgentHarness {
       await this.emit({ type: "message_start", message: provisioned.message });
       await this.emit({ type: "message_end", message: provisioned.message });
     }
-    return this.executeRun(op.id);
+    this.pendingPrompt = undefined;
+    return this.startRun(op.id, (controller) => this.executeRun(op.id, controller));
   }
 
   /** Queue a message after the current turn (requires an active run). */
@@ -218,12 +243,25 @@ export class AgentHarness {
    */
   async resume(): Promise<ResumeResult> {
     if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
+    if (this.activeRun !== undefined || this.pendingPrompt !== undefined) {
+      return Result.err(new LaneBusy({ lane: LANE, message: "a run is already active" }));
+    }
     const open = await this.session.findOpenOperations(LANE);
+    if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
+    if (this.activeRun !== undefined || this.pendingPrompt !== undefined) {
+      return Result.err(new LaneBusy({ lane: LANE, message: "a run is already active" }));
+    }
     const op = open[0];
     if (op === undefined) {
       return Result.err(new NothingToResume({ lane: LANE, message: "no suspended operation" }));
     }
+    return this.startRun(op.id, (controller) => this.resumeOperation(op, controller));
+  }
 
+  private async resumeOperation(
+    op: OperationStartedRecord,
+    controller: AbortController,
+  ): Promise<RunResult> {
     // Prompt entries that never got appended (crash between record and append).
     for (const provisioned of op.intent.initialMessages) {
       if ((await this.session.getEntry(provisioned.id)) === undefined) {
@@ -236,18 +274,37 @@ export class AgentHarness {
     for (const intent of toolIntents) {
       if ((await this.session.getEntry(intent.resultEntryId)) !== undefined) continue;
       const tool = this.options.tools?.find((t) => t.name === intent.toolName);
-      let output: string;
+      let output: ToolResultPart[];
+      let usage: TurnUsage | undefined;
       if (intent.replay === "safe" && tool !== undefined) {
         try {
-          const result = await tool.execute(intent.toolCallId, intent.effectiveArgs);
+          const result = await tool.execute(
+            intent.toolCallId,
+            intent.effectiveArgs,
+            controller.signal,
+          );
           output = result.content;
+          usage = result.usage;
         } catch (error) {
-          output = `Error: ${error instanceof Error ? error.message : String(error)}`;
+          output = toolResultContent(
+            `Error: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
       } else {
-        output =
+        output = toolResultContent(
           `Error: tool call "${intent.toolName}" was interrupted before completing and was not ` +
-          "replayed. Re-issue it if the work is still needed.";
+            "replayed. Re-issue it if the work is still needed.",
+        );
+      }
+      if (usage !== undefined) {
+        await this.session.appendRecord({
+          type: "usage",
+          id: newId("r"),
+          lane: LANE,
+          runId: op.id,
+          cause: "tool",
+          usage,
+        });
       }
       await this.session.appendEntry(
         {
@@ -266,21 +323,12 @@ export class AgentHarness {
       lastMessage !== undefined &&
       (lastMessage.role === "user" || lastMessage.type === "function_call_output");
     if (!continuable) {
-      await this.finishRun(op.id, {
-        kind: "completed",
-        leafId: await this.session.getLeafId(LANE),
-      });
-      return Result.ok({
-        runId: op.id,
-        kind: "completed",
-        leafId: await this.session.getLeafId(LANE),
-      });
+      const leafId = await this.session.getLeafId(LANE);
+      const outcome: RunOutcome = { kind: "completed", leafId };
+      await this.finishRun(op.id, outcome);
+      return Result.ok({ runId: op.id, ...outcome });
     }
-    const result = await this.executeRun(op.id);
-    if (!result.ok) {
-      return Result.err(new NothingToResume({ lane: LANE, message: result.error.message }));
-    }
-    return Result.ok(result.value);
+    return this.executeRun(op.id, controller);
   }
 
   private normalize(input: string | ResponseItem | ResponseItem[]): ResponseItem[] {
@@ -301,10 +349,8 @@ export class AgentHarness {
         new NoActiveRun({ lane: LANE, message: `${queue} requires an active run — use nextRun()` }),
       );
     }
-    const [message] = this.normalize(input);
-    if (message === undefined) {
-      return Result.err(new NoActiveRun({ lane: LANE, message: "empty message" }));
-    }
+    const message: ResponseItem =
+      typeof input === "string" ? { role: "user", content: input } : input;
     const target: ProvisionedEntry<MessageEntry> = { type: "message", id: newId("e"), message };
     await this.session.appendRecord({
       type: "queue_enqueued",
@@ -353,7 +399,8 @@ export class AgentHarness {
         }
         break;
       case "turn_end":
-        if (event.turn.errorMessage !== undefined) this.errorMessage = event.turn.errorMessage;
+        if (event.message.errorMessage !== undefined)
+          this.errorMessage = event.message.errorMessage;
         break;
       case "agent_end":
         this.isStreaming = false;
@@ -365,14 +412,21 @@ export class AgentHarness {
     }
   }
 
-  private async executeRun(runId: string): Promise<RunResult> {
+  private startRun(
+    runId: string,
+    operation: (controller: AbortController) => Promise<RunResult>,
+  ): Promise<RunResult> {
     const controller = new AbortController();
-    let settle: (result: RunResult) => void = () => {};
-    const promise = new Promise<RunResult>((resolve) => {
-      settle = resolve;
+    const promise = operation(controller).finally(() => {
+      if (this.activeRun?.promise === promise) this.activeRun = undefined;
+      this.isStreaming = false;
+      this.streamingText = undefined;
     });
     this.activeRun = { runId, controller, promise };
+    return promise;
+  }
 
+  private async executeRun(runId: string, controller: AbortController): Promise<RunResult> {
     const pendingProvisioned = new Map<ResponseItem, string>();
     const toolResultIds = new Map<string, string>();
     let attempt = 0;
@@ -384,7 +438,7 @@ export class AgentHarness {
     ): Promise<ResponseItem[]> => {
       const records = await this.drainQueue(queue, runId, mode);
       return records.map((record) => {
-        const target = record.target as ProvisionedEntry<MessageEntry>;
+        const target = record.target;
         pendingProvisioned.set(target.message, target.id);
         return target.message;
       });
@@ -396,7 +450,7 @@ export class AgentHarness {
         .filter((entry): entry is MessageEntry => entry.type === "message")
         .map((entry) => entry.message);
 
-      const outcomeItems = await runAgentLoopContinue(
+      await runAgentLoopContinue(
         {
           systemPrompt: this.options.systemPrompt,
           messages,
@@ -411,19 +465,17 @@ export class AgentHarness {
           getFollowUpMessages: () =>
             drainInto("followUp", this.options.followUpMode ?? "one-at-a-time"),
           beforeToolCall: async ({ toolCall, args }) => {
-            const tool = this.options.tools?.find((t) => t.name === toolCall.name) as
-              | HarnessTool
-              | undefined;
+            const tool = this.options.tools?.find((t) => t.name === toolCall.name);
             const resultEntryId = newId("e");
-            toolResultIds.set(toolCall.callId, resultEntryId);
+            toolResultIds.set(toolCall.id, resultEntryId);
             await this.session.appendRecord({
               type: "tool_started",
               id: newId("r"),
               lane: LANE,
               runId,
-              toolCallId: toolCall.callId,
+              toolCallId: toolCall.id,
               toolName: toolCall.name,
-              effectiveArgs: args as JsonValue,
+              effectiveArgs: toJsonValue(args),
               resultEntryId,
               replay: tool?.replay ?? "never",
             });
@@ -442,17 +494,26 @@ export class AgentHarness {
               attempt,
             });
           } else if (event.type === "turn_end") {
-            lastTurn = event.turn;
-            if (event.turn.usage !== undefined) {
+            lastTurn = event.message;
+            if (event.message.usage !== undefined) {
               await this.session.appendRecord({
                 type: "usage",
                 id: newId("r"),
                 lane: LANE,
                 runId,
                 cause: "assistant",
-                usage: event.turn.usage,
+                usage: event.message.usage,
               });
             }
+          } else if (event.type === "tool_execution_end" && event.result.usage !== undefined) {
+            await this.session.appendRecord({
+              type: "usage",
+              id: newId("r"),
+              lane: LANE,
+              runId,
+              cause: "tool",
+              usage: event.result.usage,
+            });
           } else if (event.type === "message_end") {
             const provisionedId = pendingProvisioned.get(event.message);
             pendingProvisioned.delete(event.message);
@@ -469,7 +530,6 @@ export class AgentHarness {
         controller.signal,
         this.options.streamFn,
       );
-      void outcomeItems;
 
       const leafId = await this.session.getLeafId(LANE);
       let outcome: RunOutcome;
@@ -485,9 +545,7 @@ export class AgentHarness {
         outcome = { kind: "completed", leafId };
       }
       await this.finishRun(runId, outcome);
-      const result: RunResult = Result.ok({ runId, ...outcome });
-      settle(result);
-      return result;
+      return Result.ok({ runId, ...outcome });
     } catch (error) {
       const leafId = await this.session.getLeafId(LANE);
       const outcome: RunOutcome = {
@@ -499,13 +557,7 @@ export class AgentHarness {
         },
       };
       await this.finishRun(runId, outcome);
-      const result: RunResult = Result.ok({ runId, ...outcome });
-      settle(result);
-      return result;
-    } finally {
-      this.isStreaming = false;
-      this.streamingText = undefined;
-      this.activeRun = undefined;
+      return Result.ok({ runId, ...outcome });
     }
   }
 

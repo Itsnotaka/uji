@@ -1,4 +1,11 @@
-import type { ResponseItem, ToolDefinition } from "@june/schema";
+import type {
+  ResponseItem,
+  StopReason,
+  StreamDelta,
+  ToolDefinition,
+  ToolResultPart,
+  TurnUsage,
+} from "@june/schema";
 import type { ModelAuth } from "../auth/types.ts";
 import { ORIGINATOR } from "../auth/oauth/openai-codex.ts";
 import type { ReasoningEffort, ResponsesApi } from "../provider.ts";
@@ -15,13 +22,7 @@ export interface ResponsesRequest {
   /** Stable per-session id; codex backend session header + prompt cache key. */
   sessionId?: string;
   signal?: AbortSignal;
-  onDelta?: (delta: ResponsesDelta) => void;
-}
-
-/** Streaming delta: assistant text or reasoning summary text. */
-export interface ResponsesDelta {
-  kind: "text" | "reasoning";
-  text: string;
+  onDelta?: (delta: StreamDelta) => void;
 }
 
 /** Result of one streamed Responses call. */
@@ -29,8 +30,8 @@ export interface ResponsesResult {
   /** Completed output items (message / reasoning / function_call). */
   items: ResponseItem[];
   /** "length" when the response was cut off by the output token limit. */
-  stopReason: "stop" | "length";
-  usage?: { input: number; output: number; total: number };
+  stopReason: Extract<StopReason, "stop" | "length">;
+  usage?: TurnUsage;
 }
 
 function buildUrl(request: ResponsesRequest): string {
@@ -60,11 +61,50 @@ function buildHeaders(request: ResponsesRequest): Headers {
   return headers;
 }
 
+/**
+ * Sessions store June's provider-agnostic tool-result parts; the adapter
+ * encodes them into the Responses shape here, at request time. Text parts
+ * join to one input_text (or a plain string when there are no images); image
+ * parts become input_image parts with base64 data URLs. Pi additionally drops
+ * images for models whose metadata says they cannot take image input — June
+ * has no model-capability metadata yet, so images are always sent.
+ *
+ * Based on convertToolResultOutput in
+ * https://github.com/earendil-works/pi/blob/main/packages/ai/src/api/openai-responses-shared.ts
+ */
+function encodeToolResultOutput(output: ToolResultPart[]): string | Record<string, unknown>[] {
+  const text = output
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+  const images = output.filter((part) => part.type === "image");
+  if (images.length === 0) {
+    return text.length > 0 ? text : "(no tool output)";
+  }
+  const parts: Record<string, unknown>[] = [];
+  if (text.length > 0) {
+    parts.push({ type: "input_text", text });
+  }
+  for (const image of images) {
+    parts.push({
+      type: "input_image",
+      detail: "auto",
+      image_url: `data:${image.mimeType};base64,${image.data}`,
+    });
+  }
+  return parts;
+}
+
+function encodeInputItem(item: ResponseItem): Record<string, unknown> {
+  if (item.type !== "function_call_output" || !Array.isArray(item.output)) return item;
+  return { ...item, output: encodeToolResultOutput(item.output) };
+}
+
 function buildBody(request: ResponsesRequest): Record<string, unknown> {
   return {
     model: request.model,
     instructions: request.instructions,
-    input: request.input,
+    input: request.input.map(encodeInputItem),
     tools: request.tools ?? [],
     tool_choice: "auto",
     parallel_tool_calls: true,

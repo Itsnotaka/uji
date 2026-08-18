@@ -1,17 +1,25 @@
 export {
+  agentLoop,
+  agentLoopContinue,
   runAgentLoop,
   runAgentLoopContinue,
+  type AgentEventSink,
+} from "./agent-loop.ts";
+export {
+  type ToolResultImagePart,
+  type ToolResultPart,
+  type ToolResultTextPart,
   type AfterToolCallContext,
   type AfterToolCallResult,
   type AgentContext,
   type AgentEvent,
-  type AgentEventSink,
   type AgentLoopConfig,
   type AgentLoopTurnUpdate,
   type AgentTool,
   type AgentToolCall,
   type AgentToolResult,
   type AgentToolUpdateCallback,
+  type AnyAgentTool,
   type AssistantTurn,
   type BeforeToolCallContext,
   type BeforeToolCallResult,
@@ -25,7 +33,9 @@ export {
   type ThinkingLevel,
   type ToolExecutionMode,
   type TurnUsage,
-} from "./agent-loop.ts";
+} from "./types.ts";
+export { EventStream } from "./utils/event-stream.ts";
+export { toolResultContent, toolResultText } from "./utils/tool-result.ts";
 
 export {
   AgentHarness,

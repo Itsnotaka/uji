@@ -3,13 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "pnpm format:check && pnpm lint && turbo run typecheck",
-    "dev:grok-bot": "pnpm --filter @june/demo-grok-bot dev",
-    "dev:website": "pnpm --filter @june/demo-website dev",
-    "format": "oxfmt .",
-    "june": "node packages/demo-cli/src/index.ts",
-    "format:check": "oxfmt --check .",
-    "lint": "oxlint",
+    "format": "oxfmt",
+    "lint": "oxlint --fix",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {

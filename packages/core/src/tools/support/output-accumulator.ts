@@ -1,3 +1,10 @@
+/**
+ * Streaming output accumulator for the bash tool, ported from pi
+ * (earendil-works): keeps a bounded in-memory window and spills the full
+ * stream to a temp file.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/output-accumulator.ts
+ */
 import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";

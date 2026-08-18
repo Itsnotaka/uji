@@ -1,0 +1,259 @@
+@import "tailwindcss";
+/* Declares the full --color-fd-* surface, including the diff/callout statics
+   the preset's utilities depend on. */
+@import "fumadocs-ui/css/lib/default-colors.css";
+@import "fumadocs-ui/css/preset.css";
+
+/*
+ * June.
+ *
+ * This file re-points the Fumadocs colour tokens and the two font stacks, and
+ * stops there. The layouts, sidebar, TOC, and page chrome are stock Fumadocs
+ * on purpose: overriding them means re-fixing them on every upgrade.
+ *
+ * The colour roles are taken directly from Grok Bot's compiled StyleX theme:
+ * base/subtle/elevated surfaces, alpha borders and fills, primary/secondary
+ * text, and separate text/fill accents. `pnpm colors:audit` checks every hex
+ * against the installed app.asar instead of relying on an eyeballed match.
+ *
+ * Two faces. Inter sets prose. Berkeley Mono sets anything a machine produced
+ * or a person will copy — code, data columns, diagrams — plus labels.
+ *
+ * The values below mirror src/lib/brand.ts, which is what /branding renders.
+ */
+
+@theme {
+  --color-june-paper: #fcfcfc;
+  --color-june-surface: #f7f7f7;
+  --color-june-elevated: #fcfcfc;
+  --color-june-fill: #77777717;
+  --color-june-selection: #7777772b;
+  --color-june-rule: #14141426;
+  --color-june-faint: #14141466;
+  --color-june-muted: #14141499;
+  --color-june-ink: #141414;
+  --color-june-signal: #0c64c1;
+  --color-june-signal-fill: #1084fe;
+  --color-june-shadow-control: #0000001f;
+  --color-june-shadow-ambient: #00000014;
+  --color-june-shadow-key: #0000000f;
+  --color-june-shadow-ring: #e4e4e40a;
+
+  --color-fd-background: var(--color-june-paper);
+  --color-fd-foreground: var(--color-june-ink);
+  --color-fd-muted: var(--color-june-surface);
+  --color-fd-muted-foreground: var(--color-june-muted);
+  --color-fd-popover: var(--color-june-elevated);
+  --color-fd-popover-foreground: var(--color-june-ink);
+  --color-fd-card: var(--color-june-elevated);
+  --color-fd-card-foreground: var(--color-june-ink);
+  --color-fd-border: var(--color-june-rule);
+  --color-fd-primary: var(--color-june-signal);
+  --color-fd-primary-foreground: var(--color-june-paper);
+  --color-fd-secondary: var(--color-june-fill);
+  --color-fd-secondary-foreground: var(--color-june-ink);
+  --color-fd-accent: var(--color-june-selection);
+  --color-fd-accent-foreground: var(--color-june-ink);
+  --color-fd-ring: var(--color-june-signal-fill);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-berkeley-mono), ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  --june-page: 1200px;
+  --june-gutter: clamp(1.25rem, 5vw, 4.5rem);
+  --radius-june-control: 8px;
+  --radius-june-panel: 10px;
+  --ease-june: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* `default-colors.css` re-declares every --color-fd-* under .dark, so the whole
+   mapping is restated here rather than inherited from the @theme block. */
+.dark {
+  --color-june-paper: #070707;
+  --color-june-surface: #111111;
+  --color-june-elevated: #181818;
+  --color-june-fill: #7777772c;
+  --color-june-selection: #77777752;
+  --color-june-rule: #fcfcfc26;
+  --color-june-faint: #fcfcfc66;
+  --color-june-muted: #fcfcfc99;
+  --color-june-ink: #fcfcfc;
+  --color-june-signal: #80befe;
+  --color-june-signal-fill: #1084fe;
+  --color-june-shadow-control: #00000000;
+  --color-june-shadow-ambient: #00000000;
+  --color-june-shadow-key: #00000000;
+  --color-june-shadow-ring: #e4e4e400;
+
+  --color-fd-background: var(--color-june-paper);
+  --color-fd-foreground: var(--color-june-ink);
+  --color-fd-muted: var(--color-june-surface);
+  --color-fd-muted-foreground: var(--color-june-muted);
+  --color-fd-popover: var(--color-june-elevated);
+  --color-fd-popover-foreground: var(--color-june-ink);
+  --color-fd-card: var(--color-june-elevated);
+  --color-fd-card-foreground: var(--color-june-ink);
+  --color-fd-border: var(--color-june-rule);
+  --color-fd-primary: var(--color-june-signal);
+  --color-fd-primary-foreground: var(--color-june-paper);
+  --color-fd-secondary: var(--color-june-fill);
+  --color-fd-secondary-foreground: var(--color-june-ink);
+  --color-fd-accent: var(--color-june-selection);
+  --color-fd-accent-foreground: var(--color-june-ink);
+  --color-fd-ring: var(--color-june-signal-fill);
+}
+
+/* ---------------------------------------------------------------- base --- */
+
+html {
+  scrollbar-gutter: stable;
+}
+
+body {
+  /* Grayscale antialiasing: thinner, crisper light text on macOS. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+/* Code blocks: no ligatures, narrow tabs. */
+.shiki {
+  font-variant-ligatures: none;
+  tab-size: 2;
+}
+
+/* Tailwind preflight routes code/kbd/pre through --font-mono, but the
+   typography plugin restyles inline code; pin the stack so both match. */
+.prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  font-family: var(--font-mono);
+}
+
+/* -------------------------------------------------------------- mermaid --- */
+
+.june-mermaid svg {
+  margin-inline: auto;
+  height: auto;
+  max-width: 100%;
+}
+
+/* Mermaid draws square corners; match the radius of the surrounding surfaces. */
+.june-mermaid .node rect,
+.june-mermaid .node polygon {
+  rx: 6px;
+  ry: 6px;
+}
+
+.june-mermaid .cluster rect {
+  rx: 10px;
+  ry: 10px;
+}
+
+/* ------------------------------------------------ marketing pages only --- */
+
+/*
+ * Used by / and /branding, which are hand-built pages rather than Fumadocs
+ * layouts. Nothing here touches the docs chrome.
+ */
+
+.june-display {
+  font-size: clamp(2.5rem, 6vw, 4.25rem);
+  line-height: 1.03;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.june-section {
+  font-size: 1.5rem;
+  line-height: 1.22;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  text-wrap: balance;
+}
+
+.june-subsection {
+  font-size: 1.1875rem;
+  line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: -0.014em;
+}
+
+/* Labels are the mono face, not a second sans weight: uppercase, tracked out. */
+.june-label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1;
+  font-weight: 400;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.june-mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+/*
+ * Grok's inline elevation: two shadow layers and a hairline ring in light
+ * mode, all explicitly transparent in dark mode.
+ */
+.june-raised {
+  box-shadow:
+    0 4px 12px -1px var(--color-june-shadow-ambient),
+    0 2px 4px -2px var(--color-june-shadow-key),
+    0 0 0 1px var(--color-june-shadow-ring);
+}
+
+@media (hover: hover) {
+  .june-raised-interactive:hover {
+    background-color: var(--color-june-selection);
+  }
+
+  .june-ghost:hover {
+    background-color: var(--color-june-fill);
+  }
+}
+
+.june-outlined {
+  outline: 1px solid var(--color-june-rule);
+  outline-offset: -1px;
+}
+
+@keyframes june-rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+/* Each element carries --stagger; the delay is derived from it, so the hero
+   arrives in sequence rather than as one block. Runs once, on load. */
+.june-rise {
+  animation: june-rise 620ms var(--ease-june) both;
+  animation-delay: calc(var(--stagger, 0) * 70ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .june-rise {
+    animation: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

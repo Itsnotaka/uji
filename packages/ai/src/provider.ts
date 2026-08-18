@@ -1,9 +1,11 @@
+import type { ThinkingLevel } from "@june/schema";
 import type { ProviderAuth } from "./auth/types.ts";
 
 /** Which Responses wire dialect a provider speaks. */
 export type ResponsesApi = "responses" | "codex-responses";
 
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+/** ThinkingLevel minus "off" — an effort that is actually sent on the wire. */
+export type ReasoningEffort = Exclude<ThinkingLevel, "off">;
 
 export interface ModelInfo {
   id: string;

@@ -6,11 +6,14 @@
  * not available here, so the file-listing layer is reimplemented with
  * `rg --files` (which respects .gitignore like fd) filtered by ripgrep's glob
  * matching. Schema and result formatting are identical to pi's find tool.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/find.ts
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import type { AgentTool, AgentToolResult } from "../agent-loop.ts";
+import type { AgentTool, AgentToolResult } from "../types.ts";
+import { toolResultContent } from "../utils/tool-result.ts";
 import { pathExists, resolveToCwd } from "./support/path-utils.ts";
 import {
   DEFAULT_MAX_BYTES,
@@ -75,12 +78,6 @@ export interface FindOperations {
   ) => Promise<string[]> | string[];
 }
 
-const defaultFindOperations: FindOperations = {
-  exists: pathExists,
-  // This is a placeholder. Actual rg --files execution happens in execute() when no custom glob is provided.
-  glob: () => [],
-};
-
 export interface FindToolOptions {
   /** Custom operations for find. Default: local filesystem plus ripgrep */
   operations?: FindOperations;
@@ -118,15 +115,15 @@ function parseFindInput(params: unknown): FindToolInput {
 export function createFindTool(
   cwd: string,
   options?: FindToolOptions,
-): AgentTool<unknown, FindToolDetails | undefined> {
+): AgentTool<FindToolInput, FindToolDetails | undefined> {
   const customOps = options?.operations;
   return {
     name: "find",
     label: "find",
     description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
     parameters: findSchema,
-    async execute(_toolCallId, params, signal) {
-      const { pattern, path: searchDir, limit } = parseFindInput(params);
+    prepareArguments: parseFindInput,
+    async execute(_toolCallId, { pattern, path: searchDir, limit }, signal) {
       return new Promise<AgentToolResult<FindToolDetails | undefined>>((resolve, reject) => {
         if (signal?.aborted) {
           reject(new Error("Operation aborted"));
@@ -152,11 +149,9 @@ export function createFindTool(
           try {
             const searchPath = resolveToCwd(searchDir || ".", cwd);
             const effectiveLimit = limit ?? DEFAULT_LIMIT;
-            const ops = customOps ?? defaultFindOperations;
 
-            // If custom operations provide glob(), use that instead of ripgrep.
-            if (customOps?.glob) {
-              if (!(await ops.exists(searchPath))) {
+            if (customOps !== undefined) {
+              if (!(await customOps.exists(searchPath))) {
                 settle(() => reject(new Error(`Path not found: ${searchPath}`)));
                 return;
               }
@@ -164,7 +159,7 @@ export function createFindTool(
                 settle(() => reject(new Error("Operation aborted")));
                 return;
               }
-              const results = await ops.glob(pattern, searchPath, {
+              const results = await customOps.glob(pattern, searchPath, {
                 ignore: ["**/node_modules/**", "**/.git/**"],
                 limit: effectiveLimit,
               });
@@ -174,7 +169,10 @@ export function createFindTool(
               }
               if (results.length === 0) {
                 settle(() =>
-                  resolve({ content: "No files found matching pattern", details: undefined }),
+                  resolve({
+                    content: toolResultContent("No files found matching pattern"),
+                    details: undefined,
+                  }),
                 );
                 return;
               }
@@ -200,7 +198,7 @@ export function createFindTool(
               }
               settle(() =>
                 resolve({
-                  content: resultOutput,
+                  content: toolResultContent(resultOutput),
                   details: Object.keys(details).length > 0 ? details : undefined,
                 }),
               );
@@ -300,7 +298,10 @@ export function createFindTool(
               }
               if (!output) {
                 settle(() =>
-                  resolve({ content: "No files found matching pattern", details: undefined }),
+                  resolve({
+                    content: toolResultContent("No files found matching pattern"),
+                    details: undefined,
+                  }),
                 );
                 return;
               }
@@ -333,7 +334,7 @@ export function createFindTool(
               }
               settle(() =>
                 resolve({
-                  content: resultOutput,
+                  content: toolResultContent(resultOutput),
                   details: Object.keys(details).length > 0 ? details : undefined,
                 }),
               );

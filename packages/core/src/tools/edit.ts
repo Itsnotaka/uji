@@ -1,16 +1,15 @@
 /**
- * Edit tool ported from pi (earendil-works) tools/edit.ts, adapted to June's
- * AgentTool contract. TUI preview rendering was dropped; the matching logic
- * lives in edit-diff.ts and is unchanged.
+ * Edit tool ported from pi's harness edit tool, adapted to June's AgentTool
+ * contract and direct filesystem access (pi routes file access through its
+ * ExecutionEnv effects boundary). The matching logic lives in edit-diff.ts
+ * and is unchanged.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/tools/edit.ts
  */
 
-import { constants } from "node:fs";
-import {
-  access as fsAccess,
-  readFile as fsReadFile,
-  writeFile as fsWriteFile,
-} from "node:fs/promises";
-import type { AgentTool, AgentToolResult } from "../agent-loop.ts";
+import { readFile as fsReadFile, stat as fsStat, writeFile as fsWriteFile } from "node:fs/promises";
+import type { AgentTool, AgentToolResult } from "../types.ts";
+import { toolResultContent } from "../utils/tool-result.ts";
 import {
   applyEditsToNormalizedContent,
   detectLineEnding,
@@ -21,6 +20,7 @@ import {
   restoreLineEndings,
   stripBom,
 } from "./edit-diff.ts";
+export type { Edit } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./support/file-mutation-queue.ts";
 import { resolveToCwd } from "./support/path-utils.ts";
 
@@ -55,26 +55,10 @@ const editParametersSchema: Record<string, unknown> = {
   required: ["path", "edits"],
 };
 
-export const editToolSystemPromptContribution = {
-  snippet:
-    "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
-  guidelines: [
-    "Use edit for precise changes (edits[].oldText must match exactly)",
-    "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-    "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-    "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
-  ],
-} as const;
-
 export interface EditToolInput {
   path: string;
   edits: Edit[];
 }
-
-type LegacyEditToolInput = EditToolInput & {
-  oldText?: unknown;
-  newText?: unknown;
-};
 
 export interface EditToolDetails {
   /** Display-oriented diff of the changes made */
@@ -85,79 +69,69 @@ export interface EditToolDetails {
   firstChangedLine?: number;
 }
 
-/**
- * Pluggable operations for the edit tool.
- * Override these to delegate file editing to remote systems (for example SSH).
- */
-export interface EditOperations {
-  /** Read file contents as a Buffer */
-  readFile: (absolutePath: string) => Promise<Buffer>;
-  /** Write content to a file */
-  writeFile: (absolutePath: string, content: string) => Promise<void>;
-  /** Check if file is readable and writable (throw if not) */
-  access: (absolutePath: string) => Promise<void>;
+function editAccessError(path: string, error: unknown): Error {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code: unknown }).code)
+      : String(error);
+  return new Error(`Could not edit file: ${path}. Error code: ${code}.`, {
+    cause: error instanceof Error ? error : undefined,
+  });
 }
 
-const defaultEditOperations: EditOperations = {
-  readFile: (path) => fsReadFile(path),
-  writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
-  access: (path) => fsAccess(path, constants.R_OK | constants.W_OK),
-};
-
-export interface EditToolOptions {
-  /** Custom operations for file editing. Default: local filesystem */
-  operations?: EditOperations;
-}
-
-function prepareEditArguments(input: unknown): EditToolInput {
-  if (!input || typeof input !== "object") {
-    return input as EditToolInput;
+function parseEditInput(input: unknown): EditToolInput {
+  if (typeof input !== "object" || input === null) {
+    throw new Error("Edit tool input is invalid. Expected an object.");
   }
 
-  const args = input as Record<string, unknown>;
-
-  // Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array
-  if (typeof args.edits === "string") {
-    try {
-      const parsed = JSON.parse(args.edits);
-      if (Array.isArray(parsed)) args.edits = parsed;
-    } catch {}
-  }
-
-  const legacy = args as unknown as LegacyEditToolInput;
-  if (typeof legacy.oldText !== "string" || typeof legacy.newText !== "string") {
-    return args as unknown as EditToolInput;
-  }
-
-  const edits = Array.isArray(legacy.edits) ? [...legacy.edits] : [];
-  edits.push({ oldText: legacy.oldText, newText: legacy.newText });
-  const { oldText: _oldText, newText: _newText, ...rest } = legacy;
-  return { ...rest, edits } as EditToolInput;
-}
-
-function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] } {
-  if (typeof input?.path !== "string") {
+  const record = input as Record<string, unknown>;
+  if (typeof record.path !== "string") {
     throw new Error("Edit tool input is invalid. path must be a string.");
   }
-  if (!Array.isArray(input.edits) || input.edits.length === 0) {
+
+  let editsValue = record.edits;
+  if (typeof editsValue === "string") {
+    try {
+      editsValue = JSON.parse(editsValue) as unknown;
+    } catch {
+      // The validation below reports one stable error for malformed and non-array values.
+    }
+  }
+
+  const edits = Array.isArray(editsValue) ? [...editsValue] : [];
+  if (typeof record.oldText === "string" && typeof record.newText === "string") {
+    edits.push({ oldText: record.oldText, newText: record.newText });
+  }
+  if (edits.length === 0) {
     throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
   }
-  return { path: input.path, edits: input.edits };
+
+  return {
+    path: record.path,
+    edits: edits.map((edit, index) => {
+      if (typeof edit !== "object" || edit === null) {
+        throw new Error(`Edit tool input is invalid. edits[${index}] must be an object.`);
+      }
+      const replacement = edit as Record<string, unknown>;
+      if (typeof replacement.oldText !== "string" || typeof replacement.newText !== "string") {
+        throw new Error(
+          `Edit tool input is invalid. edits[${index}] must contain string oldText and newText.`,
+        );
+      }
+      return { oldText: replacement.oldText, newText: replacement.newText };
+    }),
+  };
 }
 
-export function createEditTool(
-  cwd: string,
-  options?: EditToolOptions,
-): AgentTool<unknown, EditToolDetails> {
-  const ops = options?.operations ?? defaultEditOperations;
+export function createEditTool(cwd: string): AgentTool<EditToolInput, EditToolDetails> {
   return {
     name: "edit",
     label: "edit",
     description:
       "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
     parameters: editParametersSchema,
-    async execute(_toolCallId, params, signal): Promise<AgentToolResult<EditToolDetails>> {
-      const { path, edits } = validateEditInput(prepareEditArguments(params));
+    prepareArguments: parseEditInput,
+    async execute(_toolCallId, { path, edits }, signal): Promise<AgentToolResult<EditToolDetails>> {
       const absolutePath = resolveToCwd(path, cwd);
 
       return withFileMutationQueue(absolutePath, async () => {
@@ -171,22 +145,27 @@ export function createEditTool(
 
         throwIfAborted();
 
-        // Check if file exists.
+        // Check that the target exists and is an editable file.
+        let info: Awaited<ReturnType<typeof fsStat>>;
         try {
-          await ops.access(absolutePath);
+          info = await fsStat(absolutePath);
         } catch (error: unknown) {
           throwIfAborted();
-          const errorMessage =
-            error instanceof Error && "code" in error
-              ? `Error code: ${String(error.code)}`
-              : String(error);
-          throw new Error(`Could not edit file: ${path}. ${errorMessage}.`);
+          throw editAccessError(path, error);
+        }
+        if (!info.isFile()) {
+          throw new Error(`Could not edit file: ${path}. Path is not a file.`);
         }
         throwIfAborted();
 
         // Read the file.
-        const buffer = await ops.readFile(absolutePath);
-        const rawContent = buffer.toString("utf-8");
+        let rawContent: string;
+        try {
+          rawContent = await fsReadFile(absolutePath, "utf-8");
+        } catch (error: unknown) {
+          throwIfAborted();
+          throw editAccessError(path, error);
+        }
         throwIfAborted();
 
         // Strip BOM before matching. The model will not include an invisible BOM in oldText.
@@ -201,13 +180,18 @@ export function createEditTool(
         throwIfAborted();
 
         const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-        await ops.writeFile(absolutePath, finalContent);
+        try {
+          await fsWriteFile(absolutePath, finalContent, "utf-8");
+        } catch (error: unknown) {
+          throwIfAborted();
+          throw editAccessError(path, error);
+        }
         throwIfAborted();
 
         const diffResult = generateDiffString(baseContent, newContent);
         const patch = generateUnifiedPatch(path, baseContent, newContent);
         return {
-          content: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+          content: toolResultContent(`Successfully replaced ${edits.length} block(s) in ${path}.`),
           details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
         };
       });

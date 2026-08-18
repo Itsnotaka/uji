@@ -1,29 +1,46 @@
 # June
 
-June is an independent, handwritten core for building cross-platform agentic
-UI. The design is still taking shape in [blueprint.md](./blueprint.md); source
-references live in [references.md](./references.md).
+June is an independent, handwritten core for building cross-platform agentic UI: a durable
+agent harness, a standalone agent loop, provider auth blocks, and the clients that attach to them.
 
-The repository is a pnpm + turborepo workspace (opencode2-style layout, no
-build step — Node 24 runs TypeScript sources directly):
+Docs live in [`packages/docs`](./packages/docs) (fumadocs; from that directory, `pnpm dev`). Intent and dated
+design decisions live in [blueprint.md](./blueprint.md); source references live in
+[references.md](./references.md).
 
-- `packages/schema` — wire item types shared by everything
-- `packages/ai` — provider auth blocks (pi-shaped), OAuth flows, streamed
-  Responses client
-- `packages/core` — standalone `agent-loop.ts`, the durable pi-style
-  `AgentHarness` (entry-tree sessions, effect-sandwich tool records, crash
-  resume), and the full pi tool set (read, bash, edit, write, grep, find, ls)
-- `packages/demo-cli` — `@june/demo`, a full-screen OpenTUI app (runs under
-  Bun): live transcript, steering, TUI login funnel; `-p` print mode and
-  readline `login` for headless boxes
-- `packages/demo/grok-bot` — clean-room Grok Bot chat showcase
-- `packages/demo/website` — cmdk-style index for June UI studies
+## What it is
 
-Toolchain: mise provides Node.js 24 and pnpm 11; TypeScript 7 native `tsc`
-per package via turbo; Oxlint (type-aware via `oxlint-tsgolint`) and Oxfmt at
-the root.
+`@june/core` ships two entry points over one primitive. `runAgentLoop` is a standalone loop that
+imports nothing but wire types from `@june/schema`: you inject a `StreamFn`, an `AgentTool[]`, and
+an event sink. `AgentHarness` composes that same loop over a `SessionStorage`, bracketing each run
+with durable records so a crash can be resumed. Clients (the CLI, the Electron app) are peers
+that drive a harness; none of them is the product, and none of another project's harness is
+imported or wrapped as the implementation.
+
+## Packages
+
+Every package is `private` and unpublished. "Shipped" means the source exists in this workspace and
+runs, not that it is on npm.
+
+| Package | What it is | Status |
+| --- | --- | --- |
+| `@june/schema` (`packages/schema`) | Responses wire item types: `ResponseItem`, `ContentPart`, `ToolDefinition` | Shipped |
+| `@june/ai` (`packages/ai`) | Provider blocks, `CredentialStore`, ChatGPT OAuth and device-code login, streamed Responses client | Shipped |
+| `@june/core` (`packages/core`) | `runAgentLoop`, `AgentHarness`, `SqliteSessionRepo`, `createProviderStreamFn`, seven tools (read, bash, edit, write, grep, find, ls) | Shipped |
+| `@june/ui` (`packages/ui`) | Shared Base UI primitives styled with StyleX: avatar, button, dialog, dropdown menu, input, input group, textarea | Shipped |
+| `@june/demo` (`packages/demo/cli`) | The `june` CLI: OpenTUI full-screen app, `-p` print mode, readline login funnel | Shipped |
+| `@june/demo-grok-bot` (`packages/demo/grok-bot`) | Electron desktop chat; the main process hosts the harness, the renderer sees a preload API | Demo |
+| `@june/demo-website` (`packages/demo/website`) | TanStack Start marketing site; it does not run a harness | Demo |
+| `docs` (`packages/docs`) | The fumadocs documentation site | Shipped |
+| `@june/protocol`, `@june/server`, `@june/client`, `@june/util`, `@june/plugin` | Names locked by the blueprint's package map | Reserved, not built |
+
+Not built yet: the multi-client wire (`protocol`/`server`/`client`), a remote tool host, context
+compaction, hooks, and telemetry spans. `packages/docs/content/docs/roadmap.mdx` measures each gap
+against the specification the harness is ported from.
 
 ## Setup
+
+`mise.toml` pins Node 26, pnpm 11.21.0, and bun 1.3.14. The `grep` and `find` tools shell out to
+`rg` (ripgrep) on `PATH`.
 
 ```sh
 mise install
@@ -31,32 +48,79 @@ pnpm install
 pnpm check
 ```
 
-## Try it
+## Demos
+
+The CLI lives in `packages/demo/cli`. It has no bin and no root script. From that directory,
+`pnpm june` runs the TypeScript source. Log in first; it has no `--help`, and usage prints only
+on the two failure paths.
 
 ```sh
-pnpm june                  # full-screen TUI; runs the login funnel if needed
-pnpm june login            # readline ChatGPT OAuth (browser or device code)
-pnpm june -p "list the files here and summarize"   # non-interactive
-pnpm june -p --resume "…"  # continue latest session (crash-resumes if needed)
-pnpm june status           # stored credentials
+cd packages/demo/cli
+pnpm june login
+pnpm june status
+pnpm june
+pnpm june -p "summarize the files in packages/core/src"
+pnpm june -p --resume "now list what changed"
+pnpm june logout
 ```
 
-Defaults to the `openai-codex` provider with `gpt-5.6-luna` at medium
-reasoning effort; override with `--provider`, `--model`, `--effort`, or
-`JUNE_MODEL` / `JUNE_EFFORT`.
+| Flag | Alias | Effect |
+| --- | --- | --- |
+| `--print` | `-p` | Non-interactive run: stream deltas to stdout and exit |
+| `--resume` | `-c` | Open the newest existing session instead of creating one |
+| `--provider <id>` | none | Force a provider instead of auto-selecting |
+| `--model <id>` | none | Model passed to the harness; falls back to `JUNE_MODEL` |
+| `--effort <level>` | none | Thinking level passed to the harness; falls back to `JUNE_EFFORT` |
 
-## Demo apps
+Provider auto-selection walks `defaultProviders()` (`openai-codex`, then `openai`), and takes the
+first whose auth resolves. Both default to `gpt-5.6-luna` at `medium` effort. Credentials are
+written to `$JUNE_HOME/auth.json` (default `~/.june/auth.json`, mode `0600`). Sessions go to
+`<cwd>/.june/sessions.db`, one SQLite file holding every session started from that directory.
 
-Run the two Vite apps in separate terminals:
+`grok-bot` is a real composition, not a mock: `src/main/june-host.ts` opens a `SqliteSessionRepo`,
+creates an `AgentHarness`, and drives the ChatGPT OAuth flow, while the sandboxed renderer talks to
+it only through the preload API in `src/desktop-api.ts`. The shipped surface is five IPC methods
+(sign in, stream text, stop, new chat, local history), and the session needs no workspace folder.
+It registers no tools: `AgentHarness.create` is called without `tools`. Only the `june`
+agent in the sidebar is live; the other three entries in `src/demo-data.ts` are static previews
+that do not run.
+
+`website` is a marketing site about the desktop app. It renders a static preview component; it does
+not import `@june/core` or simulate a harness.
 
 ```sh
-pnpm dev:grok-bot  # http://127.0.0.1:5173
-pnpm dev:website   # http://127.0.0.1:5174
+cd packages/demo/grok-bot
+pnpm dev                 # electron-vite; opens a desktop window, not a URL
+
+cd packages/demo/website
+pnpm dev                 # http://127.0.0.1:5174
 ```
 
-The Grok Bot demo is a mock-backed, clean-room UI study. The showcase site
-also documents OpenCrew as a cautionary interaction reference; neither demo
-copies product code into `@june/core`.
+## Development
 
-Use `pnpm format` to write formatting changes. `pnpm lint` runs type-aware
-Oxlint, and `pnpm typecheck` runs TypeScript 7 through turbo.
+```sh
+pnpm check        # format:check, then lint, then turbo run typecheck
+pnpm format       # oxfmt . (writes)
+pnpm lint         # oxlint, type-aware via oxlint-tsgolint
+pnpm typecheck    # turbo run typecheck (TypeScript 7 native tsc per package)
+```
+
+From `packages/core`: `pnpm test` runs `node --test` over `test/*.test.ts`.
+
+There is no build step for the library packages. `@june/schema`, `@june/ai`, `@june/core`, and
+`@june/ui` each point `exports` at their TypeScript sources, and Node 26 strips types at load time.
+`pnpm check` compiles nothing and emits nothing. The demo apps and the docs site have their own
+`build` scripts because Vite, Electron, and Next need them.
+
+## Docs
+
+```sh
+cd packages/docs
+pnpm dev          # next dev, http://localhost:3000
+pnpm build        # next build
+```
+
+Pages are MDX under `packages/docs/content/docs`: `index`, `quickstart`, `architecture`,
+`principles`, `host-sdk`, `roadmap`, and a `core` section holding `core/index`, `agent-loop`,
+`harness`, `session-storage`, `tools`, `stream-fn`, and `recipes`. Sidebar order is set by the two `meta.json`
+files. When a page and the source disagree, the source wins and the page is wrong.

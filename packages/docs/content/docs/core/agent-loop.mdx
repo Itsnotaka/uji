@@ -1,0 +1,345 @@
+---
+title: Agent loop
+description: Run the Pi-style turn and tool loop with June's Responses-item wire
+---
+
+import { Step, Steps } from "fumadocs-ui/components/steps";
+import { TypeTable } from "fumadocs-ui/components/type-table";
+
+The agent loop drives model turns, tool batches, steering, and follow-up messages. It has no session, storage, or provider dependency. Use the stream entry points to iterate events, or use the sink entry points when another component owns event delivery.
+
+June ports the control flow from [Pi's agent loop](https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts). The function order, nested loops, tool scheduling, hook order, termination rule, and event order follow that source.
+
+## Source fidelity
+
+`agent-loop.ts` was copied from Pi and patched at the June wire boundary. It is not byte-for-byte
+identical: Pi's `AssistantMessage` and streamed provider events do not have the same shape as June's
+Responses-item transcript and promise-based `StreamFn`. Those substitutions stay in named leaf
+modules instead of being mixed with the public contracts:
+
+| File                    | Ownership                                                                         |
+| ----------------------- | --------------------------------------------------------------------------------- |
+| `agent-loop.ts`         | Pi declaration layout and control flow, with the wire-boundary call sites adapted |
+| `types.ts`              | Public loop contracts, based on Pi's `packages/agent/src/types.ts`                |
+| `responses-wire.ts`     | June-only Responses-item detection, extraction, and JSON decoding                 |
+| `utils/event-stream.ts` | Pi's generic `EventStream`, adapted with an explicit rejection path               |
+| `utils/tool-result.ts`  | June's `ToolResultPart[]` helpers                                                 |
+
+The port was synchronized against Pi commit
+[`b1efcf7d7c5d`](https://github.com/earendil-works/pi/blob/b1efcf7d7c5d7394fbb12ede0174e04d39ee7004/packages/agent/src/agent-loop.ts).
+June preserves shared behavior through local conformance tests rather than a network-dependent
+source comparator. The unavoidable wire differences stay isolated and documented instead of being
+described as verbatim.
+
+June intentionally does not copy Pi's process-global default `StreamFn` registry. Every loop entry
+point requires a `streamFn` argument, so model transport remains explicit at the composition site.
+
+## June's wire adaptations
+
+The loop keeps three June-specific boundaries because June stores OpenAI Responses items as its current wire:
+
+| Pi                                            | June                                                            | Effect on the loop                                                                                                 |
+| --------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| One `AssistantMessage` per model turn         | One `AssistantTurn` containing `ResponseItem[]`                 | The loop appends each completed item from `turn.items`                                                             |
+| A streaming assistant-message event stream    | A promise-based `StreamFn` with `onDelta`                       | `message_update` events are chained in provider order, then completed items emit `message_start` and `message_end` |
+| TypeBox validation in `@earendil-works/pi-ai` | JSON decoding followed by required `AgentTool.prepareArguments` | Every tool owns one decode/migration/validation boundary before hooks and execution                                |
+
+Tool results remain `ToolResultPart[]`. The session stores those parts unchanged, and the provider adapter encodes them at request time.
+
+## Entry points
+
+Use `agentLoop` for a new prompt and `agentLoopContinue` for an existing continuable context:
+
+```ts
+const stream = agentLoop(prompts, context, config, signal, streamFn);
+
+for await (const event of stream) {
+  handleEvent(event);
+}
+
+const newMessages = await stream.result();
+```
+
+Both functions return `EventStream<AgentEvent, ResponseItem[]>`. The stream ends on `agent_end`, and `result()` resolves to the items added by this run. If the loop itself rejects, both async iteration and `result()` reject with the same error instead of leaving the stream open.
+
+Use `runAgentLoop` and `runAgentLoopContinue` when you already have an event sink:
+
+```ts
+const newMessages = await runAgentLoop(prompts, context, config, emit, signal, streamFn);
+```
+
+`AgentHarness` uses the sink form so it can persist each event before forwarding it to clients.
+
+### New prompt and continuation behavior
+
+| Behavior          | `agentLoop` and `runAgentLoop`                          | Continue variants                                        |
+| ----------------- | ------------------------------------------------------- | -------------------------------------------------------- |
+| Initial messages  | Append `prompts` to a copied context array              | Reuse the caller's context array                         |
+| Returned messages | Include prompts                                         | Exclude existing context messages                        |
+| First events      | `agent_start`, `turn_start`, then prompt message events | `agent_start`, then `turn_start`                         |
+| Precondition      | None                                                    | Context must end in user input or `function_call_output` |
+
+Continuation throws before emitting an event in these cases:
+
+| Condition                     | Error                                          |
+| ----------------------------- | ---------------------------------------------- |
+| Empty context                 | `Cannot continue: no messages in context`      |
+| Last item is assistant output | `Cannot continue from message role: assistant` |
+
+Assistant output includes `message`, `reasoning`, and `function_call` items. An unmatched trailing `function_call` cannot start a continuation.
+
+## How one turn runs
+
+The inner loop performs one model request and its tool batch per iteration:
+
+<Steps>
+
+<Step>
+### Emit `turn_start`
+
+The entry point emits the first event. Later iterations emit it at the top of the inner loop.
+
+</Step>
+
+<Step>
+### Inject pending messages
+
+The loop emits each steering or follow-up item, then appends it to `context.messages` and `newMessages`.
+
+</Step>
+
+<Step>
+### Transform the context
+
+`transformContext` can replace the messages sent to this request. Its result does not replace the stored context.
+
+</Step>
+
+<Step>
+### Call `StreamFn`
+
+The loop passes the system prompt, transformed messages, tool definitions, model, thinking level, signal, and delta callback.
+
+</Step>
+
+<Step>
+### Append assistant items
+
+The loop appends every completed item from `turn.items`. Each item emits `message_start` and `message_end`.
+
+</Step>
+
+<Step>
+### Handle the stop reason
+
+`error` and `aborted` emit `turn_end` and `agent_end`. A `length` turn fails every tool call without executing it.
+
+</Step>
+
+<Step>
+### Execute the tool batch
+
+The loop prepares calls in source order. It executes them sequentially or in parallel, then appends result items in source order.
+
+</Step>
+
+<Step>
+### Emit `turn_end`
+
+The event contains the completed `AssistantTurn` and every result item from this batch.
+
+</Step>
+
+<Step>
+### Prepare the next turn
+
+`prepareNextTurn` may replace the context, model, or thinking level. `shouldStopAfterTurn` receives that updated context.
+
+</Step>
+
+<Step>
+### Poll steering
+
+The loop calls `getSteeringMessages`. Returned items keep the inner loop active even without tool calls.
+
+</Step>
+
+</Steps>
+
+When the inner loop becomes idle, the outer loop calls `getFollowUpMessages`. Returned items restart the inner loop. An empty result emits `agent_end`.
+
+## AgentLoopConfig
+
+Every field is optional:
+
+<TypeTable
+  type={{
+    model: {
+      description: "Model identifier passed to StreamFn",
+      type: "string",
+    },
+    thinkingLevel: {
+      description: "Reasoning level passed to StreamFn",
+      type: '"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"',
+    },
+    toolExecution: {
+      description: "Default tool-batch execution mode",
+      type: '"sequential" | "parallel"',
+      default: "parallel",
+    },
+    transformContext: {
+      description: "Transforms messages for one provider request",
+      type: "(messages: ResponseItem[], signal?: AbortSignal) => Promise<ResponseItem[]>",
+    },
+    beforeToolCall: {
+      description: "Runs after argument preparation and can block execution",
+      type: "(context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>",
+    },
+    afterToolCall: {
+      description: "Runs after execution and can replace result fields",
+      type: "(context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>",
+    },
+    prepareNextTurn: {
+      description: "Replaces context, model, or thinking level for later turns",
+      type: "(context: ShouldStopAfterTurnContext) => AgentLoopTurnUpdate | undefined | Promise<AgentLoopTurnUpdate | undefined>",
+    },
+    shouldStopAfterTurn: {
+      description: "Stops after the completed turn and before queue polling",
+      type: "(context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>",
+    },
+    getSteeringMessages: {
+      description: "Returns messages injected before the next model request",
+      type: "() => Promise<ResponseItem[]>",
+    },
+    getFollowUpMessages: {
+      description: "Returns messages processed after the agent becomes idle",
+      type: "() => Promise<ResponseItem[]>",
+    },
+  }}
+/>
+
+`prepareNextTurn` runs before `shouldStopAfterTurn`. If it returns a replacement context, the stop hook receives that replacement.
+
+## Tool preparation and hooks
+
+For each tool call, the loop performs these steps in order:
+
+1. Find the tool by name
+2. Decode the provider's JSON argument string
+3. Call `tool.prepareArguments`
+4. Call `beforeToolCall`
+5. Execute the tool
+6. Call `afterToolCall`
+7. Emit `tool_execution_end`
+8. Create the `function_call_output` item
+
+`prepareArguments` is the tool's single input boundary. It receives decoded provider data as `unknown` and returns the typed value passed unchanged to `beforeToolCall`, `execute`, and `afterToolCall`. Use the same step for compatibility migrations; do not parse again inside `execute`.
+
+```ts
+const echo: AgentTool<{ value: string }> = {
+  name: "echo",
+  label: "Echo",
+  description: "Return one string.",
+  parameters: {
+    type: "object",
+    properties: { value: { type: "string" } },
+    required: ["value"],
+  },
+  prepareArguments(args) {
+    if (typeof args !== "object" || args === null) {
+      throw new Error("value is required");
+    }
+    const value = (args as { value?: unknown }).value;
+    if (typeof value !== "string") throw new Error("value must be a string");
+    return { value };
+  },
+  async execute(_callId, { value }) {
+    return { content: toolResultContent(value), details: undefined };
+  },
+};
+```
+
+`beforeToolCall` receives `{ assistantMessage, toolCall, args, context }`. It can mutate `args`; the loop passes the same object to `execute` without another validation pass.
+
+Return `{ block: true }` to skip execution. `reason` becomes the error text, and `terminate` participates in batch termination.
+
+`afterToolCall` receives `{ assistantMessage, toolCall, args, result, isError, context }`. It can replace `content`, `details`, `isError`, `usage`, or `terminate`.
+
+A thrown preparation or `beforeToolCall` error becomes an immediate error result. A thrown `afterToolCall` error replaces the executed result with an error result.
+
+## Sequential and parallel batches
+
+The default mode is parallel. A batch becomes sequential when `config.toolExecution` is `sequential` or any called tool declares `executionMode: "sequential"`.
+
+| Order                  | Sequential   | Parallel                     |
+| ---------------------- | ------------ | ---------------------------- |
+| Preparation            | Source order | Source order                 |
+| Execution              | Source order | Concurrent after preparation |
+| `tool_execution_end`   | Source order | Completion order             |
+| Result message events  | Source order | Source order                 |
+| `turn_end.toolResults` | Source order | Source order                 |
+
+Parallel execution stores closures while it prepares calls. `Promise.all` starts those closures together and preserves their source order in the returned array.
+
+## Truncated tool calls
+
+A turn with `stopReason: "length"` may contain silently incomplete arguments. The loop executes none of its tool calls.
+
+Each call receives this error result:
+
+```text
+Tool call "<name>" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.
+```
+
+The batch does not terminate the run. The model receives the error results and can issue complete calls on the next turn.
+
+## Batch termination
+
+A batch sets `terminate` only when it contains at least one finalized call and every result has `terminate: true`. One terminating result in a mixed batch does not terminate.
+
+Termination stops automatic continuation from tool calls. Steering and follow-up messages can still restart the loop. Use `shouldStopAfterTurn` for an unconditional graceful stop.
+
+## Events
+
+The loop awaits every event sink call:
+
+| Event                   | Emitted when                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| `agent_start`           | A run begins                                                                  |
+| `turn_start`            | A model turn begins                                                           |
+| `message_start`         | A prompt, queued item, assistant item, or tool result enters the conversation |
+| `message_update`        | `StreamFn` reports a text or reasoning delta                                  |
+| `message_end`           | The matching message item completes                                           |
+| `tool_execution_start`  | A tool call begins preparation                                                |
+| `tool_execution_update` | A running tool reports progress                                               |
+| `tool_execution_end`    | Execution and `afterToolCall` finish                                          |
+| `turn_end`              | The assistant turn and tool batch finish                                      |
+| `agent_end`             | The run reaches a normal, failed, or aborted exit                             |
+
+`tool_execution_start.args` and `tool_execution_update.args` contain the raw JSON string from the `function_call`. The hooks and `execute` receive prepared arguments.
+
+## Errors and aborts
+
+`StreamFn` must encode provider failures as `stopReason: "error"` or `"aborted"`. A rejected `StreamFn` promise escapes the loop because Pi's low-level loop does not catch stream failures.
+
+The signal reaches `transformContext`, `StreamFn`, both tool hooks, and `execute`. Sequential batches stop preparing calls after the active call settles. Parallel batches stop further preparation and await every execution already scheduled.
+
+Configuration callbacks and the event sink can also reject. Those errors escape the sink entry points and do not emit a synthetic `agent_end`.
+
+<Cards>
+  <Card
+    title="Stream functions"
+    href="/docs/core/stream-fn"
+    description="Connect a provider to the loop"
+  />
+  <Card
+    title="Tools"
+    href="/docs/core/tools"
+    description="Define tool arguments, execution, and progress"
+  />
+  <Card
+    title="Harness"
+    href="/docs/core/harness"
+    description="Persist loop events and recover interrupted work"
+  />
+</Cards>

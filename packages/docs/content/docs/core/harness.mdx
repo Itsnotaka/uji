@@ -1,0 +1,444 @@
+---
+title: AgentHarness
+description: "The durable runtime around the agent loop: what it commits, when it commits it, and exactly what happens after a crash"
+---
+
+import { Step, Steps } from "fumadocs-ui/components/steps";
+import { TypeTable } from "fumadocs-ui/components/type-table";
+
+`AgentHarness` runs the [agent loop](./agent-loop.mdx) against a [session storage](./session-storage.mdx), so that a killed process leaves a resumable trail instead of a half-finished conversation. It brackets every run with `operation_started` / `operation_finished` records, commits a `tool_started` intent record before each tool executes, and writes every message the loop produces as a write-once entry on the lane branch.
+
+## What it adds over the loop
+
+The loop is in-memory: it takes a `messages` array, drives turns and tool batches, and returns new messages. The harness adds three things and nothing else.
+
+- **A durable branch to resume from.** Context is not a variable you hold; it is `session.getBranch("main")`, read back from storage at the start of every run. After a crash, the branch is still there.
+- **An intent record before every effect.** Each tool call commits a `tool_started` record naming the tool, the effective arguments, and the id its result entry will use: before the tool runs.
+- **`Result`-typed rejections instead of thrown control flow.** Preconditions like "a run is already active" come back as `{ ok: false, error }` carrying a tagged error, not as an exception.
+
+## Worked example: a crash mid-tool
+
+You prompt a run that deletes files. The process dies while the tool is running.
+
+```ts title="open.ts"
+import { join } from "node:path";
+import process from "node:process";
+import { defaultProviders, FileCredentialStore } from "@june/ai";
+import {
+  AgentHarness,
+  createAllTools,
+  createProviderStreamFn,
+  SqliteSessionRepo,
+  type HarnessTool,
+} from "@june/core";
+
+const repo = new SqliteSessionRepo(join(process.cwd(), ".june", "sessions.db"));
+const session = await repo.create();
+
+const provider = defaultProviders()[0];
+if (provider === undefined) throw new Error("no provider configured");
+
+const replaySafe = new Set(["read", "grep", "find", "ls"]);
+const tools: HarnessTool[] = createAllTools(process.cwd()).map((tool) => ({
+  ...tool,
+  replay: replaySafe.has(tool.name) ? "safe" : "never",
+}));
+
+const { harness, suspended } = await AgentHarness.create({
+  session,
+  streamFn: createProviderStreamFn({
+    provider,
+    auth: { store: new FileCredentialStore() },
+  }),
+  systemPrompt: "You are a coding agent.",
+  tools,
+});
+
+const result = await harness.prompt("delete the stale migrations, then run the tests");
+if (!result.ok) throw result.error;
+console.log(result.value.kind, result.value.leafId);
+```
+
+Each line below is one storage commit, in the order `agent-harness.ts` performs it. Nothing between two lines is durable.
+
+```text title="commits, first process"
+appendRecord  operation_started  id=run_9f2c  sourceLeafId=null
+                                 intent.initialMessages=[ e_a1 ]
+appendEntry   e_a1  user message "delete the stale migrations…"   leaf -> e_a1
+                                          agent_start, turn_start
+appendRecord  step_attempt       runId=run_9f2c  step="assistant"  attempt=1
+                                          provider streams   <- not durable
+appendEntry   e_b1  assistant text item                          leaf -> e_b1
+appendEntry   e_b2  function_call call_1                         leaf -> e_b2
+appendRecord  tool_started       runId=run_9f2c  toolCallId=call_1
+                                 toolName="bash"  effectiveArgs={…}
+                                 resultEntryId=e_c3  replay="never"
+                                          bash deletes files  <- uncertain window
+                                          *** process killed ***
+```
+
+`prompt()` returned nothing; the promise died with the process. What survived is a session whose newest `operation_started` has no matching `operation_finished`, and a `tool_started` record whose `resultEntryId` (`e_c3`) names an entry that does not exist.
+
+Reopen and resume:
+
+```ts title="resume.ts"
+import { AgentHarness, SqliteSessionRepo, type AgentHarnessOptions } from "@june/core";
+
+export async function reopen(
+  repo: SqliteSessionRepo,
+  sessionId: string,
+  options: Omit<AgentHarnessOptions, "session">,
+): Promise<AgentHarness> {
+  const session = await repo.open(sessionId);
+  const { harness, suspended } = await AgentHarness.create({ ...options, session });
+
+  for (const op of suspended) {
+    console.log(op.id, op.startedAt, op.prompt);
+  }
+  if (suspended.length > 0) {
+    const resumed = await harness.resume();
+    if (!resumed.ok) throw resumed.error;
+  }
+  return harness;
+}
+```
+
+`AgentHarness.create` calls `session.findOpenOperations("main")` and returns them as `suspended`. It starts nothing: reporting and resuming are separate calls, so an application can ask the user first.
+
+`resume()` then does exactly this, in order:
+
+<Steps>
+
+<Step>
+### Re-append missing prompt entries
+
+For every `ProvisionedEntry` in `op.intent.initialMessages`, if `session.getEntry(id)` is `undefined`, append it. This repairs a crash between the `operation_started` commit and the entry commits, which are separate transactions.
+
+</Step>
+
+<Step>
+### Settle unsettled tool intents
+
+Read `findRecords({ type: "tool_started", runId: op.id })`. Skip any whose `resultEntryId` already has an entry: those settled before the crash. For each survivor, produce an output string by replay policy and append it as a `function_call_output` message entry **under the reserved `resultEntryId`**.
+
+For `replay: "never"` (the case above), the output is a literal error the model then reads on the next turn:
+
+```text
+Error: tool call "bash" was interrupted before completing and was not replayed.
+Re-issue it if the work is still needed.
+```
+
+</Step>
+
+<Step>
+### Decide whether the branch is continuable
+
+Read `session.getBranch("main")`. The run continues only if the last entry is a message whose `role` is `"user"` or whose `type` is `"function_call_output"`. Otherwise the branch ends on an assistant message with nothing owed, so `resume()` commits `operation_finished` with outcome `completed` and returns.
+
+</Step>
+
+<Step>
+### Continue the loop from the durable branch
+
+The same `executeRun` path that `prompt()` uses reads the branch into `messages` and calls `runAgentLoopContinue`. The model sees the interrupted-tool error as an ordinary tool result, and the run proceeds.
+
+</Step>
+
+</Steps>
+
+```text title="commits, second process"
+appendEntry   e_c3  function_call_output call_1 "Error: tool call \"bash\" was
+                    interrupted before completing…"            leaf -> e_c3
+                                          agent_start, turn_start
+appendRecord  step_attempt       runId=run_9f2c  step="assistant"  attempt=1
+                                          provider streams
+appendEntry   e_d4  assistant text item                        leaf -> e_d4
+appendRecord  usage              runId=run_9f2c  cause="assistant"
+appendRecord  operation_finished runId=run_9f2c  outcome="completed"
+```
+
+The deletion is not re-run, every tool call in the branch has a result, and the conversation stays well-formed.
+
+<Callout type="warn">
+  Had `bash` been declared `replay: "safe"`, `resume()` would have re-executed it with the persisted
+  `effectiveArgs`. That is why the example marks only `read`, `grep`, `find`, and `ls` as safe.
+</Callout>
+
+## The effect sandwich
+
+Every tool call is bracketed by two commits with the uncertain part in the middle.
+
+```text
+commit:  tool_started { toolCallId, toolName, effectiveArgs, resultEntryId, replay }
+         tool.execute(...)                                    <- the uncertain part
+commit:  entry under resultEntryId = { type: "function_call_output", call_id, output }
+```
+
+`effectiveArgs` is the prepared value seen by hooks and `execute`. Before committing it, the harness
+requires plain JSON data and clones it. Non-finite or negative-zero numbers, `undefined`, sparse
+arrays, class instances, accessors, symbols, frozen objects, and repeated or circular object
+references fail before the tool runs, so live execution and replay cannot see different argument
+shapes.
+
+The invariant that makes recovery a query rather than a guess:
+
+> A `tool_started` record whose `resultEntryId` has no entry is an unsettled effect.
+
+`resume()` implements exactly that test (`getEntry(intent.resultEntryId) !== undefined` means settled, skip). The reserved id is what makes the settlement idempotent: the replayed settlement writes under the id the intent already promised, and `appendEntry` rejects a duplicate id with `SessionError("invalid_entry")`, so the same result can never be appended twice.
+
+Assistant generation is **not** sandwiched. A turn commits a `step_attempt` record with no reserved response id and no reserved usage id, so a crash mid-stream leaves no intent to settle: the turn is re-taken from the branch on resume.
+
+## Crash positions
+
+There are three durable positions worth naming, and `resume()` handles all three.
+
+| Crash position                                        | What is durable                                                | What `resume()` does                                                                                                             |
+| ----------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| After `operation_started`, before some prompt entries | The record with `intent.initialMessages`; some entries missing | Appends every `initialMessages` entry that has no entry yet                                                                      |
+| After `tool_started`, before the result entry         | The intent record with `effectiveArgs` and `resultEntryId`     | Re-executes if `replay: "safe"` and the tool is still registered; otherwise appends the interruption error under `resultEntryId` |
+| After `operation_finished`                            | The full run, closed                                           | Nothing: `findOpenOperations` no longer returns it, so `resume()` fails `NothingToResume`                                        |
+
+An open operation is derived, not stored: `findOpenOperations(lane)` selects `operation_started` records whose `id` is not the `runId` of any `operation_finished` record. There is no durable program counter.
+
+## What the harness writes
+
+`executeRun` passes `runAgentLoopContinue` an event sink that turns events into commits. This is the complete mapping.
+
+| Loop event                                     | Durable write                                                                                                                                     |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt()` acceptance (before the loop starts) | `operation_started` record, then one `appendEntry` per drained `nextRun` item and per prompt message                                              |
+| `turn_start`                                   | `step_attempt` record with `step: "assistant"` and an incrementing `attempt`                                                                      |
+| `beforeToolCall`                               | `tool_started` record with `effectiveArgs`, a fresh `resultEntryId`, and the tool's `replay` policy                                               |
+| `tool_execution_end` with `result.usage`       | `usage` record with `cause: "tool"`                                                                                                               |
+| `message_end`                                  | `appendEntry`: id resolved as provisioned queue id, else the `tool_started` `resultEntryId` matching `message.call_id`, else a fresh `newId("e")` |
+| `turn_end` with `message.usage !== undefined`  | `usage` record with `cause: "assistant"`                                                                                                          |
+| run end (or a thrown error)                    | `operation_finished` record with `outcome` and, when failed, `error`                                                                              |
+| `abort()`                                      | `abort_requested` record, committed _before_ `controller.abort()` is called                                                                       |
+
+Notes that follow from the table and matter in practice:
+
+- `message_start` is never persisted. Only `message_end` produces an entry, and the loop emits one `message_end` per `ResponseItem` in the turn: a turn carrying text plus a tool call commits two entries, not one.
+- The `usage` record for a turn is committed after that turn's tool results, because the loop emits `turn_end` after the tool batch. A durable assistant response without its usage record is therefore reachable; usage is a separate commit, not part of a settlement transaction.
+- `appendEntry` consumes two `seq` values (the entry and the lane move it implies); `appendRecord` consumes one.
+- `attempt` counts turns within a run, not retries. There is no retry mechanism.
+- `prompt()` emits `message_start` / `message_end` for the prompt entries itself, before `runAgentLoopContinue` emits `agent_start`. Subscribers see prompt messages ahead of the run's `agent_start`.
+
+## Lifecycle API
+
+Every method takes its precondition from harness-local state (`closed`, prompt admission, the active run), or from storage. The methods that can be refused (`prompt`, `steer`, `followUp`, `nextRun`, `abort`, `resume`) return a `Result`; `close`, `waitForIdle`, `subscribe`, and `state` do not.
+
+| Method                         | Precondition                                        | Error when it fails                                               |
+| ------------------------------ | --------------------------------------------------- | ----------------------------------------------------------------- |
+| `AgentHarness.create(options)` | none                                                | throws only on storage failure; returns `{ harness, suspended }`  |
+| `prompt(input)`                | not closed, no active run                           | `Closed`, `LaneBusy`                                              |
+| `steer(input)`                 | not closed, a run is active                         | `Closed`, `NoActiveRun`                                           |
+| `followUp(input)`              | not closed, a run is active                         | `Closed`, `NoActiveRun`                                           |
+| `nextRun(input)`               | not closed                                          | `Closed`                                                          |
+| `abort()`                      | not closed, a run is active                         | `Closed`, `NoActiveRun`                                           |
+| `resume()`                     | not closed, no active run, an open operation exists | `Closed`, `LaneBusy`, `NothingToResume`                           |
+| `close()`                      | none                                                | sets closed, then awaits prompt admission or the active run       |
+| `waitForIdle()`                | none                                                | returns the in-flight run result, or `void` immediately when idle |
+| `subscribe(listener)`          | none                                                | returns an unsubscribe function                                   |
+| `state`                        | none                                                | getter returning `HarnessState`                                   |
+
+`input` is `string | ResponseItem | ResponseItem[]` for `prompt` and `string | ResponseItem` for the queues; a bare string becomes `{ role: "user", content: input }`.
+
+<Callout type="warn">
+`Result.ok` does not mean the run succeeded. `executeRun` always resolves `Result.ok`; a provider failure lands as `{ kind: "failed", error: { code: "stream", … } }` and a thrown harness error as `{ kind: "failed", error: { code: "harness", … } }` inside the `ok` value. Only `LaneBusy`, `NoActiveRun`, `NothingToResume`, and `Closed` arrive as `Result.err`. Storage failures are thrown `SessionError`s and are not `Result`-typed at all.
+</Callout>
+
+```ts
+const started = await harness.prompt("summarise the diff");
+if (!started.ok) {
+  if (LaneBusy.is(started.error)) await harness.steer("also mention test coverage");
+  else throw started.error;
+} else if (started.value.kind === "failed") {
+  console.error(started.value.error.code, started.value.error.message);
+}
+```
+
+`close()` sets the closed flag and then awaits the active run to completion: it does not cancel it. It writes nothing itself, but the run it waits on still commits its own `operation_finished`, so a harness closed mid-run leaves a _closed_ operation, not the suspended one a crash would. Call `abort()` first if you want the run cut short. `close()` does not seal storage either; `session.close()` is yours to call.
+
+`abort()` commits `abort_requested` and then pulls the run's `AbortController`. The loop polls the signal only between the tool calls of a batch, never between turns, so the run ends because the injected [`StreamFn`](./stream-fn.mdx) returns `stopReason: "aborted"` on the next turn, which becomes `RunOutcome { kind: "aborted" }`.
+
+`HarnessState` is five fields (`isStreaming` plus the four optional `streamingText`, `model`, `thinkingLevel`, and `errorMessage`) updated as events pass through `emit`:
+
+```ts
+const { isStreaming, streamingText, model, thinkingLevel, errorMessage } = harness.state;
+
+const unsubscribe = harness.subscribe((event) => {
+  if (event.type === "message_update" && event.delta.kind === "text") {
+    console.log(event.delta.text);
+  }
+});
+```
+
+## The three queues
+
+A queued message is a `queue_enqueued` record carrying a `ProvisionedEntry`: the entry id is minted at enqueue time, before the content has a place in the tree.
+
+| Queue      | Requires an active run | When it drains                                                                      | Drain mode                                |
+| ---------- | ---------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------- |
+| `steer`    | yes                    | once as the loop starts, then after each turn, via the loop's `getSteeringMessages` | `steeringMode`, default `"one-at-a-time"` |
+| `followUp` | yes                    | when the agent would otherwise stop, via `getFollowUpMessages`                      | `followUpMode`, default `"one-at-a-time"` |
+| `nextRun`  | no                     | at the start of the next `prompt()`, placed ahead of the prompt                     | always `"all"`                            |
+
+Because the id exists before the content is placed, a queued message survives a crash and is consumed exactly once. `drainQueue` returns a record only if all of these hold: its `queue` matches, its `runId` matches the current run (for `steer` and `followUp`), no `queue_cancelled` record names its target id, and `session.getEntry(target.id)` is `undefined`. That last filter is the exactly-once rule: once the entry exists, the item can never be drained again, in this process or the next one.
+
+`"one-at-a-time"` takes the first pending item per drain; `"all"` takes every pending item.
+
+<Callout type="warn">
+  Not built yet: there is no `cancelQueued`. `QueueCancelledRecord` is defined and `drainQueue`
+  honours it, but no public method writes one.
+</Callout>
+
+## AgentHarnessOptions
+
+<TypeTable
+  type={{
+    session: {
+      description: "The durable backing store. SqliteSessionRepo.create(), or .open() returns one",
+      type: "SessionStorage",
+      required: true,
+    },
+    streamFn: {
+      description:
+        'Provider adapter. Must not throw: encode failure as stopReason "error" / "aborted"',
+      type: "StreamFn",
+      required: true,
+    },
+    systemPrompt: {
+      description: "Passed straight through to the loop context on every run",
+      type: "string",
+      required: true,
+    },
+    tools: {
+      description: "Loop tools plus their crash-replay policy",
+      type: "HarnessTool[]",
+      required: false,
+    },
+    model: { description: "Forwarded to StreamFnOptions.model", type: "string", required: false },
+    thinkingLevel: {
+      description: "Forwarded to StreamFnOptions.thinkingLevel",
+      type: "ThinkingLevel",
+      required: false,
+    },
+    steeringMode: {
+      description: "How many steer items drain per turn",
+      type: '"all" | "one-at-a-time"',
+      default: '"one-at-a-time"',
+      required: false,
+    },
+    followUpMode: {
+      description: "How many followUp items drain when the agent would stop",
+      type: '"all" | "one-at-a-time"',
+      default: '"one-at-a-time"',
+      required: false,
+    },
+    toolExecution: {
+      description: "Forwarded to the loop; one sequential tool serialises the whole batch",
+      type: '"sequential" | "parallel"',
+      required: false,
+    },
+  }}
+/>
+
+Options are read live from the object you passed, so the harness has no setters: mutate the object you own, or construct a new harness.
+
+## HarnessTool and the replay policy
+
+```ts
+type HarnessTool = AgentTool & { replay?: "never" | "safe" };
+```
+
+`replay` is copied into every `tool_started` record for that tool, and it is the only thing `resume()` consults when it finds an unsettled effect.
+
+| Policy              | On resume                                                                                                                                             | Choose it when                                                                                 |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `"never"` (default) | Appends `Error: tool call "…" was interrupted before completing and was not replayed. Re-issue it if the work is still needed.` under the reserved id | The call mutates anything outside the session: writes files, runs commands, calls a remote API |
+| `"safe"`            | Re-executes `tool.execute(toolCallId, effectiveArgs)` and appends the result; a throw becomes `Error: <message>`                                      | The call only observes: reads a file, greps, lists a directory, queries                        |
+
+Rule of thumb: a tool is `"safe"` if running it twice is indistinguishable from running it once. Anything else stays `"never"`, which is what you get by omitting the field.
+
+Two properties of the replay path to plan for:
+
+- A `"safe"` tool is replayed only if a tool with that `name` is still in `options.tools` at resume time. Drop the tool from the array and the intent settles with the interruption error instead.
+- The replay call receives the resumed run's `AbortSignal` but no `onUpdate`, skips `beforeToolCall` / `afterToolCall`, and emits no `AgentEvent`s. Subscribers see nothing until the loop restarts.
+
+## Result and TaggedError
+
+```ts
+type Result<TValue, TError> = { ok: true; value: TValue } | { ok: false; error: TError };
+```
+
+`Result` is both the type and a value namespace with `Result.ok(value)` and `Result.err(error)`. `TaggedError(tag)` returns an `Error` subclass carrying a readonly `_tag` plus a static `is(value)` guard; the constructor takes `{ message, ...props }` and assigns every prop onto the instance.
+
+`LaneBusy`, `NoActiveRun`, and `NothingToResume` carry `{ lane, message }`; `Closed` carries `{ message }`.
+
+```ts
+import { AgentHarness, LaneBusy } from "@june/core";
+
+export async function send(harness: AgentHarness, text: string): Promise<string> {
+  const run = await harness.prompt(text);
+  if (run.ok) return run.value.kind;
+  if (LaneBusy.is(run.error)) {
+    const queued = await harness.steer(text);
+    return queued.ok ? `steered as ${queued.value.entryId}` : "dropped";
+  }
+  throw run.error; // Closed
+}
+```
+
+## Current limits
+
+The class exposes the intended lifecycle, but it does not yet enforce all of its concurrency claims.
+
+<Callout type="error" title="Do not treat lane admission as race-safe yet">
+  `prompt()` checks `activeRun` before it drains queues and performs several durable writes.
+  `activeRun` is set only when `executeRun()` begins. Two concurrent callers can therefore both pass
+  the check and create open operations on `"main"`. Related terminal windows affect queue, abort,
+  resume, and close. Until roadmap `GAP-C01` and `GAP-C02` are closed with harness-level race tests,
+  callers must serialize lifecycle commands.
+</Callout>
+
+| Limit                                                                                           | Consequence                                                                                      | Roadmap                                  |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------- |
+| One lane, hard-coded as `"main"`                                                                | No independently scheduled subagent or thread lanes                                              | `GAP-D01`                                |
+| Admission and terminal state rely on process-local `activeRun` around asynchronous storage work | Concurrent lifecycle calls can create multiple open operations or enqueue against a finished run | `GAP-C01`, `GAP-C02`                     |
+| Provider generation has a `step_attempt` record but no reserved response/usage settlement       | A crash can repeat an uncertain provider call or leave response and usage durability out of sync | `GAP-C03`                                |
+| Abort can stop a tool batch before every planned call produces an output item                   | Stored conversation history can contain assistant tool calls with no matching settlement         | `GAP-C04`                                |
+| Listeners are awaited serially and their errors escape                                          | One observer can fail the run and prevent later observers from receiving the event               | `GAP-C05`                                |
+| No test constructs `AgentHarness`                                                               | Crash recovery and concurrency behavior are not regression-protected                             | `GAP-C06`                                |
+| No atomic multi-write transition                                                                | Prompt acceptance and terminal settlement span several commits                                   | `GAP-C01`–`GAP-C04`                      |
+| No compaction or context bound                                                                  | Every message on the branch is sent on each turn                                                 | `GAP-D02`                                |
+| No public fork, checkpoint, revert, or navigation operation                                     | Storage can move a lane pointer, but products cannot use a complete durable workflow             | `GAP-D03`                                |
+| `subscribe()` is live-only                                                                      | A reconnecting client can miss the interval between reading history and subscribing              | `GAP-D04`                                |
+| No public queue cancellation                                                                    | The cancellation record is defined but cannot be written through the harness                     | `GAP-D05`                                |
+| No telemetry or retry policy                                                                    | Host observability and retry semantics remain application-specific                               | `GAP-D09` and an explicit retry decision |
+
+Pi's harness document is useful for discovering these pressure points, but June does not need its register
+namespace, operation names, or exact public API. The [roadmap](../roadmap.mdx) records the June-owned outcomes
+and the reference ideas that are adopted, deferred, or rejected.
+
+<Cards>
+  <Card
+    title="Agent loop"
+    href="/docs/core/agent-loop"
+    description="The standalone loop the harness drives"
+  />
+  <Card
+    title="Session storage"
+    href="/docs/core/session-storage"
+    description="Entries, records, lanes, and the writer lease"
+  />
+  <Card
+    title="Tools"
+    href="/docs/core/tools"
+    description="The seven built-in tools you wrap as HarnessTools"
+  />
+  <Card
+    title="Roadmap"
+    href="/docs/roadmap"
+    description="What the limits above are tracked against"
+  />
+</Cards>

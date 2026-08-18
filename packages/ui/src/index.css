@@ -1,0 +1,23 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./platform-tokens.css";
+@import "./tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    border-color: var(--june-color-border);
+    outline-color: color-mix(in srgb, var(--june-color-ring) 50%, transparent);
+  }
+
+  html {
+    font-family: var(--june-font-family-ui);
+  }
+
+  body {
+    background: var(--june-color-background);
+    color: var(--june-color-foreground);
+  }
+}

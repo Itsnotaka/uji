@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, describe, test } from "node:test";
+import { AgentHarness } from "../src/harness/agent-harness.ts";
 import { SqliteSessionRepo } from "../src/harness/session/sqlite.ts";
 import type {
   MessageEntry,
@@ -10,7 +12,9 @@ import type {
   OperationStartedRecord,
   ProvisionedEntry,
 } from "../src/harness/session/types.ts";
-import { newId } from "../src/harness/session/types.ts";
+import { newId, toJsonValue } from "../src/harness/session/types.ts";
+import type { AgentTool, AssistantTurn, StreamFn } from "../src/types.ts";
+import { toolResultContent } from "../src/utils/tool-result.ts";
 
 function message(text: string): ProvisionedEntry<MessageEntry> {
   return { type: "message", id: newId("e"), message: { role: "user", content: text } };
@@ -42,6 +46,104 @@ function makeRepo(options?: { leaseTtlMs?: number }): SqliteSessionRepo {
   cleanups.push(() => void repo.close());
   return repo;
 }
+
+void describe("durable JSON values", () => {
+  void test("clones plain JSON without changing its shape", () => {
+    const value = { path: "file.ts", edits: [{ oldText: "a", newText: "b" }], limit: 2 };
+    const cloned = toJsonValue(value);
+    assert.deepEqual(cloned, value);
+    assert.notEqual(cloned, value);
+  });
+
+  void test("rejects values whose live and replayed forms would differ", () => {
+    assert.throws(() => toJsonValue({ value: undefined }), /cannot be represented as JSON/);
+    assert.throws(() => toJsonValue({ value: Number.NaN }), /finite JSON number/);
+    assert.throws(() => toJsonValue({ value: -0 }), /negative zero/);
+    assert.throws(() => toJsonValue({ value: new Date() }), /plain JSON object/);
+    assert.throws(() => toJsonValue(Object.freeze({ value: "fixed" })), /plain JSON object/);
+    const sparse: string[] = [];
+    sparse.length = 2;
+    sparse[1] = "value";
+    assert.throws(() => toJsonValue(sparse), /enumerable data property/);
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    assert.throws(() => toJsonValue(circular), /repeated or circular reference/);
+    const shared = {};
+    assert.throws(() => toJsonValue({ first: shared, second: shared }), /repeated or circular/);
+  });
+});
+
+void describe("agent harness", () => {
+  void test("persists prepared tool arguments and both usage sources", async () => {
+    const repo = makeRepo();
+    const session = await repo.create();
+    const turns: AssistantTurn[] = [
+      {
+        items: [
+          {
+            type: "function_call",
+            call_id: "call_1",
+            name: "echo",
+            arguments: JSON.stringify({ value: "hello" }),
+          },
+        ],
+        stopReason: "stop",
+      },
+      {
+        items: [{ type: "message", role: "assistant", content: "done" }],
+        stopReason: "stop",
+        usage: { input: 10, output: 2, total: 12 },
+      },
+    ];
+    let turnIndex = 0;
+    const streamFn: StreamFn = async () => turns[turnIndex++]!;
+    const tool: AgentTool<{ value: string }, undefined> = {
+      name: "echo",
+      label: "Echo",
+      description: "Echo a value",
+      parameters: { type: "object" },
+      prepareArguments(args) {
+        if (typeof args !== "object" || args === null || !("value" in args)) {
+          throw new Error("value must be a string");
+        }
+        const value = (args as { value: unknown }).value;
+        if (typeof value !== "string") throw new Error("value must be a string");
+        return { value };
+      },
+      async execute(_toolCallId, { value }) {
+        return {
+          content: toolResultContent(value),
+          details: undefined,
+          usage: { input: 1, output: 1, total: 2 },
+        };
+      },
+    };
+    const { harness } = await AgentHarness.create({
+      session,
+      streamFn,
+      systemPrompt: "",
+      tools: [tool],
+    });
+
+    const running = harness.prompt("go");
+    const concurrent = await harness.prompt("again");
+    assert.equal(concurrent.ok, false);
+    if (!concurrent.ok) assert.equal(concurrent.error._tag, "LaneBusy");
+    const result = await running;
+    assert.equal(result.ok, true);
+    const toolRecords = await session.findRecords({ type: "tool_started" });
+    assert.deepEqual(toolRecords[0]?.effectiveArgs, { value: "hello" });
+    const usageRecords = await session.findRecords({ type: "usage" });
+    assert.deepEqual(
+      usageRecords.map(({ cause, usage }) => ({ cause, usage })),
+      [
+        { cause: "tool", usage: { input: 1, output: 1, total: 2 } },
+        { cause: "assistant", usage: { input: 10, output: 2, total: 12 } },
+      ],
+    );
+    await session.close();
+  });
+});
 
 void describe("sqlite session storage", () => {
   void test("create, append, reopen preserves the log", async () => {
@@ -87,6 +189,7 @@ void describe("sqlite session storage", () => {
     );
     assert.equal(new Set(seqs).size, seqs.length);
     await restored.close();
+    assert.throws(() => restored.getMetadata(), /Session is closed/);
   });
 
   void test("findOpenOperations reports the suspended run until it finishes", async () => {
@@ -172,13 +275,18 @@ void describe("writer lease", () => {
 
   void test("an expired lease can be taken over; the stale owner's writes fail", async () => {
     const path = join(tempDir(), "sessions.db");
-    const crashed = new SqliteSessionRepo(path, { leaseTtlMs: 25 });
+    const crashed = new SqliteSessionRepo(path);
     cleanups.push(() => void crashed.close());
     const stale = await crashed.create({ id: "s1" });
     await stale.appendEntry(message("before crash"), "main");
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const successor = new SqliteSessionRepo(path, { leaseTtlMs: 25 });
+    // Simulate a crash: force the lease past expiry instead of waiting out the
+    // TTL, which the heartbeat would otherwise keep renewing.
+    const db = new DatabaseSync(path);
+    db.prepare("UPDATE writer_leases SET expires_at_ms = 0 WHERE session_id = ?").run("s1");
+    db.close();
+
+    const successor = new SqliteSessionRepo(path);
     cleanups.push(() => void successor.close());
     const taken = await successor.open("s1");
     assert.equal((await taken.getBranch("main")).length, 1);
@@ -187,6 +295,34 @@ void describe("writer lease", () => {
     await assert.rejects(
       async () => stale.appendEntry(message("zombie write"), "main"),
       (error: Error) => error.message.includes("lease lost"),
+    );
+  });
+
+  void test("the heartbeat renews an idle lease past its original TTL", async () => {
+    const path = join(tempDir(), "sessions.db");
+    const repo = new SqliteSessionRepo(path, { leaseTtlMs: 300, heartbeatIntervalMs: 50 });
+    cleanups.push(() => void repo.close());
+    const session = await repo.create({ id: "s1" });
+
+    const db = new DatabaseSync(path);
+    cleanups.push(() => db.close());
+    const expiresAt = () =>
+      (
+        db.prepare("SELECT expires_at_ms FROM writer_leases WHERE session_id = 's1'").get() as {
+          expires_at_ms: number;
+        }
+      ).expires_at_ms;
+
+    const before = expiresAt();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.ok(expiresAt() > before);
+    await session.appendEntry(message("still the owner"), "main");
+  });
+
+  void test("a heartbeat shorter than the TTL is required", () => {
+    assert.throws(
+      () => new SqliteSessionRepo(join(tempDir(), "sessions.db"), { leaseTtlMs: 25 }),
+      RangeError,
     );
   });
 });

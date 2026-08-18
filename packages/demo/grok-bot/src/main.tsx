@@ -10,6 +10,8 @@ if (!root) {
   throw new Error("Root element not found");
 }
 
+document.documentElement.classList.add("dark");
+
 createRoot(root).render(
   <StrictMode>
     <App />

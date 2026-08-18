@@ -4,12 +4,15 @@
  *
  * June deviation: pi obtains ripgrep via a managed download (ensureTool);
  * June spawns `rg` from PATH and fails with a clear error when it is missing.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/grep.ts
  */
 import { spawn } from "node:child_process";
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import type { AgentTool, AgentToolResult } from "../agent-loop.ts";
+import type { AgentTool, AgentToolResult } from "../types.ts";
+import { toolResultContent } from "../utils/tool-result.ts";
 import { resolveToCwd } from "./support/path-utils.ts";
 import {
   DEFAULT_MAX_BYTES,
@@ -131,23 +134,19 @@ function parseGrepInput(params: unknown): GrepToolInput {
 export function createGrepTool(
   cwd: string,
   options?: GrepToolOptions,
-): AgentTool<unknown, GrepToolDetails | undefined> {
+): AgentTool<GrepToolInput, GrepToolDetails | undefined> {
   const customOps = options?.operations;
   return {
     name: "grep",
     label: "grep",
     description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
     parameters: grepSchema,
-    async execute(_toolCallId, params, signal) {
-      const {
-        pattern,
-        path: searchDir,
-        glob,
-        ignoreCase,
-        literal,
-        context,
-        limit,
-      } = parseGrepInput(params);
+    prepareArguments: parseGrepInput,
+    async execute(
+      _toolCallId,
+      { pattern, path: searchDir, glob, ignoreCase, literal, context, limit },
+      signal,
+    ) {
       return new Promise<AgentToolResult<GrepToolDetails | undefined>>((resolve, reject) => {
         if (signal?.aborted) {
           reject(new Error("Operation aborted"));
@@ -309,7 +308,9 @@ export function createGrepTool(
                 return;
               }
               if (matchCount === 0) {
-                settle(() => resolve({ content: "No matches found", details: undefined }));
+                settle(() =>
+                  resolve({ content: toolResultContent("No matches found"), details: undefined }),
+                );
                 return;
               }
 
@@ -356,7 +357,7 @@ export function createGrepTool(
               if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
               settle(() =>
                 resolve({
-                  content: output,
+                  content: toolResultContent(output),
                   details: Object.keys(details).length > 0 ? details : undefined,
                 }),
               );

@@ -1,0 +1,177 @@
+---
+title: June
+description: An independent, handwritten core for building cross-platform agentic UI, and an honest inventory of what runs in this repo today
+---
+
+June is an independent, handwritten core for building cross-platform agentic UI. It is not a chat product and not only an agent loop. The position it takes is that harnesses and agent loops are already well understood and the UI layer is the unsolved part, so the core stays small and durable and many clients attach to it, rather than a UI framework with a loop welded inside it. The loop, harness, session storage, tools, and provider blocks are written in this repo; no other project's harness is imported or wrapped as the implementation.
+
+Two clients attach today, both in-process: the terminal CLI and the Electron desktop chat. A browser client has nothing to attach to yet. That is what the unbuilt `@june/protocol`, `@june/server`, and `@june/client` rows below are for.
+
+## The shape
+
+A client never runs the loop. It talks to a harness, the harness drives the loop, the loop talks to a provider through an injected `StreamFn`, and tools are bound to whichever process owns the filesystem and shell.
+
+```text
+ client                     packages/demo/grok-bot (Electron renderer)
+                            packages/demo/cli (@june/demo, OpenTUI + print mode)
+   |
+   |  today: a direct in-process call (cli), or Electron IPC
+   |         through a preload bridge (grok-bot) into the main process
+   |  planned: @june/protocol over HTTP+SSE, served by @june/server
+   v
+ AgentHarness ............... durable run bracket, tool intents, crash resume
+   |    \
+   |     `--> SessionStorage ..... SqliteSessionStorage (node:sqlite), handed out
+   |                               by SqliteSessionRepo. Write-once entries,
+   |                               append-only records
+   |  runAgentLoopContinue
+   v
+ agent loop (runAgentLoop) .. turns, tool batches, steering and follow-up queues
+   |    \
+   |     `--> AgentTool[] ....... tool host: the process that owns cwd
+   v
+ StreamFn ................... createProviderStreamFn
+   v
+ @june/ai provider .......... credential store, OAuth, streamed Responses client
+```
+
+The tool host is a placement, not a fixed location. Today every tool in `@june/core` runs against a `cwd` string in the harness process. Nothing about `AgentTool` requires that process to be local, but no remote tool host exists yet.
+
+## The smallest real composition
+
+This is the shape `packages/demo/cli/src/run.ts` uses, trimmed. Node 26 runs the TypeScript sources directly, so there is no build step.
+
+```ts
+import process from "node:process";
+import { defaultProviders, FileCredentialStore, getProvider } from "@june/ai";
+import {
+  AgentHarness,
+  createAllTools,
+  createProviderStreamFn,
+  SqliteSessionRepo,
+} from "@june/core";
+
+const repo = new SqliteSessionRepo(".june/sessions.db");
+const session = await repo.create();
+
+const { harness, suspended } = await AgentHarness.create({
+  session,
+  streamFn: createProviderStreamFn({
+    provider: getProvider(defaultProviders(), "openai-codex"),
+    auth: { store: new FileCredentialStore() },
+  }),
+  systemPrompt: "You are a coding agent. Be concise.",
+  tools: createAllTools(process.cwd()),
+});
+
+harness.subscribe((event) => {
+  if (event.type === "message_update" && event.delta.kind === "text") {
+    process.stdout.write(event.delta.text);
+  }
+});
+
+// create() reports runs a crash left open on this session; it never resumes on its own.
+// A session from repo.create() is new and has none: reopen one with repo.open(id) to hit this.
+if (suspended.length > 0) await harness.resume();
+
+const result = await harness.prompt("list the TypeScript files here");
+if (result.ok && result.value.kind === "failed") {
+  console.error(result.value.error.message);
+}
+await repo.close();
+```
+
+<Callout type="warn" title="Result.ok does not mean the run succeeded">
+  `prompt()` returns `Result.err` only for precondition failures (`LaneBusy`, `Closed`). A provider
+  failure or a thrown tool error arrives inside `Result.ok` as `{ kind: "failed", error }`. Session
+  storage failures are different again: they throw `SessionError`. [The harness
+  page](/docs/core/harness#lifecycle-api) states the three error channels in full.
+</Callout>
+
+Requirements as of today: Node 26 with `node:sqlite` available, `--experimental-ffi` for the TUI, and `rg` (ripgrep) on `PATH` for the `grep` and `find` tools.
+
+## What exists today
+
+Every package is `private` and unpublished. "Shipped" below means the source exists in this workspace and runs, not that it is on npm. `@june/schema`, `@june/ai`, and `@june/core` each declare a single `exports` entry pointing straight at `./src/index.ts`. `@june/demo` is a demo composition with a `june` script, not a published bin. [Roadmap](/docs/roadmap) carries the same table with the gap analysis attached.
+
+| Package                            | Status              | One line                                                                                                                         |
+| ---------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `@june/schema`                     | Shipped             | Responses wire item types (`ResponseItem`, `ContentPart`, `ToolDefinition`) shared by core, ai, and clients                      |
+| `@june/ai`                         | Shipped             | Provider blocks, `CredentialStore`, ChatGPT OAuth and device-code login flows, streamed Responses client                         |
+| `@june/core`                       | Shipped             | The standalone agent loop, `AgentHarness`, the SQLite session backend, and seven tools (read, bash, edit, write, grep, find, ls) |
+| `@june/demo` (`packages/demo/cli`) | Shipped             | The `june` CLI: full-screen TUI, `-p` print mode, readline login funnel                                                          |
+| `@june/protocol`                   | Reserved, not built | The wire clients would bind to. No directory exists                                                                              |
+| `@june/server`                     | Reserved, not built | The HTTP+SSE host. No directory exists                                                                                           |
+| `@june/client`                     | Reserved, not built | The typed TS client. No directory exists                                                                                         |
+
+Demos and supporting packages:
+
+| Path                     | Package               | One line                                                                                                     |
+| ------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `packages/demo/grok-bot` | `@june/demo-grok-bot` | Electron desktop chat; the main process hosts the harness, the sandboxed renderer sees a typed preload API   |
+| `packages/demo/website`  | `@june/demo-website`  | TanStack Start marketing site; it does not run a harness                                                     |
+| `packages/ui`            | `@june/ui`            | Shared Base UI primitives styled with StyleX, composed by product shells instead of growing one-off controls |
+| `packages/docs`          | `docs`                | This site                                                                                                    |
+
+## What is deliberately not here
+
+Two different lists. The first is out of scope for the core on purpose; the second is in scope and unwritten.
+
+### Out of scope by design
+
+The UI owns these. A core that ships them decides product questions on the client's behalf.
+
+- **Permission and approval chrome.** No cards, no modals, no disclosure UX. The core's share of that concern would be policy and pause, never the pixels.
+- **Chat scroller, bubbles, and chat hooks.** That is shadcn and AI SDK UI territory.
+- **IDE shell chrome.** File tree layout, pane arrangement, pixel-level mimicry of any editor.
+- **Progressive disclosure presentation.** How skills and tools appear or hide in a shell.
+- **Surface tone and styling.** Slack voice versus in-app chat voice.
+- **A baked-in MCP marketplace.** Connectors may become tool sources later; one vendor's ontology does not become the core's.
+- **An ambient workspace.** Sessions never require a folder. A product that needs files asks for one explicitly.
+
+### In scope, not built yet
+
+Named so you do not assume they work.
+
+- Protocol, server, and client packages. Clients reach the harness by direct call or Electron IPC, never over a wire.
+- The host and SDK layer between the core and a product. `sdk.provider` and `sdk.session` appear only inside `TODO` comments, so each product assembles Core itself. [The host and SDK layer](./host-sdk.mdx) is the inventory.
+- Multiple lanes. `AgentHarness` hardcodes the single lane `"main"`.
+- Compaction, branch navigation, and forks. Sessions grow without bound.
+- Retry policy. There is no attempt cap and no backoff.
+- Telemetry spans, and anything that decides whether a tool may run. `AgentLoopConfig` does take
+  `beforeToolCall`, `afterToolCall`, and `shouldStopAfterTurn`, and `beforeToolCall` can block a
+  call, but no policy in the repo uses them for approval, and the harness only records intents.
+- Skills: no catalog, no activate step, no mid-run injection.
+- Session backends other than SQLite. There is no in-memory backend.
+
+## Where to go next
+
+<Cards>
+  <Card
+    title="Quickstart"
+    href="/docs/quickstart"
+    description="Install the workspace, log in to a provider, and get a streaming run"
+  />
+  <Card
+    title="Architecture"
+    href="/docs/architecture"
+    description="The layering rule: harness may import the loop, the loop never imports the harness"
+  />
+  <Card
+    title="Core"
+    href="/docs/core"
+    description="Agent loop, harness, session storage, tools, and the provider StreamFn"
+  />
+  <Card
+    title="Roadmap"
+    href="/docs/roadmap"
+    description="What the not-built-yet rows above turn into, and in what order"
+  />
+</Cards>
+
+<Callout type="info" title="These docs are the settled subset">
+  [`blueprint.md`](https://github.com/Itsnotaka/june/blob/main/blueprint.md) at the repo root is the
+  running design journal: brain dump, open questions, dated decisions, and comparisons against pi,
+  OpenCode v2, Flue, Cursor, and Linear. It records intent. These pages record only what the source
+  supports. When the two disagree, the source wins and the page is wrong.
+</Callout>

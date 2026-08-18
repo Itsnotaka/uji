@@ -1,0 +1,6 @@
+{
+  "title": "Core",
+  "icon": "IconPackage",
+  "defaultOpen": true,
+  "pages": ["index", "agent-loop", "harness", "session-storage", "tools", "stream-fn", "recipes"]
+}

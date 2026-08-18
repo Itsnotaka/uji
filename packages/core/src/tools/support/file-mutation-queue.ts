@@ -1,3 +1,9 @@
+/**
+ * Serializes mutations per real file path so concurrent edit/write tool calls
+ * cannot interleave on one file. Ported from pi (earendil-works).
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/file-mutation-queue.ts
+ */
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 

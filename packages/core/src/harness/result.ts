@@ -1,4 +1,8 @@
-/** Result + tagged errors, ported from pi-agent-core harness/result.ts. */
+/**
+ * Result + tagged errors, ported from pi-agent-core.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/result.ts
+ */
 
 export type Result<TValue, TError> = { ok: true; value: TValue } | { ok: false; error: TError };
 

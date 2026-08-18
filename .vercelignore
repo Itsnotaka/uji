@@ -1,0 +1,12 @@
+# Build output and local state. Every workspace manifest and the lockfile stay
+# in the upload: pnpm's --frozen-lockfile check compares the lockfile against
+# the whole workspace, so removing a package directory would fail the install
+# even though the docs build never imports it.
+.next
+**/.next
+**/.turbo
+**/out
+**/dist
+**/*.tsbuildinfo
+.june
+*.log

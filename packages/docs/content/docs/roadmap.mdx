@@ -1,0 +1,152 @@
+---
+title: Roadmap
+description: "June's evidence-backed work queue: make the core correct, expose it through one host contract, then add the capabilities in the blueprint"
+---
+
+This is June's roadmap, not a parity checklist for another project. The target is the core described by
+`blueprint.md`: one durable conversation model, a small agent loop, peer clients, replaceable providers and
+tools, and host-owned policy. The current source and tests decide what exists today.
+
+The [pi harness specification](https://github.com/earendil-works/pi/blob/main/packages/agent/docs/harness.md)
+is used as an adversarial reference. It exposes crash windows, races, and API questions that June must answer.
+Its register layout, method names, storage backends, and feature count are not June acceptance criteria.
+
+## How status is assigned
+
+| Status                | Meaning                                                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------- |
+| Exists                | The named source and tests implement the stated contract end to end                      |
+| Partial               | Useful machinery exists, but a named correctness or product requirement is still missing |
+| Not started           | The package or contract is absent from source                                            |
+| Deliberate divergence | June has considered the reference design and chosen a different contract                 |
+
+An interface alone is not completion. A durable feature also needs recovery behavior and tests for its crash
+boundaries. A client demo is not a reusable host contract. A TypeScript annotation is not runtime validation.
+
+## Today
+
+Every package is private and unpublished. "Exists" means the code is present and runnable in this workspace;
+it does not mean the API is stable or production-ready.
+
+| Area                    | Status      | Evidence and limit                                                                                                                                                                                                                       |
+| ----------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Standalone agent loop   | Exists      | `runAgentLoop` and `runAgentLoopContinue` stream assistant turns, execute tools, and drain steering and follow-up input. `packages/core/test/agent-loop.test.ts` covers the loop, not the durable harness                                |
+| Durable session storage | Partial     | `SqliteSessionRepo` stores immutable entries, records, lane moves, facts, usage, and a fenced writer lease in one SQLite database. It is the only backend and has no storage version or migrations                                       |
+| Durable harness         | Partial     | `AgentHarness` records run intent, prompt entries, tool intent, output, usage, queues, abort requests, and terminal records. It is single-lane and has untested admission, terminal, observer, and recovery races                        |
+| Tool results and images | Partial     | `AgentToolResult.content` is part-based, `read` detects images by magic bytes, and the provider adapter encodes images at request time. `ResponseItem.output` still accepts `string`, and canonical conversation parts remain open-ended |
+| Coding tools            | Exists      | `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, with injectable bash operations and image processing. File tools still bind directly to a local `cwd`                                                                         |
+| Provider layer          | Partial     | `@june/ai` has provider definitions, credentials, OAuth flows, and Responses streaming. The production desktop composition currently selects `openai-codex` and a file credential store                                                  |
+| Desktop host proof      | Partial     | Electron's main process owns sessions and the harness; the renderer uses a preload API. That product-specific API is not a language-neutral protocol and does not expose the full core contract                                          |
+| Peer client packages    | Not started | `@june/protocol`, `@june/server`, and `@june/client` are reserved in the blueprint but have no directories                                                                                                                               |
+| Extension package       | Not started | `@june/plugin` is named in the blueprint but has no directory                                                                                                                                                                            |
+
+## M0: Make the existing core trustworthy
+
+These are release blockers for the current durable core. They precede new surface area because every client,
+plugin, approval flow, and subagent would inherit these semantics.
+
+| ID        | Status      | Required outcome                                                                                                                       | Evidence for today's verdict                                                                                                                                                     |
+| --------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GAP-C01` | Partial     | Serialize admission per lane so two concurrent `prompt()` calls cannot both be accepted                                                | `prompt()` checks `activeRun`, then awaits queue and storage work; `executeRun()` sets `activeRun` only afterward                                                                |
+| `GAP-C02` | Partial     | Make `prompt`, queue, abort, resume, and close one coherent lifecycle state machine                                                    | Queue admission reads process-local `activeRun`; `operation_finished` is committed before `activeRun` is cleared; `resume()` does not reject a live run                          |
+| `GAP-C03` | Partial     | Define durable provider intent and atomic response/usage settlement, including the policy for an uncertain provider call after a crash | `step_attempt` reserves neither response nor usage identity; response entry and usage record are separate commits                                                                |
+| `GAP-C04` | Partial     | Settle every assistant tool call exactly once, including calls skipped after abort                                                     | The loop can stop a sequential or parallel tool batch when the signal aborts, leaving later calls without `function_call_output` items                                           |
+| `GAP-C05` | Partial     | Isolate observers so a throwing or slow subscriber cannot change agent execution or prevent other subscribers from receiving an event  | `AgentHarness.emit()` awaits listeners in sequence and lets listener errors escape into the run                                                                                  |
+| `GAP-C06` | Not started | Add harness-level race, abort, crash-point, resume, and observer-failure tests                                                         | Core tests cover the standalone loop and SQLite storage; no test constructs `AgentHarness`                                                                                       |
+| `GAP-C07` | Partial     | Use collision-resistant durable IDs and validate persisted/wire values at runtime                                                      | `newId()` keeps eight hex characters from a UUID; schema interfaces and custom entry data are accepted without runtime decoding                                                  |
+| `GAP-C08` | Partial     | Make the canonical conversation and tool-result part contract strict end to end                                                        | Tool execution returns `ToolResultPart[]`, but `ResponseItem.output` remains `string \| ToolResultPart[]` and `ContentPart.type` is any string                                   |
+| `GAP-C09` | Partial     | Close every owned resource and prevent process or repository bookkeeping from growing across repeated opens                            | Closed `SqliteSessionStorage` objects remain in `SqliteSessionRepo.active`; detached child tracking is a no-op; host shutdown does not yet define command termination guarantees |
+| `GAP-C10` | Partial     | Index an explicit searchable-text projection, never raw entry JSON or base64 image payloads                                            | SQLite FTS triggers index the serialized entry payload, which can include images, reasoning metadata, and provider fields                                                        |
+
+M0 is complete only when the behavior is represented in tests, not when comments describe the intended race
+handling. June may implement this with transactions, a serialized lane actor, an explicit operation state, or a
+smaller equivalent; copying pi's internal register scheme is not required.
+
+## M1: Finish June's durable session surface
+
+These are blueprint requirements or prerequisites for them. Their public shape should be decided after M0 fixes
+the lifecycle they expose.
+
+| ID        | Status      | Work item                                                                                                      | Existing foundation                                                                                                                   |
+| --------- | ----------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `GAP-D01` | Partial     | Expose multiple lanes with per-lane admission and configuration                                                | Storage methods already take a lane; `AgentHarness` hardcodes `"main"`                                                                |
+| `GAP-D02` | Not started | Bound model context with explicit compaction entries and overflow handling                                     | The loop has a `transformContext` seam; the harness currently loads every message on the branch                                       |
+| `GAP-D03` | Partial     | Add branch navigation, fork, checkpoint, and revert contracts                                                  | Parent-linked entries and `moveLane()` exist; the harness and repository expose no complete workflow                                  |
+| `GAP-D04` | Partial     | Provide reconnect-safe snapshots and a durable terminal outcome query                                          | `getLog({ afterSeq })` supplies a cursor and `subscribe()` supplies live events, but there is no atomic snapshot-then-watch operation |
+| `GAP-D05` | Partial     | Expose queue inspection and cancellation with stable run ownership                                             | Queue records and `QueueCancelledRecord` exist; no public cancellation method writes one                                              |
+| `GAP-D06` | Partial     | Define one backend conformance suite and prove the storage interface with a second implementation              | `SessionRepo` and `SessionStorage` are interfaces; tests instantiate SQLite directly                                                  |
+| `GAP-D07` | Not started | Add storage versioning, ordered migrations, and newer-version refusal                                          | SQLite creates the current schema with `CREATE TABLE IF NOT EXISTS` and records no version                                            |
+| `GAP-D08` | Partial     | Make usage and operation status queryable without replaying internal log details                               | Usage and terminal records exist, but there is no public operation/status projection                                                  |
+| `GAP-D09` | Not started | Add privacy-safe telemetry context and OTLP-compatible spans                                                   | Core emits runtime events but no telemetry spans or context                                                                           |
+| `GAP-D10` | Partial     | Replace direct local-path assumptions with an explicit execution environment and optional workspace capability | Bash operations are injectable; file tools still capture a `cwd` and call the local filesystem                                        |
+
+## M2: Build one host contract for peer clients
+
+Goal: clients speak a versioned, language-neutral contract and never create a second session model. The first
+wire must cover the CLI's core use cases as well as the desktop demo; extracting the desktop facade verbatim
+would be too narrow.
+
+| ID        | Status      | Work item                                                                                                         | Evidence                                                                                                                             |
+| --------- | ----------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `GAP-H01` | Not started | Create `@june/protocol` with runtime-validated requests, responses, errors, parts, events, snapshots, and cursors | No `packages/protocol` directory exists                                                                                              |
+| `GAP-H02` | Not started | Create `@june/server` as the host for sessions, providers, tools, policy, and event fan-out                       | No `packages/server` directory exists                                                                                                |
+| `GAP-H03` | Not started | Create `@june/client` and prove the same contract from desktop, CLI, and a non-TypeScript client                  | No `packages/client` directory exists                                                                                                |
+| `GAP-H04` | Partial     | Define provider discovery, auth status, login interactions, model selection, and credential-store ownership       | `@june/ai` has the primitives; `production-dependencies.ts` makes the desktop product choices                                        |
+| `GAP-H05` | Partial     | Define session create/list/open/prompt/steer/follow-up/abort/resume/snapshot/watch/close with typed outcomes      | Core owns most primitives; the desktop API projects only its product needs and drops suspended operations                            |
+| `GAP-H06` | Partial     | Carry every canonical event and part without flattening, including reasoning, tools, usage, and images            | Desktop forwards running state and text deltas, then reloads message entries for snapshots                                           |
+| `GAP-H07` | Partial     | Separate protocol identity from UI presentation and remove Core types from the public client contract             | Core stays out of the renderer at runtime, but `desktop-api.ts` uses `MessageEntry` as its shared message type                       |
+| `GAP-H08` | Partial     | Specify graceful host shutdown, active-run policy, and command cleanup                                            | `JuneHost.close()` closes its active harness, session, repository, and profile repository; process-level guarantees remain undefined |
+
+The desktop demo now supports agent profiles, per-agent conversation selection, editing agent instructions, and
+repository teardown. Those are product features, not proof that the shared host layer exists.
+
+## M3: Add blueprint capabilities
+
+These extend June's core after the durable and wire contracts are sound.
+
+| ID        | Status      | Work item                                                                                            | Evidence                                                                            |
+| --------- | ----------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `GAP-P01` | Not started | Progressive skills: catalog metadata, activate on demand, inject content, and emit activation events | No catalog, activation, injection, or skill event surface exists                    |
+| `GAP-P02` | Not started | In-process code plugins with dynamic tool and event registration, separate from text skills          | No `packages/plugin` directory or dynamic registry exists                           |
+| `GAP-P03` | Not started | Contextual approvals as durable policy decisions with pause, inspect, approve/deny, and resume       | No approval record or paused-operation state exists                                 |
+| `GAP-P04` | Not started | Suspendable subagents that return through the same session/event model                               | No child-agent operation exists                                                     |
+| `GAP-P05` | Not started | User, agent, client, session, and workspace identity with ACL enforcement at core boundaries         | Sessions have ids, but no actor identity or authorization policy exists             |
+| `GAP-P06` | Not started | Durable triggers, schedules, and external wake-up paths                                              | No trigger, schedule, or wake record/API exists                                     |
+| `GAP-P07` | Partial     | Layered guidance and project instructions with inspectable provenance                                | Callers can pass one `systemPrompt`; no layered resolver or provenance model exists |
+| `GAP-P08` | Not started | MCP and connector integration through the tool host and the same approval/identity model             | No connector or MCP host exists                                                     |
+
+## M4: Run recreate-all proofs
+
+The blueprint's product test is not a feature-count contest. A small set of June primitives should be able to
+recreate materially different products without private session models.
+
+| Proof                               | What it must exercise                                                                            |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Coding agent                        | Workspace tools, guidance, checkpoints, permissions, compaction, and crash recovery              |
+| Desktop and web chat on one session | Snapshot/watch correctness, multi-client fan-out, images, abort, and reconnect                   |
+| Linear-style agent                  | Identity, ACLs, triggers, connectors, approvals, and durable background work                     |
+| Notion-style agent                  | Structured content parts, app-owned tools, provenance, and optional workspace                    |
+| Subagent workflow                   | Multiple lanes or equivalent child execution, suspension, usage attribution, and one event model |
+
+## What June takes from the pi harness review
+
+The reference review changes June's test plan more than its API design.
+
+| Classification          | Decision                                                                                                                                                                                            |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Adopt the problem       | Atomic admission, explicit effect uncertainty, total recoverable operation state, coherent tool-call settlement, snapshot/subscription race handling, schema evolution, and adversarial crash tests |
+| Decide in June          | Whether the durable mechanism is a transaction, lane actor, state record, or another smaller abstraction; exact compaction and fork semantics; public error and event names                         |
+| Defer until required    | Multiple concrete storage backends, manual drive mode, a broad hook registry, and branch indexes                                                                                                    |
+| Reject as a parity goal | Matching pi's register namespace, UUID version, backend count, API names, SQLite layout, or every operation and hook solely because pi has them                                                     |
+
+## Dependency order
+
+1. Close `GAP-C01` through `GAP-C10` and prove them with harness tests.
+2. Settle the durable session surface (`GAP-D01` through `GAP-D10`).
+3. Freeze canonical parts, events, errors, snapshots, and cursors in `@june/protocol`.
+4. Build the host and clients against that contract.
+5. Add skills, plugins, approvals, subagents, identity, triggers, and connectors.
+6. Use the recreate-all proofs to remove abstractions that do not earn their place.
+
+This order is a dependency graph, not a date forecast. New feature work may prototype earlier, but it does not
+become a core guarantee until the layer beneath it is testable and durable.

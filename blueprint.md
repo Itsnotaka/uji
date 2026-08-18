@@ -348,6 +348,9 @@ No first-party GUI/IDE, no LSP/index, no multi-file apply UX, no MCP marketplace
 4. Do not expect a TUI harness to be the Cursor shell
 5. **One-way decoupling** (Pi book ch.1 — *Decoupling: core doesn't know harness*): harness may depend on the loop; the loop must never import harness. See Decision 2026-08-12 below.
 
+### Porting basis (Decision 2026-08-14)
+Primary reference is pi's `packages/agent` (`@earendil-works/pi-agent-core` — published on npm at 0.84.x, though the harness inside it is still being built out against `docs/harness.md`; the spec itself calls parts of the in-tree code unfinished). June's agent loop, harness, session model, SQLite backend, and the read/bash/edit/write tools track that package. `pi-coding-agent` is the fallback only where the agent package has no equivalent (grep/find/ls, shell utils). Direction: adopt an ExecutionEnv-style effects boundary (harness.md §4.2) instead of per-tool Operations seams — the old Read/Write/EditOperations seams are gone; bash's `BashOperations` stands in for `env.executeShell` until June grows a real execution-env abstraction. Every ported file carries a `Based on <link>` credit to its pi source.
+
 ---
 
 ## Cursor deep pass (official + community)
@@ -548,6 +551,7 @@ If June Core is "good," handwritten support for these exists (UI chrome can be d
 12. **Multi-client** same session (desktop + web + mobile observe)
 13. **Pluggable tool host placement** (this machine vs cloud VM)
 14. **Connectors / MCP** as tool sources without baking one product's ontology in
+15. **Durable cross-agent runs** — an agent can admit an addressable child run, send it messages, suspend without holding a hot process, and settle its result exactly once into the parent conversation. Agent catalogs, delegation policy, and delegation UI remain composition/UI.
 
 ### Implication
 
@@ -801,7 +805,7 @@ Daniel's sidekick (June) keeps a working copy of this repo on the shared compute
 Tooling installed there for on-the-fly work:
 - **Ghostty** as the terminal
 - **VSCodium** (`codium`) as the editor (pure OSS VS Code)
-- **mise**: Node 24 + pnpm 11 (see `mise.toml`)
+- **mise**: Node 26 + pnpm 11 (see `mise.toml`)
 - CLIs on PATH: `claude` (Claude Code), `codex` (OpenAI), `pi` (earendil-works), `agent` / `cursor-agent` (Cursor CLI)
 - Codex CLI signed in on that machine
 
@@ -1019,6 +1023,22 @@ If the demo forces the loop to import session/skills/UI concerns, we have alread
 
 ---
 
+## Decision 2026-08-13 — Desktop app, showcase site, and shared UI
+
+The demo boundary is now concrete:
+
+- `packages/demo/grok-bot` is an Electron app. Electron main hosts `AgentHarness`, provider auth, and the local SQLite session repo; the sandboxed renderer sees only a typed preload API.
+- Bot sessions do not require a folder. A future coding product may ask for one and provide it through `sdk.workspace`; June Core never invents an ambient workspace.
+- The desktop loop is intentionally small: ChatGPT login, local history, streaming text, stop, new chat, and four editable agent profiles. Every profile owns real Core-backed conversations; there are no preview-only bots. Profile edits persist in the session database and become the harness instructions for subsequent turns.
+- Those profiles are currently separate conversations behind one active harness, not communicating participants. Cross-agent delegation remains the durable Core gap recorded below; the renderer must not simulate it.
+- `packages/demo/website` is a TanStack Start marketing site about June. It shows the desktop product; it does not duplicate or simulate the harness.
+- `packages/ui` is the shared `@june/ui` source package, initialized from shadcn's Base UI `base-nova` template. Product shells compose its generated Button/Input/Input Group/Textarea primitives instead of growing one-off control wrappers.
+- Desktop transcript data uses Core's exported `MessageEntry` shape across the preload boundary. View-only prop types live in one shared view-model module; components do not redeclare local message types.
+
+This is a demo composition, not a new architecture mandate: a production multi-client host can still expose the same Core through `protocol`/`server`. The Electron app keeps the loop out of the renderer without requiring a localhost HTTP server for one local window.
+
+---
+
 ## Decision 2026-08-12 — Monorepo cut landed; auth copies Pi syntax; @june/demo; no Effect
 
 ### What landed (in-repo, verified live)
@@ -1029,7 +1049,7 @@ Turborepo + pnpm workspace cut, opencode2-style layout, no build step (Node 24 t
 |---|---|
 | `@june/schema` | Responses wire item types (June parts adapt from these later) |
 | `@june/ai` | Auth blocks + provider blocks + streamed Responses client |
-| `@june/core` | `openSession` (JSONL), `runAgent` loop, `bashTool` — loop imports only `@june/ai` + types; session composed in by the caller (core ↛ harness rule holds) |
+| `@june/core` | `openSession` (JSONL), `runAgent` loop, `bashTool` — loop cluster remains independent of providers and sessions; session composed in by the caller (core ↛ harness rule holds) |
 | `@june/demo` | `june login/logout/status/run` CLI — the funnel's first client |
 
 Verified live over the codex backend: `gpt-5.6-luna` medium, full loop (`user → function_call → function_call_output → message`), streamed deltas, bash round trip.
@@ -1083,14 +1103,34 @@ Daniel: adopt pi's **new** AgentHarness idea today — pi carries a back-port fo
 
 ### What `@june/core` is now
 
-- `agent-loop.ts` — standalone loop (unchanged; imports schema types only; pi loop semantics: steering/follow-up drain modes, sequential/parallel batches, before/after hooks, fail-all on `length`, prepareNextTurn).
+- `agent-loop.ts` — standalone Pi-structured loop; public contracts, Responses-wire substitutions, `EventStream`, and result helpers live in dedicated leaf files. The provider adapter remains `stream-fn.ts`, outside that cluster, and every composition passes its `StreamFn` explicitly—June does not copy Pi's process-global default registry. The loop remains independent of providers and sessions (steering/follow-up drain modes, sequential/parallel batches, before/after hooks, fail-all on `length`, prepareNextTurn).
 - `harness/` — the only composition over the loop, on pi's new durability model:
-  - **Storage contract** (`harness/session/types.ts`, from pi `harness/session/types.d.ts`): write-once **entry tree** (parentId linkage; lane pointers name leaves) + append-only **records ledger** (operation_started/finished, step_attempt, tool_started, queue_enqueued/cancelled, abort_requested, usage) + facts, all ordered by one total `seq`. JSONL backend (`JsonlSessionRepo`, one LogItem per line, replayed on open); SQLite/DO are future adapters of the same contract.
+  - **Storage contract** (`harness/session/types.ts`, from pi `harness/session/types.d.ts`): write-once **entry tree** (parentId linkage; lane pointers name leaves) + append-only **records ledger** (operation_started/finished, step_attempt, tool_started, queue_enqueued/cancelled, abort_requested, usage) + facts, all ordered by one total `seq`. SQLite is the shipped backend, with one writer lease per session; JSONL and Durable Object adapters remain future implementations of the same contract.
   - **Effect sandwich**: `tool_started` intent (with a provisioned settlement-entry id and a `replay: "never" | "safe"` policy per tool) commits before the tool runs; the settlement is the `function_call_output` entry at that id. `step_attempt` brackets assistant streaming; `operation_started/finished` bracket runs.
   - **Crash resume**: `findOpenOperations` on open → `resume()` settles unsettled intents (safe → re-execute; never → error entry telling the model to re-issue), then continues the loop from the durable branch. Queues are records, so steer/followUp survive crashes too.
   - Result-typed rejections (`LaneBusy`, `NoActiveRun`, `NothingToResume`, `Closed`) via pi's `Result`/`TaggedError`.
 - Scope held to the smallest end-to-end slice: one lane ("main"), run operations only. Deferred (compose onto the same log later, no schema change): multiple lanes, compaction, branch navigation/fork, skills/templates, deferred-suspend, manual action stepping (`peekAction`/`executeAction`), labels/stats.
 - The harness drives `runAgentLoop` through the loop's hook surface (per the locked ch.1 rule) — note pi's current dist reducer no longer imports the loop; June keeps the one-way rule anyway because it holds the loop standalone.
+
+### Known gap — durable cross-agent communication
+
+Arbitrary `AgentTool` composition is not durable sub-agent support. A host can create a second `AgentHarness` inside a tool and await it, but the current one-lane, inline-tool harness has no persisted parent/child causality, directed mailbox, deliberate suspension/wake, or externally settled tool result. It keeps the parent process hot and leaves crash recovery to product-specific code.
+
+The smallest Core additions are:
+
+1. **Addressable durable run + mailbox** — a language-neutral `RunRef { sessionId, lane, runId }`, a persisted parent-tool-call → child-run link, and idempotent directed message admission. Model-visible `delegate`, `send`, and `wait` remain ordinary tools over this primitive.
+2. **Deferred tool settlement + wake** — a tool resolves as completed or suspended on a `RunRef`. Core persists the suspension, releases the hot parent loop, then settles the already-provisioned result entry exactly once when the child completes and resumes the parent. The same mechanism serves approvals and external wakes.
+
+Grok Bot's installed host is a useful interaction reference, not a sufficient durability model. Its `SendToAgent` tool acknowledges immediately, writes sender/receiver transcript mirrors tagged with the peer, records a conversation-partner edge, and schedules a hidden `[agent]` wake turn on a serialized agent lane. Priority delivery may interrupt agent work but not a user turn. Its pending inbound mailbox is an in-memory map, however, so a crash can lose an admitted message before the receiver transcript entry exists. June should retain the asynchronous messaging and hidden-wake semantics while putting admission in the durable session log.
+
+Cross-agent invariants:
+
+- Persist the parent link before child admission; derive the admission idempotency key from the parent session, run, and tool call.
+- Restarting at any boundary creates at most one child and at most one parent settlement.
+- Store child completion before waking the parent; never wake on uncommitted output.
+- Directed messages survive restart and are admitted once at a safe child boundary.
+- Linked-run lifecycle and messages use stable IDs/cursors in the session log and protocol so reconnecting clients reconstruct them without renderer state.
+- Prove crashes after link/before admission, during child work, after child completion/before parent settlement, and after settlement/before parent continuation.
 
 ### Verified live on the box
 

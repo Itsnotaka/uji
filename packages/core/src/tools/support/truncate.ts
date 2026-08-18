@@ -6,6 +6,8 @@
  * - Byte limit (default: 50KB)
  *
  * Never returns partial lines (except bash tail truncation edge case).
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/truncate.ts
  */
 
 export const DEFAULT_MAX_LINES = 2000;

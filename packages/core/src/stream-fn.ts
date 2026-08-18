@@ -5,7 +5,7 @@
  */
 import { resolveProviderAuth, streamResponses } from "@june/ai";
 import type { CredentialStore, ModelAuth, Provider } from "@june/ai";
-import type { AssistantTurn, StreamFn } from "./agent-loop.ts";
+import type { AssistantTurn, StreamFn } from "./types.ts";
 
 export interface ProviderStreamFnOptions {
   provider: Provider;

@@ -1,10 +1,13 @@
 /**
  * Ls tool ported from pi's tools/ls.ts, adapted to June's AgentTool contract.
  * TUI rendering code from pi is dropped.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/ls.ts
  */
 import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentTool, AgentToolResult } from "../agent-loop.ts";
+import type { AgentTool } from "../types.ts";
+import { toolResultContent } from "../utils/tool-result.ts";
 import { pathExists, resolveToCwd } from "./support/path-utils.ts";
 import {
   DEFAULT_MAX_BYTES,
@@ -53,7 +56,7 @@ export interface LsToolOptions {
   operations?: LsOperations;
 }
 
-const lsParameters = {
+const lsParameters: Record<string, unknown> = {
   type: "object",
   properties: {
     path: {
@@ -65,7 +68,7 @@ const lsParameters = {
       description: "Maximum number of entries to return (default: 500)",
     },
   },
-} as const;
+};
 
 function parseLsParams(params: unknown): LsToolInput {
   if (params === undefined || params === null) {
@@ -87,115 +90,88 @@ function parseLsParams(params: unknown): LsToolInput {
 export function createLsTool(
   cwd: string,
   options?: LsToolOptions,
-): AgentTool<unknown, LsToolDetails | undefined> {
+): AgentTool<LsToolInput, LsToolDetails | undefined> {
   const ops = options?.operations ?? defaultLsOperations;
   return {
     name: "ls",
     label: "ls",
     description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
-    parameters: lsParameters as unknown as Record<string, unknown>,
-    async execute(_toolCallId, params, signal?, _onUpdate?) {
-      const { path, limit } = parseLsParams(params);
-      return new Promise<AgentToolResult<LsToolDetails | undefined>>((resolve, reject) => {
-        if (signal?.aborted) {
-          reject(new Error("Operation aborted"));
-          return;
+    parameters: lsParameters,
+    prepareArguments: parseLsParams,
+    async execute(_toolCallId, { path, limit }, signal?, _onUpdate?) {
+      const throwIfAborted = (): void => {
+        if (signal?.aborted) throw new Error("Operation aborted");
+      };
+      const dirPath = resolveToCwd(path || ".", cwd);
+      const effectiveLimit = limit ?? DEFAULT_LIMIT;
+
+      throwIfAborted();
+      if (!(await ops.exists(dirPath))) throw new Error(`Path not found: ${dirPath}`);
+      throwIfAborted();
+
+      const stat = await ops.stat(dirPath);
+      throwIfAborted();
+      if (!stat.isDirectory()) throw new Error(`Not a directory: ${dirPath}`);
+
+      let entries: string[];
+      try {
+        entries = await ops.readdir(dirPath);
+      } catch (error) {
+        throwIfAborted();
+        throw new Error(
+          `Cannot read directory: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
+      throwIfAborted();
+      entries.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+      const results: string[] = [];
+      let entryLimitReached = false;
+      for (const entry of entries) {
+        if (results.length >= effectiveLimit) {
+          entryLimitReached = true;
+          break;
         }
 
-        const onAbort = () => reject(new Error("Operation aborted"));
-        signal?.addEventListener("abort", onAbort, { once: true });
+        throwIfAborted();
+        try {
+          const entryStat = await ops.stat(join(dirPath, entry));
+          throwIfAborted();
+          results.push(entry + (entryStat.isDirectory() ? "/" : ""));
+        } catch {
+          throwIfAborted();
+          // A disappearing or unreadable entry does not invalidate the listing.
+          continue;
+        }
+      }
 
-        void (async () => {
-          try {
-            const dirPath = resolveToCwd(path || ".", cwd);
-            const effectiveLimit = limit ?? DEFAULT_LIMIT;
+      if (results.length === 0) {
+        return { content: toolResultContent("(empty directory)"), details: undefined };
+      }
 
-            // Check if path exists.
-            if (!(await ops.exists(dirPath))) {
-              reject(new Error(`Path not found: ${dirPath}`));
-              return;
-            }
-
-            // Check if path is a directory.
-            const stat = await ops.stat(dirPath);
-            if (!stat.isDirectory()) {
-              reject(new Error(`Not a directory: ${dirPath}`));
-              return;
-            }
-
-            // Read directory entries.
-            let entries: string[];
-            try {
-              entries = await ops.readdir(dirPath);
-            } catch (e) {
-              reject(
-                new Error(`Cannot read directory: ${e instanceof Error ? e.message : String(e)}`),
-              );
-              return;
-            }
-
-            // Sort alphabetically, case-insensitive.
-            entries.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-
-            // Format entries with directory indicators.
-            const results: string[] = [];
-            let entryLimitReached = false;
-            for (const entry of entries) {
-              if (results.length >= effectiveLimit) {
-                entryLimitReached = true;
-                break;
-              }
-
-              const fullPath = join(dirPath, entry);
-              let suffix = "";
-              try {
-                const entryStat = await ops.stat(fullPath);
-                if (entryStat.isDirectory()) suffix = "/";
-              } catch {
-                // Skip entries we cannot stat.
-                continue;
-              }
-              results.push(entry + suffix);
-            }
-
-            signal?.removeEventListener("abort", onAbort);
-
-            if (results.length === 0) {
-              resolve({ content: "(empty directory)", details: undefined });
-              return;
-            }
-
-            const rawOutput = results.join("\n");
-            // Apply byte truncation. There is no separate line limit because entry count is already capped.
-            const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
-            let output = truncation.content;
-            const details: LsToolDetails = {};
-            // Build actionable notices for truncation and entry limits.
-            const notices: string[] = [];
-            if (entryLimitReached) {
-              notices.push(
-                `${effectiveLimit} entries limit reached. Use limit=${effectiveLimit * 2} for more`,
-              );
-              details.entryLimitReached = effectiveLimit;
-            }
-            if (truncation.truncated) {
-              notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
-              details.truncation = truncation;
-            }
-            if (notices.length > 0) {
-              output += `\n\n[${notices.join(". ")}]`;
-            }
-
-            resolve({
-              content: output,
-              details: Object.keys(details).length > 0 ? details : undefined,
-            });
-          } catch (e) {
-            signal?.removeEventListener("abort", onAbort);
-            reject(e);
-          }
-        })();
+      const truncation = truncateHead(results.join("\n"), {
+        maxLines: Number.MAX_SAFE_INTEGER,
       });
+      let output = truncation.content;
+      const details: LsToolDetails = {};
+      const notices: string[] = [];
+      if (entryLimitReached) {
+        notices.push(
+          `${effectiveLimit} entries limit reached. Use limit=${effectiveLimit * 2} for more`,
+        );
+        details.entryLimitReached = effectiveLimit;
+      }
+      if (truncation.truncated) {
+        notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+        details.truncation = truncation;
+      }
+      if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
+
+      return {
+        content: toolResultContent(output),
+        details: Object.keys(details).length > 0 ? details : undefined,
+      };
     },
   };
 }

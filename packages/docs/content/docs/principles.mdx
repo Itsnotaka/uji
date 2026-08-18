@@ -1,0 +1,175 @@
+---
+title: Principles
+description: The decisions that are settled in June, the reasoning behind each one, and where it shows up in the code today
+---
+
+These are the decisions that are closed. They come from `blueprint.md`, and they exist as a page so nobody re-argues them in a pull request.
+
+Read the bolded line of each section as a rule. Everything after it is rationale and evidence. Where a principle describes something June intends but has not built, the section says so in a **Not built yet** line rather than implying the capability exists.
+
+## 1. Handwritten
+
+**June never imports another project's harness as its implementation.**
+
+Pi, OpenCode v2, and Flue are read for their shapes: the effect sandwich, admit/pending/steer/queue vocabulary, parts-based messages, the client/server cut. None of them is a dependency. The reason is ownership: June's distribution bet is copy-pastable source, and you cannot hand someone a block whose behaviour lives in a third party's runtime. "June sits on Pi" and "June embeds OpenCode" are both rejected product stories.
+
+Where it shows up: `packages/core/src/agent-loop.ts` and `packages/core/src/harness/agent-harness.ts` carry module comments naming the pi design they were ported from, and every line below those comments is written in this repo. `@june/core`'s dependencies are `@june/ai`, `@june/schema`, and `diff`: no `@earendil-works/*`, no `@opencode-ai/*`, no `@flue/*` anywhere in the workspace.
+
+## 2. Core does not know harness
+
+**The loop must never import the harness; the harness imports exactly one value from the loop.**
+
+The dependency is one-way, not mutual blindness. If you delete `packages/core/src/harness/` the loop compiles unchanged. That constraint is what keeps the loop small: session storage, crash recovery, and queue bookkeeping compose upward instead of accreting into the thing that drives turns.
+
+| Layer                                                                      | May import                                                 | Must not import                                             |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
+| Loop cluster (`agent-loop.ts`, `types.ts`, `responses-wire.ts`, `utils/*`) | its own leaf modules and `@june/schema` types              | session storage, harness modules, providers, Node built-ins |
+| Harness (`harness/`)                                                       | `runAgentLoopContinue`, plus `import type` from `types.ts` | nothing that would make the loop depend back on it          |
+
+Where it shows up: `agent-loop.ts` imports only its dedicated contract, Responses-wire,
+event-stream, and tool-result leaf modules. `agent-harness.ts` imports one runtime value from the loop,
+`runAgentLoopContinue`; its loop contracts come from `types.ts` and erase at compile time. The
+loop's conformance tests preserve the shared behavior without making June's structure depend on a
+remote Pi source file.
+
+The practical test is that the loop runs with no session at all:
+
+```ts
+import { runAgentLoop } from "@june/core";
+import type { AgentContext, StreamFn } from "@june/core";
+
+const fakeStream: StreamFn = async () => ({
+  items: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+  stopReason: "stop",
+});
+
+const context: AgentContext = { systemPrompt: "Be terse.", messages: [], tools: [] };
+
+const items = await runAgentLoop(
+  [{ role: "user", content: "hello" }],
+  context,
+  {},
+  () => {},
+  undefined,
+  fakeStream,
+);
+```
+
+## 3. Blocks, not a framework
+
+**Every replaceable piece is an explicit parameter at the composition site; there is no kernel the other pieces hang off.**
+
+Storage, the stream function, the provider, the credential store, and the tool set are each a named type with a shipped implementation you pass in by hand. Nothing registers itself into a global and nothing resolves a service out of a registry. This costs a few lines at startup and buys the ability to swap any one block without forking the rest.
+
+One ambient read survives on purpose, in `@june/ai` and only there: `defaultAuthPath()` reads `JUNE_HOME` to pick `FileCredentialStore`'s default file, and `resolveProviderAuth` falls back to `process.env` for a provider API key when the store holds nothing. Both are overridable: pass a path to `new FileCredentialStore(path)`, pass `env` in `ResolveOptions`. `@june/core` reads no environment outside the `bash` tool's child-process environment.
+
+| Block            | Contract                         | Shipped implementation                                                     |
+| ---------------- | -------------------------------- | -------------------------------------------------------------------------- |
+| Session storage  | `SessionStorage` / `SessionRepo` | `SqliteSessionStorage` / `SqliteSessionRepo`                               |
+| Model transport  | `StreamFn`                       | `createProviderStreamFn`                                                   |
+| Provider         | `Provider` (`@june/ai`)          | `openaiCodexProvider`, `openaiProvider`                                    |
+| Credential store | `CredentialStore` (`@june/ai`)   | `FileCredentialStore`                                                      |
+| Tools            | `AgentTool` / `HarnessTool`      | `createTool`, `createCodingTools`, `createReadOnlyTools`, `createAllTools` |
+
+Every row of that table is one argument at one call site:
+
+```ts
+const { harness } = await AgentHarness.create({
+  session, // SessionStorage, from SqliteSessionRepo
+  streamFn: createProviderStreamFn({ provider, auth: { store } }), // StreamFn
+  systemPrompt: "You are a coding agent.", // a plain string you own
+  tools, // HarnessTool[]: AgentTool plus a replay policy
+});
+```
+
+The runnable version of that composition, with the imports and the credential wiring, is in [the quickstart](/docs/quickstart#durable-session-storage-plus-the-harness).
+
+**Not built yet:** there is no `createJune()` builder. The `blueprint.md` sketch showing one options object is a sketch; today you call the constructors above directly. SQLite is also the only storage backend that ships: the in-memory and JSONL backends the contract was designed for do not exist, so `SessionStorage` has exactly one implementation to test against.
+
+## 4. Plain TypeScript, no Effect
+
+**June is written in plain TypeScript. Effect is not adopted, and the escape hatch is narrow.**
+
+The A/B was live in the reference projects: pi is plain TypeScript, OpenCode v2 is Effect v4. June follows pi for one dominant reason: distribution. An `Effect<A, E, R>` signature propagates into every caller, so an Effect-shaped block cannot be pasted into a non-Effect application, which is the whole point of the shadcn-style delivery model. The second reason is that Effect's benefits stop at the process boundary: the surface clients bind to is a wire format, and typed error channels and layers never reach it.
+
+The costs are real and are paid explicitly:
+
+| Given up                                           | What June uses instead                                 | Where                                                                                                                                             |
+| -------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Typed error channel                                | `Result` union plus `TaggedError` subclasses           | `harness/result.ts` defines `Result` and `TaggedError`; `harness/agent-harness.ts` defines `LaneBusy`, `NoActiveRun`, `NothingToResume`, `Closed` |
+| Layer-based dependency injection                   | Adapter values passed as parameters                    | `AgentHarnessOptions`, `ProviderStreamFnOptions`                                                                                                  |
+| Structured concurrency                             | `AbortSignal` threaded through explicitly              | `AgentHarness.abort()`, `StreamFnOptions.signal`, tool `execute(_, _, signal)`                                                                    |
+| Direct crib-ability of OpenCode's Effect internals | Nothing: their shapes transfer, their code never could | The handwritten rule (§1)                                                                                                                         |
+
+Be honest about one gap in the current code: error handling is not uniform. Harness precondition failures arrive as `Result.err`, but session storage failures are thrown `SessionError` instances, and a run that fails inside the provider still resolves as `Result.ok` carrying `{ kind: "failed" }`. That split is a consequence of not having a typed error channel, not a design intent.
+
+The escape hatch: if a future `@june/server` wants Effect for internal runtime composition, it stays an implementation detail behind the wire and must never appear in the public types of the packages clients bind to: today `@june/schema`, `@june/ai`, and `@june/core`. The default answer is no.
+
+## 5. The wire is the contract
+
+**The stable surface clients bind to is the protocol and the schema, not TypeScript internals.**
+
+Multi-client means any language, including a Swift app on iOS or macOS, must be able to implement a client without a TypeScript runtime. That forces a language-neutral wire (HTTP plus SSE or an equivalent that generates clean clients), and it forbids TypeScript-only RPC tricks in the host API. It also resolves the tension between "stable contract" and "you own the pasted source": the wire is versioned and stable, the React and desktop implementations are code you copy and change.
+
+Where it shows up today: `@june/schema` exists and holds the v0 wire types: `ResponseItem`, `ContentPart`, `ToolDefinition`, in OpenAI Responses item shape. `@june/core` and `@june/ai` both depend on it and neither redefines those types.
+
+**Not built yet:** `@june/protocol`, `@june/server`, and `@june/client` do not exist. There is no HTTP surface, no SSE endpoint, no OpenAPI document, and no Swift client. June parts are also not defined: `@june/schema` still carries Responses items directly, and the module comment says June parts adapt from these later. Treat this section as the locked target, not a shipped package.
+
+## 6. Clients are peers, never the loop
+
+**A UI attaches to a host that owns the loop; it never runs the loop itself.**
+
+This is the OpenCode cut, and it is the reason the same primitives can drive a desktop shell, a web chat, and a CLI. A client that embeds the loop owns durability, tool execution, and provider credentials by accident, and then two clients on one session need a second session model to reconcile. Keeping the loop on one side of a process boundary makes multi-client fan-out a host concern.
+
+Where it shows up: in `packages/demo/grok-bot`, the Electron main process constructs `SqliteSessionRepo` and `AgentHarness` in `src/main/june-host.ts`, and the renderer reaches them only through the typed preload API in `src/preload/index.ts`. The renderer's single reference to `@june/core` is `import type { MessageEntry }` in `src/desktop-api.ts`: a type that erases at compile time, so no core runtime code is bundled into the window.
+
+**Not built yet:** the only client boundary that exists is Electron IPC. There is no network host, so "many clients on one session" is unproven in code.
+
+## 7. Pi-simple harness
+
+**The default tool set stays small, and the system prompt stays a plain value the caller owns.**
+
+The failure mode June is avoiding is the one recorded in `blueprint.md`: a core where customizing the system prompt is hard. `AgentHarnessOptions` has nine fields, all of them things you would name out loud, and `systemPrompt` is a required `string` you pass in. There is no template engine, no prompt file discovery, no layered instruction resolution, and no config format to learn. If the knobs list ever needs a glossary, it has failed this test.
+
+The shipped tool set is seven tools and three preset bundles:
+
+| Factory                    | Tools                                   |
+| -------------------------- | --------------------------------------- |
+| `createCodingTools(cwd)`   | read, bash, edit, write                 |
+| `createReadOnlyTools(cwd)` | read, grep, find, ls                    |
+| `createAllTools(cwd)`      | read, bash, edit, write, grep, find, ls |
+
+Product features that reference implementations weld into their cores (plan mode, MCP marketplaces, approval chrome, built-in todos) compose around the harness instead. None of them exist in `@june/core`: `grep -rin "skill\|mcp\|permission" packages/core/src` returns nothing. The harness stays a steerable shell, and the only access control around it today is the SQLite writer lease in `harness/session/sqlite.ts`, one writer per session, nothing about who may run what. Workspace trust and an HTTP transport are the blueprint's plan for what wraps the harness next, not code you can call.
+
+**Not built yet:** skills and resources are not implemented. There is no skill catalog, no activation, no mid-run prompt-fragment injection, and no `skill.available` / `skill.activated` / `tools.changed` events; the words do not appear in `packages/core/src` at all. The locked design (core owns discovery, trust, load, inject, and events; packs own content) lives in `blueprint.md` and has no code behind it yet.
+
+## 8. Telemetry is the event log, not an injected logger
+
+**The session log is the first-class audit stream. No `logger()` is ever passed into the core.**
+
+Process diagnostics and product history are different problems. The history a UI renders and an operator audits is already durable and already ordered, so exposing it is a query, not a logging concern. A pino-style injectable in the constructor would create a second, weaker record of the same events and put a logging library in the signature of every block you paste.
+
+Where it shows up: `SessionStorage.getLog()` returns entries, records, lane moves, and facts merged into one stream ordered by a single per-session `seq`, and `getLog({ afterSeq })` is how a reconnecting client catches up. `AgentHarness.subscribe(listener)` delivers live `AgentEvent` values to any number of listeners. `AgentHarnessOptions` has no logger field, and no logging library appears in any package's dependencies.
+
+**Not built yet:** there are no spans and no OpenTelemetry export. The decided bet is a vendor-neutral telemetry context passed explicitly, with OTLP as the standard export and Sentry as a backend adapter rather than a parallel instrumentation API: none of that exists in the code. `grep -ri telemetry packages/*/src` returns nothing.
+
+<Callout type="info" title="This page is only what is locked">
+  Open questions, working bets, and unresolved trade-offs still live in `blueprint.md` at the repo
+  root: including host placement, the part schema, GUI-to-host authentication, and how far the
+  Cursor mimic goes. If a question is not answered here, it is still open, and `blueprint.md` is the
+  place to argue it.
+</Callout>
+
+<Cards>
+  <Card
+    title="Architecture"
+    href="/docs/architecture"
+    description="How the packages and layers fit together"
+  />
+  <Card
+    title="Core"
+    href="/docs/core"
+    description="The loop, harness, session storage, and tools as they exist today"
+  />
+  <Card title="Roadmap" href="/docs/roadmap" description="What is planned and in what order" />
+</Cards>

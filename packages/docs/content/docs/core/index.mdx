@@ -1,0 +1,257 @@
+---
+title: "@june/core"
+description: "The agent runtime: a standalone in-memory loop and a durable session-backed harness built on top of it"
+---
+
+import { File, Files, Folder } from "fumadocs-ui/components/files";
+
+`@june/core` is the runtime that drives an assistant through turns and tool calls. It ships two
+compositions of the same machinery. `runAgentLoop` is the loop itself: you inject a stream function,
+a tool list, and an event sink, and it returns the new messages when the run ends. It holds
+everything in memory and writes nothing. `AgentHarness` wraps that loop in a durable session: it
+takes any `SessionStorage`, and `SqliteSessionStorage` is the only implementation that ships.
+Every run is bracketed by `operation_started` / `operation_finished` records, every tool call commits
+a `tool_started` intent before the tool executes, and every message the loop emits is appended as a
+write-once entry. The loop knows nothing about the harness: `agent-loop.ts` imports only its small
+leaf modules (`types.ts`, `responses-wire.ts`, and `utils/*`), and the harness
+composes it through `runAgentLoopContinue`.
+
+## Pick one
+
+| Use case                                                                | Use this       | Why                                                                                                                                                     |
+| ----------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One-shot task in a script or a test                                     | `runAgentLoop` | No database, no session id, no lease. Prompts in, `ResponseItem[]` out.                                                                                 |
+| Embedding an agent inside a larger system that already owns persistence | `runAgentLoop` | You supply `AgentContext.messages` from your own store and keep the returned messages.                                                                  |
+| Custom scheduling: you decide what a "run" is and when it stops         | `runAgentLoop` | `shouldStopAfterTurn`, `prepareNextTurn`, `getSteeringMessages`, `getFollowUpMessages` are yours.                                                       |
+| A chat UI that must reload prior history                                | `AgentHarness` | `harness.session.getBranch("main")` returns the durable branch as `Entry[]`, oldest first; filter for `entry.type === "message"` to get the wire items. |
+| A run that must survive a process crash                                 | `AgentHarness` | `AgentHarness.create()` reports suspended operations; `resume()` settles interrupted tool calls and continues.                                          |
+| Anything that queues user input while the model is streaming            | `AgentHarness` | `steer` / `followUp` / `nextRun` are committed as `queue_enqueued` records before they are consumed.                                                    |
+
+<Callout type="info">
+  The harness is strictly additive. It calls `runAgentLoopContinue` with the same `AgentLoopConfig`
+  fields you would pass yourself; its extra behavior lives in the `beforeToolCall` hook, the
+  `getSteeringMessages` / `getFollowUpMessages` queue drains, and the event sink it installs.
+</Callout>
+
+## The loop
+
+```ts
+import { createProviderStreamFn, createReadOnlyTools, runAgentLoop } from "@june/core";
+import { openaiProvider } from "@june/ai";
+
+const streamFn = createProviderStreamFn({
+  provider: openaiProvider(),
+  auth: { apiKey: process.env.OPENAI_API_KEY ?? "" },
+});
+
+const newMessages = await runAgentLoop(
+  [{ role: "user", content: "Which files in this directory are TypeScript?" }],
+  {
+    systemPrompt: "You are a coding agent.",
+    messages: [],
+    tools: createReadOnlyTools(process.cwd()),
+  },
+  { model: "gpt-5.6-luna" },
+  (event) => {
+    if (event.type === "tool_execution_start") console.log(event.toolName);
+  },
+  undefined,
+  streamFn,
+);
+
+console.log(newMessages.length);
+```
+
+`runAgentLoop` returns only the messages produced by this call: the prompts you passed plus every
+assistant item and tool result. It does not return your prior history back to you.
+
+## The harness
+
+```ts
+import {
+  AgentHarness,
+  createCodingTools,
+  createProviderStreamFn,
+  SqliteSessionRepo,
+} from "@june/core";
+import { openaiProvider } from "@june/ai";
+
+const repo = new SqliteSessionRepo("./.june/sessions.db");
+const session = await repo.create();
+
+const { harness, suspended } = await AgentHarness.create({
+  session,
+  streamFn: createProviderStreamFn({
+    provider: openaiProvider(),
+    auth: { apiKey: process.env.OPENAI_API_KEY ?? "" },
+  }),
+  systemPrompt: "You are a coding agent.",
+  tools: createCodingTools(process.cwd()),
+});
+
+if (suspended.length > 0) {
+  await harness.resume();
+}
+
+const result = await harness.prompt("Summarize package.json.");
+if (result.ok) {
+  console.log(result.value.kind); // "completed" | "aborted" | "failed"
+} else {
+  console.log(result.error._tag); // "LaneBusy" | "Closed"
+}
+```
+
+<Callout type="warn">
+`result.ok === true` does not mean the run succeeded. A run that failed inside the provider or the
+harness still resolves as `Result.ok` carrying `{ kind: "failed", error }`; only the precondition
+errors `LaneBusy`, `NoActiveRun`, `NothingToResume`, and `Closed` arrive as `Result.err`, and
+storage failures throw `SessionError` instead. The three channels and the exact `error.code` values
+are spelled out on [the harness page](./harness.mdx#lifecycle-api).
+</Callout>
+
+## Source layout
+
+<Files>
+  <Folder name="src" defaultOpen>
+    <File name="index.ts" />
+    <File name="agent-loop.ts" />
+    <File name="types.ts" />
+    <File name="responses-wire.ts" />
+    <File name="stream-fn.ts" />
+    <Folder name="utils">
+      <File name="event-stream.ts" />
+      <File name="tool-result.ts" />
+    </Folder>
+    <Folder name="harness" defaultOpen>
+      <File name="agent-harness.ts" />
+      <File name="result.ts" />
+      <Folder name="session" defaultOpen>
+        <File name="types.ts" />
+        <File name="sqlite.ts" />
+        <File name="sql.ts" />
+      </Folder>
+    </Folder>
+    <Folder name="tools">
+      <File name="index.ts" />
+      <File name="read.ts" />
+      <File name="bash.ts" />
+      <File name="edit.ts" />
+      <File name="edit-diff.ts" />
+      <File name="write.ts" />
+      <File name="grep.ts" />
+      <File name="find.ts" />
+      <File name="ls.ts" />
+      <Folder name="support">
+        <File name="truncate.ts" />
+        <File name="file-mutation-queue.ts" />
+        <File name="image.ts" />
+        <File name="path-utils.ts" />
+        <File name="shell.ts" />
+        <File name="output-accumulator.ts" />
+        <File name="tool-result-images.ts" />
+      </Folder>
+    </Folder>
+  </Folder>
+</Files>
+
+| File                            | Role                                                                                                                                                |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`                  | The only public entry point; re-exports every symbol below.                                                                                         |
+| `src/agent-loop.ts`             | The standalone loop: turns, tool batches, steering and follow-up drains, event emission.                                                            |
+| `src/types.ts`                  | Pi-shaped loop contracts adapted to June's Responses-item wire.                                                                                     |
+| `src/responses-wire.ts`         | The isolated wire substitutions: assistant detection, tool-call extraction, tool definitions, and JSON argument decoding.                           |
+| `src/utils/event-stream.ts`     | Pi's generic async `EventStream`.                                                                                                                   |
+| `src/utils/tool-result.ts`      | Text/parts helpers shared by the loop and built-in tools.                                                                                           |
+| `src/stream-fn.ts`              | The one file in the package that knows about providers; adapts `@june/ai` to `StreamFn`.                                                            |
+| `src/harness/agent-harness.ts`  | The durable composition: run records, tool intents, queues, abort, resume.                                                                          |
+| `src/harness/result.ts`         | `Result` union and the `TaggedError` class factory.                                                                                                 |
+| `src/harness/session/types.ts`  | The storage contract: entries, records, lanes, `SessionStorage`, `SessionRepo`. A lane is a string on the wire; `AgentHarness` pins it to `"main"`. |
+| `src/harness/session/sqlite.ts` | The `node:sqlite` backend, one database file per repo, fenced writer lease.                                                                         |
+| `src/harness/session/sql.ts`    | Internal tagged-template query builder used by the backend.                                                                                         |
+| `src/tools/index.ts`            | Tool factories and the three preset bundles.                                                                                                        |
+| `src/tools/*.ts`                | The seven built-in tools: read, bash, edit, write, grep, find, ls.                                                                                  |
+| `src/tools/support/`            | Shared truncation, per-file mutation queue, image detection/normalization, path resolution, shell, and output buffering.                            |
+
+`edit-diff.ts`, `path-utils.ts`, `shell.ts`, and `output-accumulator.ts` are not re-exported from
+`src/index.ts`. The `exports` map declares `.` and nothing else, so there is no subpath to import
+them through either: they are internal to the package.
+
+## Public surface
+
+Everything is exported from `@june/core`. Only the symbols you actually name in application code are
+listed here; the per-topic pages cover the full type sets.
+
+| Group           | Named by callers                                                                                                                                                                                                                                                                         | Page                                     |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| Loop            | `agentLoop`, `agentLoopContinue`, `EventStream`, `runAgentLoop`, `runAgentLoopContinue`, `AgentContext`, `AgentLoopConfig`, `AgentTool`, `AgentToolResult`, `AgentEvent`, `AgentEventSink`, `StreamFn`, `AssistantTurn`, `StopReason`, `ThinkingLevel`, `ToolExecutionMode`, `QueueMode` | [Agent loop](./agent-loop.mdx)           |
+| Harness         | `AgentHarness`, `AgentHarnessOptions`, `HarnessTool`, `HarnessState`, `HarnessListener`, `RunOutcome`, `SuspendedOperation`, `LaneBusy`, `NoActiveRun`, `NothingToResume`, `Closed`, `Result`, `TaggedError`                                                                             | [Harness](./harness.mdx)                 |
+| Session storage | `SqliteSessionRepo`, `SqliteSessionRepoOptions`, `SessionStorage`, `SessionRepo`, `SessionSearch`, `Entry`, `MessageEntry`, `ProvisionedEntry`, `LaneRecord`, `ToolStartedRecord`, `LogItem`, `SessionError`, `newId`                                                                    | [Session storage](./session-storage.mdx) |
+| Provider bridge | `createProviderStreamFn`, `ProviderStreamFnOptions`                                                                                                                                                                                                                                      | [Stream function](./stream-fn.mdx)       |
+| Tools           | `createTool`, `createCodingTools`, `createReadOnlyTools`, `createAllTools`, `allToolNames`, `ToolName`, `ToolsOptions`, the seven `create*Tool` factories, `withFileMutationQueue`, `normalizeToolResultImages`, `ImageProcessor`, `truncateHead`, `truncateTail`                        | [Tools](./tools.mdx)                     |
+
+`SqliteSessionStorage` is also exported, but it is constructed by `SqliteSessionRepo`, not by you.
+
+## Install and import
+
+`@june/core` is a private workspace package. It is not published, and it has no build step: its
+`exports` map points directly at the TypeScript source.
+
+```json title="packages/core/package.json"
+{
+  "name": "@june/core",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
+```
+
+Depend on it from another workspace package with `"@june/core": "workspace:*"`, then import from the
+package name. Two consequences follow from the missing build step:
+
+| Requirement             | Reason                                                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Node 24 or newer        | The runtime executes the `.ts` sources directly; there is no emitted JavaScript to fall back on.                                         |
+| `node:sqlite` available | `SqliteSessionRepo` imports `DatabaseSync` from `node:sqlite` at module load. Importing `@june/core` pulls it in through `src/index.ts`. |
+
+The package's own scripts are `node --test test/*.test.ts` and `tsc --noEmit`. Neither produces
+artifacts.
+
+<Callout type="warn" title="Not built yet">
+  There is no in-memory or JSONL session backend. `SqliteSessionStorage`, constructed for you by
+  `SqliteSessionRepo`, is the only implementation of `SessionStorage`, so a test that wants the
+  harness goes through SQLite. `new SqliteSessionRepo(":memory:")` keeps it off disk.
+</Callout>
+
+## Where to next
+
+<Cards>
+  <Card
+    title="Agent loop"
+    href="/docs/core/agent-loop"
+    description="Turns, tool batches, stop reasons, and the config hooks"
+  />
+  <Card
+    title="Harness"
+    href="/docs/core/harness"
+    description="Run records, the tool-call effect sandwich, queues, abort, resume"
+  />
+  <Card
+    title="Session storage"
+    href="/docs/core/session-storage"
+    description="Entries, records, lanes, the seq counter, and the SQLite backend"
+  />
+  <Card
+    title="Stream function"
+    href="/docs/core/stream-fn"
+    description="Binding an @june/ai provider to the StreamFn contract"
+  />
+  <Card
+    title="Tools"
+    href="/docs/core/tools"
+    description="The seven built-in tools, their options, and the preset bundles"
+  />
+</Cards>
+
+Worked end-to-end examples live in [Recipes](./recipes.mdx).

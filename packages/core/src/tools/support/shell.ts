@@ -6,12 +6,14 @@
  * Deviations from pi:
  * - getShellEnv no longer prepends pi's managed bin directory to PATH (June
  *   has no equivalent of pi's getBinDir); it returns a copy of process.env.
- * - trackDetachedChildPid/untrackDetachedChildPid are no-ops: in pi they feed
- *   a registry that a SIGHUP/SIGTERM handler uses to kill orphaned detached
- *   children on shutdown. June has no such handler, so the bookkeeping is
- *   kept as an interface seam only.
+ * - pi coding-agent's detached-child pid registry is not ported: it feeds a
+ *   SIGHUP/SIGTERM handler June does not have (pi-agent-core's bash has no
+ *   tracking either).
  * - pi's spawnProcess/spawnProcessSync cross-spawn wrappers are not ported
  *   (the bash tool spawns the shell directly).
+ *
+ * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/utils/shell.ts
+ * and https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/utils/child-process.ts
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -182,15 +184,6 @@ export function sanitizeBinaryOutput(str: string): string {
     })
     .join("");
 }
-
-/**
- * No-op in June. In pi this registers detached child pids so a parent
- * shutdown-signal handler can kill them; June has no such handler.
- */
-export function trackDetachedChildPid(_pid: number): void {}
-
-/** No-op in June; see trackDetachedChildPid. */
-export function untrackDetachedChildPid(_pid: number): void {}
 
 /**
  * Kill a process and all its children (cross-platform)
