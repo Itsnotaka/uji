@@ -40,9 +40,9 @@ const styles = stylex.create({
     paddingRight: spaceVars["--june-space-1"],
     borderWidth: 0,
     backgroundColor: {
-      default: colorVars["--june-color-secondary"],
+      default: colorVars["--june-color-muted"],
       ":hover": {
-        "@media (hover: hover)": colorVars["--june-color-secondary-hover"],
+        "@media (hover: hover)": colorVars["--june-color-muted-hover"],
       },
     },
     boxShadow: `inset 0 0 0 .5px ${colorVars["--june-color-border-weak"]}`,
@@ -64,8 +64,8 @@ const styles = stylex.create({
   agentCollapsed: { width: grokControlVars["--grok-control-agent-height"] },
   selected: {
     backgroundColor: {
-      default: colorVars["--june-color-sidebar-accent"],
-      ":hover": { "@media (hover: hover)": colorVars["--june-color-sidebar-accent"] },
+      default: colorVars["--june-color-muted-hover"],
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-muted-hover"] },
     },
   },
   account: {
@@ -121,7 +121,7 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "relative flex min-w-0 flex-col border-r-[.5px] border-sidebar-border bg-sidebar pb-2 text-sidebar-foreground",
+        "relative flex min-w-0 flex-col border-r-[.5px] border-border bg-sidebar pb-2 text-foreground",
         collapsed && "items-center",
         className,
       )}

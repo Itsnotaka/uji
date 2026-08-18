@@ -59,7 +59,7 @@ export const menuStyles = stylex.create({
     borderRadius: radiusVars["--june-radius-control"],
     backgroundColor: {
       default: "transparent",
-      "[data-highlighted]": colorVars["--june-color-accent"],
+      "[data-highlighted]": colorVars["--june-color-muted-hover"],
     },
     color: colorVars["--june-color-popover-foreground"],
     fontSize: fontVars["--june-font-size-body"],
@@ -84,8 +84,8 @@ export const menuStyles = stylex.create({
   subTrigger: {
     backgroundColor: {
       default: "transparent",
-      "[data-highlighted]": colorVars["--june-color-accent"],
-      "[data-popup-open]": colorVars["--june-color-accent"],
+      "[data-highlighted]": colorVars["--june-color-muted-hover"],
+      "[data-popup-open]": colorVars["--june-color-muted-hover"],
     },
   },
   chevron: { marginInlineStart: "auto", flexShrink: 0 },

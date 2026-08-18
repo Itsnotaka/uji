@@ -39,13 +39,13 @@ const styles = stylex.create({
     borderWidth: 0,
     borderRadius: grokControlVars["--grok-control-agent-radius"],
   },
-  activeResult: { backgroundColor: colorVars["--june-color-accent"] },
+  activeResult: { backgroundColor: colorVars["--june-color-muted-hover"] },
   dialog: {
-    borderColor: colorVars["--june-color-command-border"],
-    backgroundColor: colorVars["--june-color-command-background"],
-    boxShadow: elevationVars["--june-elevation-command"],
+    borderColor: colorVars["--june-color-border"],
+    backgroundColor: colorVars["--june-color-popover"],
+    boxShadow: elevationVars["--june-elevation-menu"],
   },
-  overlay: { backgroundColor: colorVars["--june-color-command-scrim"] },
+  overlay: { backgroundColor: colorVars["--june-color-scrim"] },
   header: {
     display: "flex",
     alignItems: "center",
@@ -54,7 +54,7 @@ const styles = stylex.create({
     paddingRight: "10px",
     paddingBottom: "14px",
     paddingLeft: "14px",
-    borderBottomColor: colorVars["--june-color-command-divider"],
+    borderBottomColor: colorVars["--june-color-border-weak"],
   },
   list: {
     display: "flex",

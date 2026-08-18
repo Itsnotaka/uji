@@ -61,20 +61,17 @@ const styles = stylex.create({
   },
   secondary: {
     backgroundColor: {
-      default: colorVars["--june-color-secondary"],
-      ":hover": { "@media (hover: hover)": colorVars["--june-color-secondary-hover"] },
+      default: colorVars["--june-color-muted"],
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-muted-hover"] },
     },
-    color: colorVars["--june-color-secondary-foreground"],
+    color: colorVars["--june-color-foreground"],
   },
   ghost: {
     backgroundColor: {
       default: "transparent",
       ":hover": { "@media (hover: hover)": colorVars["--june-color-muted"] },
     },
-    color: {
-      default: colorVars["--june-color-foreground"],
-      ":hover": { "@media (hover: hover)": colorVars["--june-color-accent-foreground"] },
-    },
+    color: colorVars["--june-color-foreground"],
   },
   destructive: {
     backgroundColor: {

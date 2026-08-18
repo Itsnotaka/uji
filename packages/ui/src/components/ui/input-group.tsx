@@ -23,7 +23,7 @@ const styles = stylex.create({
     minWidth: 0,
     borderWidth: borderVars["--june-border-hairline-width"],
     borderStyle: "solid",
-    borderColor: colorVars["--june-color-input"],
+    borderColor: colorVars["--june-color-border"],
     backgroundColor: colorVars["--june-color-field-background"],
     boxShadow: elevationVars["--june-elevation-field"],
     outlineColor: colorVars["--june-color-ring"],

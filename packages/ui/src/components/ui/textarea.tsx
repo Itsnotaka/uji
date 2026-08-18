@@ -23,7 +23,7 @@ const styles = stylex.create({
     borderWidth: borderVars["--june-border-control-width"],
     borderStyle: "solid",
     borderColor: {
-      default: colorVars["--june-color-input"],
+      default: colorVars["--june-color-border"],
       ":focus-visible": colorVars["--june-color-ring"],
       "[aria-invalid=true]": colorVars["--june-color-destructive"],
     },

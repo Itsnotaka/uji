@@ -61,7 +61,7 @@ export function DesktopPreview({ className, scenario = "conversation" }: Desktop
     >
       <div className="relative grid aspect-[16/10] min-h-[430px] grid-cols-[minmax(180px,27%)_minmax(0,1fr)] max-[780px]:grid-cols-[76px_minmax(0,1fr)]">
         <aside
-          className="flex min-w-0 flex-col border-r-[0.5px] border-[color:var(--june-color-sidebar-border)] bg-(--june-color-sidebar) pb-2"
+          className="flex min-w-0 flex-col border-r-[0.5px] border-[color:var(--june-color-border)] bg-(--june-color-sidebar) pb-2"
           data-grok-surface="sidebar"
         >
           <div className="flex h-11 shrink-0 items-center justify-between px-4 max-[780px]:justify-center max-[780px]:px-1">
@@ -75,7 +75,7 @@ export function DesktopPreview({ className, scenario = "conversation" }: Desktop
             </span>
           </div>
           <div
-            className="mx-3 my-1 flex h-8 items-center gap-2 rounded-lg bg-(--june-color-secondary) px-2 text-sm/5 text-(--june-color-tertiary-foreground) shadow-[inset_0_0_0_.5px_var(--june-color-border-weak)] max-[780px]:mx-auto max-[780px]:size-8 max-[780px]:justify-center"
+            className="mx-3 my-1 flex h-8 items-center gap-2 rounded-lg bg-(--june-color-muted) px-2 text-sm/5 text-(--june-color-tertiary-foreground) shadow-[inset_0_0_0_.5px_var(--june-color-border-weak)] max-[780px]:mx-auto max-[780px]:size-8 max-[780px]:justify-center"
             data-grok-surface="search"
           >
             <IconMagnifyingGlass size={14} />
@@ -85,7 +85,7 @@ export function DesktopPreview({ className, scenario = "conversation" }: Desktop
             {agents.map((agent) => (
               <div
                 className={`flex h-[54px] items-center gap-2 rounded-[10px] px-2 ${
-                  agent.active ? "bg-(--june-color-sidebar-accent)" : ""
+                  agent.active ? "bg-(--june-color-muted-hover)" : ""
                 } max-[780px]:justify-center`}
                 data-grok-surface={agent.active ? "selected" : undefined}
                 key={agent.name}
@@ -143,7 +143,7 @@ export function DesktopPreview({ className, scenario = "conversation" }: Desktop
           </div>
           <div className="px-4 pb-4">
             <div
-              className="flex h-11 items-center rounded-[22px] border border-[color:var(--june-color-input)] bg-(--june-color-field-background) py-2 pr-2 pl-4 text-sm/5 text-(--june-color-tertiary-foreground) shadow-[var(--june-elevation-field)]"
+              className="flex h-11 items-center rounded-[22px] border border-[color:var(--june-color-border)] bg-(--june-color-field-background) py-2 pr-2 pl-4 text-sm/5 text-(--june-color-tertiary-foreground) shadow-[var(--june-elevation-field)]"
               data-grok-surface="composer"
             >
               <span>Message June</span>
@@ -178,7 +178,7 @@ function SearchPreview() {
           {agents.map((agent, index) => (
             <div
               className={`flex h-[54px] items-center gap-2 rounded-[10px] px-2 ${
-                index === 0 ? "bg-(--june-color-accent)" : ""
+                index === 0 ? "bg-(--june-color-muted-hover)" : ""
               }`}
               data-grok-surface={index === 0 ? "palette-selected" : undefined}
               key={agent.name}
