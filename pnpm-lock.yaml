@@ -32,25 +32,10 @@ importers:
       '@june/schema':
         specifier: workspace:*
         version: link:../schema
-      central-icons:
-        specifier: npm:@central-icons-react/round-outlined-radius-1-stroke-1.5@^1.1.306
-        version: '@central-icons-react/round-outlined-radius-1-stroke-1.5@1.1.306(react@19.2.8)'
-      react:
-        specifier: ^19.2.8
-        version: 19.2.8
-      react-dom:
-        specifier: ^19.2.8
-        version: 19.2.8(react@19.2.8)
     devDependencies:
       '@types/node':
         specifier: ^26.2.0
         version: 26.2.0
-      '@types/react':
-        specifier: ^19.2.18
-        version: 19.2.18
-      '@types/react-dom':
-        specifier: ^19.2.4
-        version: 19.2.4(@types/react@19.2.18)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -115,6 +100,9 @@ importers:
       '@stylexjs/stylex':
         specifier: 0.19.0
         version: 0.19.0
+      '@tanstack/react-query':
+        specifier: ^5.101.4
+        version: 5.101.4(react@19.2.8)
       central-icons:
         specifier: npm:@central-icons-react/round-outlined-radius-1-stroke-1.5@^1.1.306
         version: '@central-icons-react/round-outlined-radius-1-stroke-1.5@1.1.306(react@19.2.8)'
@@ -2106,6 +2094,14 @@ packages:
   '@tanstack/history@1.162.1':
     resolution: {integrity: sha512-DR9t6lfLVdrjgCwpglrR9DR7Ok8/HlXjcOE+goWXF3zyuLUO/ug7vMbSFxTqrQTtbRghJfyhmIZ0S6LhPIy44w==}
     engines: {node: '>=20.19'}
+
+  '@tanstack/query-core@5.101.4':
+    resolution: {integrity: sha512-gNwcvOJcRbLWPOLG/2OBm+zM+Yv+MKsXKEOWC57USuZDEsI71hEErQsiEGx5wX9rzWWkfwM0fVSPoiIFSsxfiw==}
+
+  '@tanstack/react-query@5.101.4':
+    resolution: {integrity: sha512-yRg2pfOCxIs4ZJW3XYYHU/WgtD04FHSnfHlpRT7h7pR77hwkdRG4wxbKe4aq6P0RvXUTBSQpQeadS1SUYUe+KA==}
+    peerDependencies:
+      react: ^18 || ^19
 
   '@tanstack/react-router@1.170.27':
     resolution: {integrity: sha512-Hxl49xzd8ffWd2ZMigqfXZmpySpixWGvjq5zfh2nK2DbzzDH6IGVh+iUuwarK9MJNcnhWPZ85tOoy6o/OmNlww==}
@@ -7543,6 +7539,13 @@ snapshots:
       vite: 8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
 
   '@tanstack/history@1.162.1': {}
+
+  '@tanstack/query-core@5.101.4': {}
+
+  '@tanstack/react-query@5.101.4(react@19.2.8)':
+    dependencies:
+      '@tanstack/query-core': 5.101.4
+      react: 19.2.8
 
   '@tanstack/react-router@1.170.27(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:

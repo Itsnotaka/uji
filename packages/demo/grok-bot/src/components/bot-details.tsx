@@ -1,11 +1,15 @@
-import { useEffect, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { IconSidebarHiddenRightWide } from "central-icons";
 
 import { Button, IconBox, Input, Textarea, cn } from "@june/ui";
 import type { BotDetailsProps } from "@/view-model";
+import { useUpdateAgent } from "@/hooks/use-update-agent";
+import { strings } from "@/strings";
 import { AgentAvatar } from "./agent";
+import { AgentDeleteDialog } from "./agent-dialogs";
 import { grokPrimitiveStyles } from "../theme.stylex";
 
+// The host keys this panel by agent id, so field state re-initializes per agent.
 export function BotDetails({
   agent,
   className,
@@ -13,20 +17,13 @@ export function BotDetails({
   width,
   onClose,
   onResize,
-  onSave,
 }: BotDetailsProps) {
+  const updateAgent = useUpdateAgent();
   const [name, setName] = useState(agent.name);
   const [role, setRole] = useState(agent.role);
   const [instructions, setInstructions] = useState(agent.instructions);
-  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string>();
-
-  useEffect(() => {
-    setName(agent.name);
-    setRole(agent.role);
-    setInstructions(agent.instructions);
-    setStatus(undefined);
-  }, [agent.id, agent.instructions, agent.name, agent.role]);
+  const saving = updateAgent.isPending;
 
   const changed =
     name.trim() !== agent.name ||
@@ -53,15 +50,15 @@ export function BotDetails({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!changed || saving) return;
-    setSaving(true);
     setStatus(undefined);
     try {
-      await onSave({ name, role, instructions });
-      setStatus("Saved");
+      await updateAgent.mutateAsync({
+        agentId: agent.id,
+        changes: { name, role, instructions, avatar: agent.avatar },
+      });
+      setStatus(strings.details.saved);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -147,17 +144,26 @@ export function BotDetails({
 
         <div className="flex min-h-8 items-center justify-end gap-3">
           {status && (
-            <span className="mr-auto text-[11px] text-muted-foreground" role="status">
+            <span className="mr-auto text-detail text-muted-foreground" role="status">
               {status}
             </span>
           )}
+          <AgentDeleteDialog
+            agent={agent}
+            onDeleted={onClose}
+            trigger={
+              <Button size="sm" variant="destructive">
+                {strings.contextMenu.deleteAgent}
+              </Button>
+            }
+          />
           <Button
             disabled={!changed || saving}
             size="sm"
             type="submit"
             xstyle={grokPrimitiveStyles.noFocusRing}
           >
-            {saving ? "Saving…" : "Save"}
+            {saving ? strings.details.saving : strings.details.save}
           </Button>
         </div>
       </form>

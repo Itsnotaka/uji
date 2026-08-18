@@ -4,6 +4,8 @@ Status: document of record for `@june/core`, the `@june/schema` wire it stores, 
 
 Register: **must** and **must not** are normative. "Landed" marks facts verified in the working tree on 2026-08-18. File and line references are to that snapshot and may drift; the contract statements do not.
 
+Correction entry (2026-08-18): Part 4 is rewritten. The old revision applied seam-parsimony ("two implementations or delete") to the whole platform, extension surface included. That was wrong. §4.1 records the correction; the parsimony rule now governs internal seams only.
+
 Upstream reference: pi (`earendil-works/pi`), primarily `@earendil-works/pi-agent-core` 0.84.2 and the AgentHarness implementation specification (`packages/agent/docs/harness.md`, "the pi spec" below). Ported files carry a `Based on <link>` credit header.
 
 Demos (`packages/demo/*`) are frozen. They are consumers, not drivers. No core contract may change to satisfy a demo, and demo breakage does not block core work.
@@ -14,13 +16,25 @@ Demos (`packages/demo/*`) are frozen. They are consumers, not drivers. No core c
 
 ## 0.1 What June core is
 
-`@june/core` is a durable runtime for agent conversations, built as composable blocks: a standalone agent loop, a harness that composes durability over it, a session storage contract with a SQLite backend, and a coding tool set. Clients never import it; they speak `@june/schema` and (later) `@june/protocol`. The core is opinionated the way VSCode is: a small set of load-bearing extension seams with exactly one obvious way to use each, not a plugin socket on every wall.
+`@june/core` is a durable runtime for agent conversations, built as composable blocks: a standalone agent loop, a harness that composes durability over it, a session storage contract with a SQLite backend, and a coding tool set. Clients never import it; they speak `@june/schema` and (later) `@june/protocol`.
+
+The ambition, stated first so every scoping argument below has its real yardstick: June is a durable harness that can sit under **any chat surface that needs an agentic loop**. The target consumer class is ai-sdk's, not only June's own clients. Priority hosts, in order:
+
+1. A performant GUI embedding (Electron sidebar-class).
+2. CLI/TUI for hardcore engineering.
+3. Cloud hosts in VM providers. A Cursor-style proxy is one placement, not the placement.
+4. Surfaces not yet named.
+
+Durability is what lets one runtime serve all of them. Extensibility is what lets it become each of them. Two postures follow:
+
+- **Excellent before configuration** (the opencode lesson). Batteries-included defaults, zero-config first run. The out-of-box experience earns the right to be extended.
+- **Pluggable wherever an extension can expect a hook** (the pi lesson). A typed, documented extension surface over the whole lifecycle. A platform cannot predict its extensions; that unpredictability is the point.
 
 Three ideas organize everything below:
 
 1. **The agent loop is a solved problem.** pi solved it. June ports it and tracks upstream. Part 1 states the adoption policy.
 2. **The harness and the wire are where June thinks for itself.** The session model (Part 3) and the wire schema (Part 2) are owned designs with owned rationale.
-3. **A seam earns its keep with two real implementations or one named concrete consumer.** Part 4 applies this test to every injection point and kills the ones that fail it.
+3. **Internal seams are few; the extension surface is broad.** Part 4 separates the layers. Injection points inside core earn their keep with two real implementations or one named consumer. The extension surface is built ahead of demand and governed by its contract, not by counting implementations.
 
 ## 0.2 System model
 
@@ -63,7 +77,7 @@ Worked precedent (2026-08-14): image support in `read`. Detection by magic bytes
 - **Multiple writers per session.** One process owns a session; the SQLite lease enforces it (Part 3). Lanes are the answer to workloads that look multi-writer.
 - **Provider stream resumption.** A partial stream is process-local. Only settled turns persist.
 - **Rebuilding pi.** Where pi has already answered a loop question, June adopts the answer (Part 1).
-- **Product chrome in core.** Approval cards, permission modals, plan mode, MCP marketplaces: composition or client territory, per blueprint's core-vs-UI litmus.
+- **Product chrome in core.** Approval cards, permission modals, plan mode, MCP marketplaces: extension and client territory. Core owes the hooks that make each of them buildable *as an extension* (Part 4), never the chrome itself. pi ships plan mode, permission gates, and subagents as example extensions; that is the bar.
 
 ---
 
@@ -202,13 +216,22 @@ The comment at `session/types.ts:238` is normative and repeated here: entries an
 
 ---
 
-# Part 4: Extension seams
+# Part 4: The extension surface and internal seams
 
-## 4.1 The rule
+## 4.1 The correction, and the two-layer rule
 
-**An abstraction earns its keep with at least two real implementations or one named concrete consumer.** "Someone might want to intercept this" is not a consumer. A seam that fails the test is deleted, and the direct call inlined, until a real second implementation shows up. This is the VSCode posture: few seams, each load-bearing, each with an obvious default.
+The prior revision of this Part had one rule: an abstraction earns its keep with two real implementations or one named consumer, else it is deleted. It called this "the VSCode posture: few seams." Applied to the whole platform, that was a misconception (user directive, 2026-08-18). June's product *is* the pluggable harness of §0.1. Treating every hook as a cost to minimize optimizes away the product.
 
-## 4.2 Load-bearing seams (keep)
+pi is the counterexample by existence. Its hook vocabulary was laid down before any consumer existed. Dozens of example extensions then grew on it: plan mode, subagents, permission gates, custom providers, tool overrides, custom renderers, durable todo state, cross-provider handoff. They exist *because* the hooks were already there.
+
+So Part 4 now governs two layers with two different rules:
+
+- **Internal seams**: dependency-injection points inside core (`StreamFn`, storage, `ImageProcessor`, `ExecutionEnv`). Parsimony still governs, unchanged. Two real implementations or one named consumer, else delete. "Someone might want to intercept this" is not a consumer, and the §4.2 table still carries the burden of proof.
+- **The extension surface**: the typed hook, registration, and context vocabulary that extension code programs against (§4.4). Counting implementations is the wrong test here. The test for a hook is: *can an extension author legitimately expect to observe or intercede at this point of the lifecycle?* If yes, the hook belongs, consumers or not.
+
+The layers fail in opposite directions, which is why they need opposite rules. An unused internal seam is dead weight: delete it and inline the call. A missing extension hook is a locked door: the author cannot add it from outside, so they fork or build a side channel. That is the exact failure the one-session-model rule exists to prevent. Deleting dead weight and building doors are both correct, at different layers.
+
+## 4.2 Load-bearing internal seams (keep)
 
 | Seam | Contract | Why it passes |
 |---|---|---|
@@ -234,12 +257,57 @@ Specification: June adopts an `ExecutionEnv`-shaped effects boundary. One interf
 
 Interim status: `bash.ts`'s header already documents `BashOperations` as a stand-in for `env.executeShell`. That stand-in must not gain siblings or features; it dies with the wave.
 
-## 4.4 Seams that stay closed
+## 4.4 The extension surface
 
-- No hook to replace the loop's turn sequencing. Compose around the loop or fork the project.
-- No pluggable id scheme, seq scheme, or entry base shape. The storage contract is the contract.
-- No logger injection (`blueprint` observability decision): the event stream is the product log; process diagnostics get a telemetry context later, OTel-shaped.
-- No second session model, ever (the prior-host cautionary tale in blueprint). One harness instance owns a session.
+### 4.4.1 The reference model: pi's extension system
+
+Stated concretely so "learn from pi" is a specification, not a vibe. Source: `packages/coding-agent/docs/extensions.md` and `src/core/extensions/*` (local checkout at `~/.agents/codebases/earendil-pi`).
+
+- **Loading**: a TypeScript module default-exports a factory `(pi: ExtensionAPI) => void | Promise<void>`. Auto-discovered from a global directory, and from the project directory only after explicit trust. Also loadable from explicit paths and npm/git packages. Hot-reloadable; npm deps resolve from an adjacent `package.json`.
+- **Events**: typed handlers over the full lifecycle. Session events (start, switch, fork, compact, tree, shutdown). Agent events (`before_agent_start`, the turn/message/tool stream, `context`, provider request and response hooks). Model and thinking-level selection. `tool_call` / `tool_result` interception with block-and-modify semantics. User input and user bash. A gate is a return value (`{ block: true, reason }`), not an exception.
+- **Registration**: `registerTool` (schema-typed parameters; may override built-ins by name), `registerCommand`, `registerShortcut`, `registerFlag`, `registerProvider`, message/entry renderers, markdown transformers, autocomplete providers.
+- **Context**: `ctx.ui` (confirm, select, notify, custom widgets), `ctx.mode` + `ctx.hasUI` for degradation across TUI / RPC / JSON / print modes, session manager, model registry, compact/fork/navigate/switch, `exec`, system-prompt access.
+- **Durable state**: `appendEntry(customType, data)` writes custom entries into the session log itself. June already uses this primitive: grok-bot's persona tag is a custom entry (§10.1).
+- **Failure containment**: extension errors are logged and the agent continues. A throwing `tool_call` gate blocks its tool, fail-safe. A throwing tool `execute` becomes an `isError` result. Extensions run with full process permissions behind trust gates; the security boundary is trust-at-load, not a sandbox.
+
+The vocabulary is broad enough that pi's own product features ship as extensions over it: plan mode, subagents, permission gating, custom compaction, structured output, interactive shells. That is the bar June adopts. **A feature that can be an extension is an extension**, and core's job is to make that sentence true at every point of the lifecycle.
+
+### 4.4.2 June's shape: three owned decisions
+
+June adopts pi's model with three deliberate divergences. Each traces to the §0.1 ambition.
+
+1. **The runner lives with the harness, not the product.** pi hosts its extension runner in the product package (coding-agent), above agent-core. June pushes it down: the runner composes over the harness, and the authoring surface ships as **`@june/plugin`** (blueprint's package). Reason: one extension system shared by GUI, CLI/TUI, and cloud hosts. The loop stays pure (invariant 11); hooks reach it only through the hook/event vocabulary the harness already drives it with. Where that vocabulary is too narrow (June has no `before_provider_request` counterpart yet), the loop's hook surface grows visibly, as a tracked §1.4 divergence or an upstream adoption. Never a splice.
+
+2. **One extension, every host.** An extension must run under TUI, Electron, and headless cloud without forking. `ctx.hasUI` / `ctx.mode` is the pi precedent; June strengthens it. UI requests (confirm, select, custom) are typed protocol events, answered by whichever client is attached: TUI dialog, Electron panel, or a headless host's declared policy (default-deny for gates, no-op for chrome). An extension that needs pixels degrades. It never crashes or hangs a headless host. This is §0.3's one-wire discipline applied to extension UI.
+
+3. **Typed, documented, checked.** The surface is an API product and gets API-product discipline:
+   - Every event is a discriminated-union member with exhaustive matching (Part 2 discipline applied to hooks). Tool parameters are schema-typed end to end.
+   - Every registration method and hook carries JSDoc that teaches correct usage: a short example, the degradation rule, the failure semantics. Authors read the hover, not this repo. The doc comment is part of the API and is reviewed like code.
+   - `@june/plugin` publishes strict types, so an extension typechecks before it loads. The loader reports type and load failures to the host; it never silently skips.
+   - Trust precedes code (blueprint's table): hermetic product home, then explicitly-trusted project, then user config, then installed packages. Project-local extensions never load before trust.
+
+Skills stay distinct (blueprint's split, unchanged). Skills are content packs discovered and injected by core. Extensions are code registered through `@june/plugin`. Neither collapses into the other.
+
+### 4.4.3 What extensions can rely on
+
+The durability model is not suspended for extensions; it is what they buy.
+
+- Custom entries are write-once session entries like any other.
+- Extension-injected messages ride the same durable queues as user input (steer, followUp, nextRun), so they survive crashes.
+- A tool an extension registers gets the same effect sandwich as a built-in, `replay` policy and all.
+
+An extension is a peer participant in the durable session, not a scripting layer bolted on beside it.
+
+## 4.5 The closed kernel, and why closure is a feature
+
+What stays closed stays closed because it is the guarantee extensions program against, not out of parsimony:
+
+- **No hook replaces the loop's turn sequencing.** Extensions observe and intercede at every phase; none reorders the phases. A hook that could change the sequence would invalidate every other extension's model of the lifecycle.
+- **No pluggable id scheme, seq scheme, or entry base shape.** The storage contract is what makes custom-entry state durable and replayable.
+- **No second session model, ever** (the prior-host cautionary tale in blueprint). One harness instance owns a session. Extensions attach to it; they do not shadow it.
+- **No logger injection** (blueprint's observability decision). The event stream is the product log; process diagnostics get an OTel-shaped telemetry context later.
+
+An extension that needs to break one of these has found one of two things. Either a missing hook: file it, and the surface grows under §4.1's test. Or a different product, which is what forks are for.
 
 ---
 
@@ -274,7 +342,15 @@ Policy:
 
 17. Ported files change only within §1.4's three classes. New behavior composes; it does not splice.
 18. Shared type vocabulary is defined once in `@june/schema` and derived elsewhere.
-19. Every seam in Part 4 keeps its two-implementations-or-named-consumer justification current; a seam that loses it gets deleted, not grandfathered.
+19. Every **internal seam** (§4.2) keeps its two-implementations-or-named-consumer justification current; a seam that loses it gets deleted, not grandfathered. The extension surface is exempt: its hooks are governed by §4.1's contract test, not implementation counting.
+
+Extension surface:
+
+20. Extension failures are contained: an extension error is logged and the run continues; a throwing tool gate blocks its tool fail-safe; a throwing extension tool becomes an `isError` result. No extension failure may corrupt session durability or wedge a headless host.
+21. Extensions act only through the documented surface: hooks, registrations, and custom entries. No extension gets a second session model, a loop fork, or direct storage writes; extension-injected input rides the durable queues.
+22. Every hook and registration method on the extension surface ships typed (discriminated unions, exhaustive matching, schema-typed tool parameters) and JSDoc-documented with usage guidance. An untyped or undocumented hook is not part of the surface.
+23. Every extension capability degrades across hosts: UI requests are typed events answered by the attached client or by headless policy (default-deny gates, no-op chrome). A capability that only works under one client is client code, not an extension capability.
+24. Project-local extension code never loads before explicit project trust; the precedence order is hermetic product home, trusted project, user config, installed packages.
 
 ---
 
@@ -290,7 +366,8 @@ Sequenced so each slice ends in a check, and subtraction precedes construction. 
 | 4 | **Tool test debt** | Focused tests for bash, edit, edit-diff (527 lines of fuzzy matching with zero tests), grep, find, read, write, truncate (278 lines of byte math), and the support modules. Port pi's cases where they exist. | Every tool file has behavior tests; edit-diff and truncate get edge-case suites. |
 | 5 | **Session conformance suite** | Backend-agnostic conformance tests in the spirit of the pi spec's testing slice, run against SQLite; Memory backend as the second implementation that keeps the contract honest. | Both backends pass one suite; the suite covers crash positions from §3.2. |
 | 6 | **Reconcile with upstream harness** | Diff harness, session types, and tools against pi's landed implementation at a named version; decide the records-ledger → `op.state` register migration (open question 1) as a schema-evolution step with a migration, or a recorded decline. | Sync lines updated on every tracked file; decision recorded here. |
-| 7 | **Lanes, then the deferred list** | Additional lanes first (the model already carries `lane` everywhere), then compaction, forks, skills, deferred settlement and wake, in blueprint's cross-agent-invariants order. | Each lands with its crash drills, per the effect-sandwich invariants. |
+| 7 | **Extension surface v0** | `@june/plugin` types (events as exhaustive unions, registration methods with usage-teaching JSDoc), the runner composed over the harness, `registerTool`/`registerCommand`, `on(...)` over the harness event vocabulary, custom-entry state helpers, trust gating and load-error reporting. Port the hook vocabulary from pi's `ExtensionAPI` (§4.4.1), growing the loop's hook surface visibly where June lacks a counterpart (provider request hooks). | pi-class exemplars (hello, permission-gate, todo-state) port and run unchanged under the CLI and one GUI host; a UI-requiring extension degrades by policy under a headless run; extension typecheck failures surface at load. |
+| 8 | **Lanes, then the deferred list** | Additional lanes first (the model already carries `lane` everywhere), then compaction, forks, skills, deferred settlement and wake, in blueprint's cross-agent-invariants order. | Each lands with its crash drills, per the effect-sandwich invariants. |
 
 ---
 
@@ -854,7 +931,7 @@ The replay mapping at `run.ts:62` is the whole crash-safety policy for this prod
 
 What this consumer does not build: the loop, tool batching, session storage, queue durability, the resume decision tree, auth refresh (the `{ store }` form of `createProviderStreamFn` re-resolves rotating OAuth tokens per call). The verified crash drill from blueprint (SIGKILL mid-bash, `--resume`, model re-issues) ran on exactly this wiring.
 
-## 10.3 Cursor-class desktop shell (future, the seams' primary customer)
+## 10.3 Cursor-class desktop shell (future, the primary customer of the seams and the extension surface)
 
 The shape blueprint demands: one host process, many renderer windows, one workspace attached deliberately. Every requirement traces to a call that exists.
 
@@ -892,3 +969,6 @@ Line counts of the consumer-owned wiring: grok-bot's whole host class is about 2
 1. **Records → total-state registers.** The pi spec's current revision replaces the append-only records ledger with one overwritten `op.state/{operationId}` register per operation and terminal register deletion. Shipped pi 0.84.2 still uses records, as does June. Adopt at slice 6 with a migration, or record a reasoned decline. The spec's recovery-by-point-lookup argument is strong; the migration touches every record type and the SQLite schema.
 2. **Union passthrough breadth.** Part 2 rule 2 says unknown provider fields do not ride along and named fields are added deliberately. If a second provider dialect needs materially different item fields, revisit whether variants grow fields or the adapter owns a private extension map. Default position stands until a concrete provider forces the question.
 3. **Search service boundary.** The in-backend FTS5 index is justified by the single-file decision (§3.3). The moment a second storage backend lands, search must be re-cut as the spec's standalone service with durable cursors. Tied to slice 5.
+4. **Extension runner placement, exactly.** §4.4.2 fixes the direction: the runner composes over the harness, below the clients, so all hosts share one extension system. It does not fix the package cut: inside `@june/core`'s composition layer, or a sibling package that depends on core. Either way `@june/plugin` stays the types-only authoring surface. pi's answer (runner in the product package) is the one June is deliberately not copying. Decide at slice 7, with the first two hosts as evidence.
+5. **One event vocabulary or three.** Today there are the loop's `AgentEvent`s, the harness listener's forwarded events, and (future) the protocol's wire events. The extension surface adds hook events (`session_*`, provider hooks, gates) that pi keeps distinct from its loop events. Decide at slice 7: are June's extension events a superset union over `AgentEvent` (one vocabulary, one cursor), or a separate layer that wraps it? Leaning superset: invariant 22's exhaustiveness discipline gets cheaper the fewer unions exist.
+6. **Isolation level for untrusted extensions.** v0 adopts pi's model: full process permissions behind trust-at-load (invariant 24). Cloud hosts running third-party extensions will want more: worker isolation, capability scoping. Not a v0 problem, but the `@june/plugin` API must not bake in assumptions that make out-of-process hosting impossible. Hooks are already async and message-shaped, which is most of the battle. Revisit when the cloud host (§10.4) lands.

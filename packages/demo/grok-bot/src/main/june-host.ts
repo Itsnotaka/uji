@@ -3,17 +3,17 @@ import {
   SqliteSessionRepo,
   newId,
   type AgentEvent,
+  type MessageEntry,
   type SessionMetadata,
   type SessionStorage,
   type StreamFn,
   type ThinkingLevel,
 } from "@june/core";
-import { agentById, agents, june, type Agent, type AgentId } from "../demo-data.ts";
+import { agentById, type Agent, type AgentDraft, type AgentId } from "../agents.ts";
 import type { AuthStatus, JuneDesktopEvent, JuneSnapshot } from "../desktop-api.ts";
 import { AgentProfileRepo } from "./agent-profile-repo.ts";
 
 const AGENT_ENTRY_TYPE = "june.demo.agent";
-const NEW_CONVERSATION = "No messages yet";
 
 export interface JuneHostDependencies {
   authStatus(): Promise<AuthStatus>;
@@ -35,9 +35,9 @@ export class JuneHost {
   private readonly emit: (event: JuneDesktopEvent) => void;
   private readonly dependencies: JuneHostDependencies;
   private readonly profileRepo: AgentProfileRepo;
-  private profiles: Agent[] = agents.map((agent) => ({ ...agent }));
+  private profiles: Agent[] = [];
   private profilesLoaded = false;
-  private activeAgentId: AgentId = june.id;
+  private activeAgentId: AgentId | null = null;
   private session?: SessionStorage;
   private harness?: AgentHarness;
   private unsubscribe?: () => void;
@@ -54,15 +54,15 @@ export class JuneHost {
   }
 
   async initialize(): Promise<JuneSnapshot> {
-    await this.loadProfiles();
+    this.loadProfiles();
     if (this.session === undefined) {
-      const conversations = await this.listConversations();
-      const latest = conversations.toSorted((a, b) => b.updatedAt - a.updatedAt)[0];
+      const latest = (await this.listConversations())[0];
       if (latest !== undefined) {
         this.activeAgentId = latest.agentId;
         this.session = await this.sessions.open(latest.metadata.id);
       }
     }
+    if (this.activeAgentId === null) this.activeAgentId = this.profiles[0]?.id ?? null;
     if (this.session !== undefined && (await this.dependencies.authStatus()).signedIn) {
       await this.openHarness();
     }
@@ -70,20 +70,20 @@ export class JuneHost {
   }
 
   async login(): Promise<JuneSnapshot> {
-    await this.loadProfiles();
+    this.loadProfiles();
     await this.dependencies.login(this.emit);
     if (this.session !== undefined) await this.openHarness();
-    const snapshot = await this.snapshot();
-    this.emit({ type: "snapshot", snapshot });
-    return snapshot;
+    return this.emitSnapshot();
   }
 
   async send(message: string): Promise<JuneSnapshot> {
-    await this.loadProfiles();
+    this.loadProfiles();
     if (!(await this.dependencies.authStatus()).signedIn) {
       throw new Error("Sign in with ChatGPT first");
     }
-    if (this.session === undefined) this.session = await this.createSession(this.activeAgentId);
+    const agentId = this.activeAgentId;
+    if (agentId === null) throw new Error("Create an agent first");
+    if (this.session === undefined) this.session = await this.createSession(agentId);
     if ((await this.session.getName()) === undefined)
       await this.session.setName(conversationTitle(message));
     await this.openHarness();
@@ -94,62 +94,58 @@ export class JuneHost {
         this.emit({ type: "error", message: result.value.error.message });
       }
     }
-    const snapshot = await this.snapshot();
-    this.emit({ type: "snapshot", snapshot });
-    return snapshot;
+    return this.emitSnapshot();
   }
 
   async abort(): Promise<void> {
     if (this.harness?.state.isStreaming === true) await this.harness.abort();
   }
 
-  async newChat(agentId: AgentId = this.activeAgentId): Promise<JuneSnapshot> {
-    await this.loadProfiles();
+  async newChat(agentId?: AgentId): Promise<JuneSnapshot> {
+    this.loadProfiles();
     this.assertIdle();
-    if (agentById(agentId, this.profiles) === undefined)
-      throw new Error(`Unknown agent: ${agentId}`);
+    const targetId = agentId ?? this.activeAgentId;
+    if (targetId === null) throw new Error("Create an agent first");
+    if (agentById(targetId, this.profiles) === undefined)
+      throw new Error(`Unknown agent: ${targetId}`);
     await this.closeActiveSession();
-    this.activeAgentId = agentId;
-    this.session = await this.createSession(this.activeAgentId);
+    this.activeAgentId = targetId;
+    this.session = await this.createSession(targetId);
     if ((await this.dependencies.authStatus()).signedIn) await this.openHarness();
     return this.emitSnapshot();
   }
 
   async selectAgent(agentId: AgentId): Promise<JuneSnapshot> {
-    await this.loadProfiles();
+    this.loadProfiles();
     this.assertIdle();
-    const agent = agentById(agentId, this.profiles);
-    if (agent === undefined) throw new Error(`Unknown agent: ${agentId}`);
+    if (agentById(agentId, this.profiles) === undefined)
+      throw new Error(`Unknown agent: ${agentId}`);
     if (agentId === this.activeAgentId) return this.snapshot();
-
     await this.closeActiveSession();
     this.activeAgentId = agentId;
-    const latest = (await this.listConversations())
-      .filter((conversation) => conversation.agentId === agentId)
-      .toSorted((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (latest !== undefined) this.session = await this.sessions.open(latest.metadata.id);
-    if (this.session !== undefined && (await this.dependencies.authStatus()).signedIn) {
-      await this.openHarness();
-    }
+    await this.openLatestSession(agentId);
     return this.emitSnapshot();
   }
 
-  async updateAgent(
-    agentId: AgentId,
-    changes: Pick<Agent, "name" | "role" | "instructions">,
-  ): Promise<JuneSnapshot> {
+  async createAgent(draft: AgentDraft): Promise<JuneSnapshot> {
+    this.loadProfiles();
     this.assertIdle();
-    await this.loadProfiles();
+    const agent: Agent = { id: newId("agent"), ...draft };
+    this.profileRepo.insert(agent);
+    this.profiles.push(agent);
+    await this.closeActiveSession();
+    this.activeAgentId = agent.id;
+    return this.emitSnapshot();
+  }
+
+  async updateAgent(agentId: AgentId, changes: AgentDraft): Promise<JuneSnapshot> {
+    this.loadProfiles();
+    this.assertIdle();
     const index = this.profiles.findIndex((agent) => agent.id === agentId);
     const current = this.profiles[index];
     if (current === undefined) throw new Error(`Unknown agent: ${agentId}`);
-    const updated: Agent = {
-      ...current,
-      name: requiredText(changes.name, "Name", 80),
-      role: requiredText(changes.role, "Role", 120),
-      instructions: requiredText(changes.instructions, "Instructions", 12_000),
-    };
-    this.profileRepo.save(updated);
+    const updated: Agent = { id: current.id, ...changes };
+    this.profileRepo.update(updated);
     this.profiles[index] = updated;
 
     if (agentId === this.activeAgentId) {
@@ -157,6 +153,23 @@ export class JuneHost {
       if (this.session !== undefined && (await this.dependencies.authStatus()).signedIn) {
         await this.openHarness();
       }
+    }
+    return this.emitSnapshot();
+  }
+
+  async deleteAgent(agentId: AgentId): Promise<JuneSnapshot> {
+    this.loadProfiles();
+    this.assertIdle();
+    const index = this.profiles.findIndex((agent) => agent.id === agentId);
+    if (index < 0) throw new Error(`Unknown agent: ${agentId}`);
+    // TODO(core): Delete the agent's sessions once SqliteSessionRepo grows a delete API;
+    // until then listConversations filters conversations whose agent no longer exists.
+    this.profileRepo.delete(agentId);
+    this.profiles.splice(index, 1);
+    if (agentId === this.activeAgentId) {
+      await this.closeActiveSession();
+      this.activeAgentId = this.profiles[0]?.id ?? null;
+      if (this.activeAgentId !== null) await this.openLatestSession(this.activeAgentId);
     }
     return this.emitSnapshot();
   }
@@ -170,6 +183,16 @@ export class JuneHost {
   private assertIdle(): void {
     if (this.harness?.state.isStreaming === true) {
       throw new Error("Wait for the current response or stop it before switching conversations");
+    }
+  }
+
+  private async openLatestSession(agentId: AgentId): Promise<void> {
+    const latest = (await this.listConversations()).find(
+      (conversation) => conversation.agentId === agentId,
+    );
+    if (latest !== undefined) this.session = await this.sessions.open(latest.metadata.id);
+    if (this.session !== undefined && (await this.dependencies.authStatus()).signedIn) {
+      await this.openHarness();
     }
   }
 
@@ -190,12 +213,13 @@ export class JuneHost {
   private async openHarness(): Promise<void> {
     if (this.harness !== undefined) return;
     if (this.session === undefined) throw new Error("Could not open the agent session");
+    if (this.activeAgentId === null) throw new Error("Create an agent first");
     const agent = agentById(this.activeAgentId, this.profiles);
     if (agent === undefined) throw new Error(`Unknown agent: ${this.activeAgentId}`);
     const sessionId = (await this.session.getMetadata()).id;
     const created = await AgentHarness.create({
       session: this.session,
-      streamFn: this.dependencies.createStreamFn(sessionId, this.activeAgentId),
+      streamFn: this.dependencies.createStreamFn(sessionId, agent.id),
       systemPrompt: agent.instructions,
       model: this.dependencies.model,
       thinkingLevel: this.dependencies.thinkingLevel,
@@ -233,17 +257,15 @@ export class JuneHost {
   }
 
   private async snapshot(): Promise<JuneSnapshot> {
-    await this.loadProfiles();
+    this.loadProfiles();
     const messages =
       this.session === undefined ? [] : messagesFrom(await this.session.getBranch("main"));
-    const previews = Object.fromEntries(
-      this.profiles.map((agent) => [agent.id, NEW_CONVERSATION]),
-    ) as Record<AgentId, string>;
-    const seen = new Set<AgentId>();
+    const previews: Record<AgentId, string> = {};
+    for (const agent of this.profiles) previews[agent.id] = "";
     for (const conversation of await this.listConversations()) {
-      if (seen.has(conversation.agentId)) continue;
-      previews[conversation.agentId] = conversation.preview;
-      seen.add(conversation.agentId);
+      if (previews[conversation.agentId] === "") {
+        previews[conversation.agentId] = conversation.preview;
+      }
     }
     return {
       activeAgentId: this.activeAgentId,
@@ -265,9 +287,11 @@ export class JuneHost {
       if (session === undefined) continue;
       try {
         const branch = await session.getBranch("main");
+        const agentId = agentIdFrom(branch);
+        if (agentId === null || agentById(agentId, this.profiles) === undefined) continue;
         const messages = messagesFrom(branch);
         conversations.push({
-          agentId: agentIdFrom(branch),
+          agentId,
           metadata: item,
           preview: previewFrom(messages),
           updatedAt: branch.at(-1)?.timestamp ?? item.createdAt,
@@ -279,39 +303,35 @@ export class JuneHost {
     return conversations.toSorted((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  private async loadProfiles(): Promise<void> {
+  private loadProfiles(): void {
     if (this.profilesLoaded) return;
     this.profilesLoaded = true;
-    this.profiles = this.profileRepo.list(agents);
+    this.profiles = this.profileRepo.list();
   }
 }
 
-function agentIdFrom(entries: Awaited<ReturnType<SessionStorage["getBranch"]>>): AgentId {
+function agentIdFrom(entries: Awaited<ReturnType<SessionStorage["getBranch"]>>): AgentId | null {
   const marker = entries.find(
     (entry) => entry.type === "custom" && entry.customType === AGENT_ENTRY_TYPE,
   );
   if (marker?.type !== "custom" || typeof marker.data !== "object" || marker.data === null) {
-    return june.id;
+    return null;
   }
   const id = "agentId" in marker.data ? marker.data.agentId : undefined;
-  return typeof id === "string" && agentById(id) !== undefined ? (id as AgentId) : june.id;
+  return typeof id === "string" ? id : null;
 }
 
-function messagesFrom(
-  entries: Awaited<ReturnType<SessionStorage["getBranch"]>>,
-): JuneSnapshot["messages"] {
-  return entries.filter((entry) => {
+function messagesFrom(entries: Awaited<ReturnType<SessionStorage["getBranch"]>>): MessageEntry[] {
+  return entries.filter((entry): entry is MessageEntry => {
     if (entry.type !== "message") return false;
     const role = entry.message.role;
     return (role === "user" || role === "assistant") && messageText(entry.message.content) !== "";
-  }) as JuneSnapshot["messages"];
+  });
 }
 
-function previewFrom(messages: JuneSnapshot["messages"]): string {
+function previewFrom(messages: MessageEntry[]): string {
   const latest = messages.at(-1);
-  return latest === undefined
-    ? NEW_CONVERSATION
-    : messageText(latest.message.content) || NEW_CONVERSATION;
+  return latest === undefined ? "" : messageText(latest.message.content);
 }
 
 function conversationTitle(message: string): string {
@@ -319,21 +339,9 @@ function conversationTitle(message: string): string {
   return normalized.length <= 48 ? normalized : `${normalized.slice(0, 47).trimEnd()}…`;
 }
 
-function messageText(content: unknown): string {
+// content is the schema's v0 Responses wire shape (string | ContentPart[] | undefined);
+// this collapses once @june/schema ships canonical discriminated parts.
+function messageText(content: MessageEntry["message"]["content"]): string {
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => {
-      if (typeof part !== "object" || part === null || !("text" in part)) return "";
-      return typeof part.text === "string" ? part.text : "";
-    })
-    .join("");
-}
-
-function requiredText(value: string, label: string, maxLength: number): string {
-  const normalized = value.trim();
-  if (normalized === "") throw new Error(`${label} is required`);
-  if (normalized.length > maxLength)
-    throw new Error(`${label} must be ${maxLength} characters or fewer`);
-  return normalized;
+  return content?.map((part) => part.text ?? "").join("") ?? "";
 }

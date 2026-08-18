@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
 import { join } from "node:path";
+import { parseAgentDraft } from "../agents";
 import type { JuneDesktopEvent } from "../desktop-api";
 import { JuneHost } from "./june-host";
 import { createProductionDependencies } from "./production-dependencies";
@@ -28,8 +29,8 @@ function createWindow(): void {
     height: 760,
     minWidth: 512,
     minHeight: 520,
-    // Native prepaint cannot consume renderer CSS variables; match Grok Bot's bg/base dark token.
-    backgroundColor: "#070707",
+    // Native prepaint cannot consume renderer CSS variables; mirror the background token pair.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#070707" : "#fcfcfc",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
@@ -81,25 +82,22 @@ void app.whenReady().then(() => {
     if (agentId !== undefined && typeof agentId !== "string") {
       throw new Error("Agent id must be a string");
     }
-    return host.newChat(agentId as Parameters<typeof host.newChat>[0]);
+    return host.newChat(agentId);
   });
   ipcMain.handle("june:select-agent", (_event, agentId: unknown) => {
     if (typeof agentId !== "string") throw new Error("Agent id is required");
-    return host.selectAgent(agentId as Parameters<typeof host.selectAgent>[0]);
+    return host.selectAgent(agentId);
   });
+  ipcMain.handle("june:create-agent", (_event, draft: unknown) =>
+    host.createAgent(parseAgentDraft(draft)),
+  );
   ipcMain.handle("june:update-agent", (_event, agentId: unknown, changes: unknown) => {
     if (typeof agentId !== "string") throw new Error("Agent id is required");
-    if (typeof changes !== "object" || changes === null)
-      throw new Error("Agent changes are required");
-    const { name, role, instructions } = changes as Record<string, unknown>;
-    if (typeof name !== "string" || typeof role !== "string" || typeof instructions !== "string") {
-      throw new Error("Name, role, and instructions are required");
-    }
-    return host.updateAgent(agentId as Parameters<typeof host.updateAgent>[0], {
-      name,
-      role,
-      instructions,
-    });
+    return host.updateAgent(agentId, parseAgentDraft(changes));
+  });
+  ipcMain.handle("june:delete-agent", (_event, agentId: unknown) => {
+    if (typeof agentId !== "string") throw new Error("Agent id is required");
+    return host.deleteAgent(agentId);
   });
   createWindow();
 

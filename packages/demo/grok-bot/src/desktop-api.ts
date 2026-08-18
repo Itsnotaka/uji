@@ -1,5 +1,5 @@
 import type { MessageEntry } from "@june/core";
-import type { Agent, AgentId } from "./demo-data.ts";
+import type { Agent, AgentDraft, AgentId } from "./agents.ts";
 
 // TODO(protocol): Replace this demo-local facade and its Core MessageEntry leak with the canonical
 // sdk.provider/sdk.session protocol types shared by every client transport.
@@ -9,7 +9,8 @@ export type AuthStatus = {
 };
 
 export type JuneSnapshot = {
-  activeAgentId: AgentId;
+  activeAgentId: AgentId | null;
+  // Empty string means the agent has no conversation yet; the renderer supplies the copy.
   agentPreviews: Record<AgentId, string>;
   agents: Agent[];
   auth: AuthStatus;
@@ -31,9 +32,8 @@ export type JuneDesktopApi = {
   abort(): Promise<void>;
   newChat(agentId?: AgentId): Promise<JuneSnapshot>;
   selectAgent(agentId: AgentId): Promise<JuneSnapshot>;
-  updateAgent(
-    agentId: AgentId,
-    changes: Pick<Agent, "name" | "role" | "instructions">,
-  ): Promise<JuneSnapshot>;
+  createAgent(draft: AgentDraft): Promise<JuneSnapshot>;
+  updateAgent(agentId: AgentId, changes: AgentDraft): Promise<JuneSnapshot>;
+  deleteAgent(agentId: AgentId): Promise<JuneSnapshot>;
   onEvent(listener: (event: JuneDesktopEvent) => void): () => void;
 };

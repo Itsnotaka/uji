@@ -1,4 +1,4 @@
-import { useCallback, type KeyboardEvent } from "react";
+import { useCallback, useState, type FormEvent, type KeyboardEvent } from "react";
 import { IconArrowUp, IconStop } from "central-icons";
 import * as stylex from "@stylexjs/stylex";
 
@@ -14,6 +14,10 @@ import {
 import { mergeStyleProps } from "@june/ui/style";
 import { messageText, type ConversationProps, type MessageProps } from "@/view-model";
 import { colorVars, controlVars, radiusVars } from "@june/ui/tokens.stylex";
+import { useAbort } from "@/hooks/use-abort";
+import { useLogin } from "@/hooks/use-login";
+import { useSendMessage } from "@/hooks/use-send-message";
+import { strings } from "@/strings";
 import { AgentAvatar } from "./agent";
 import { grokControlVars, grokPrimitiveStyles } from "../theme.stylex";
 
@@ -36,24 +40,31 @@ const styles = stylex.create({
   notice: { color: colorVars["--june-color-warning"] },
 });
 
+// The host keys this component by agent id, so the draft resets per agent.
 export function Conversation({
   agent,
   auth,
   className,
-  draft,
   initializing,
   messages,
   notice,
   running,
-  signingIn,
   streamingText,
-  onDraftChange,
-  onLogin,
   onOpenDetails,
-  onSend,
-  onStop,
 }: ConversationProps) {
+  const sendMessage = useSendMessage();
+  const login = useLogin();
+  const abort = useAbort();
+  const [draft, setDraft] = useState("");
   const canCompose = !initializing && !running && auth.signedIn;
+
+  function submitDraft(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const body = draft.trim();
+    if (!body || !canCompose || sendMessage.isPending) return;
+    setDraft("");
+    sendMessage.mutate(body);
+  }
   const pinMessageScroll = useCallback(
     (node: HTMLDivElement | null) => {
       if (node !== null) node.scrollTop = node.scrollHeight;
@@ -74,11 +85,11 @@ export function Conversation({
         "grid min-w-0 flex-1 grid-rows-[44px_minmax(0,1fr)_auto] bg-background",
         className,
       )}
-      aria-label={`Conversation with ${agent.name}`}
+      aria-label={strings.conversation.conversationWith(agent.name)}
     >
       <header className="flex items-center border-b-[.5px] border-border px-3 [-webkit-app-region:drag]">
         <Button
-          aria-label={`View ${agent.name} details`}
+          aria-label={strings.conversation.viewDetails(agent.name)}
           className="[-webkit-app-region:no-drag]"
           onClick={onOpenDetails}
           variant="ghost"
@@ -92,19 +103,22 @@ export function Conversation({
       <div className="min-h-0 overflow-y-auto px-4 py-6" ref={pinMessageScroll} aria-live="polite">
         {initializing ? (
           <p className="grid h-full place-items-center text-sm text-muted-foreground">
-            Opening {agent.name}…
+            {strings.conversation.opening(agent.name)}
           </p>
         ) : !auth.signedIn ? (
           <div className="grid h-full place-items-center">
             <div className="flex flex-col items-center gap-3 text-center">
-              <h1 className="text-base font-medium">Sign in to message {agent.name}</h1>
+              <h1 className="text-base font-medium">{strings.onboarding.welcomeTitle}</h1>
+              <p className="max-w-xs text-label text-muted-foreground">
+                {strings.onboarding.welcomeBody}
+              </p>
               <Button
-                disabled={signingIn}
-                onClick={onLogin}
+                disabled={login.isPending}
+                onClick={() => login.mutate(undefined)}
                 size="sm"
                 xstyle={grokPrimitiveStyles.noFocusRing}
               >
-                {signingIn ? "Waiting for browser…" : "Continue with ChatGPT"}
+                {login.isPending ? strings.onboarding.connectPending : strings.onboarding.connect}
               </Button>
               {notice && (
                 <small className="max-w-sm text-[11px] text-muted-foreground" role="status">
@@ -155,26 +169,26 @@ export function Conversation({
             {notice}
           </p>
         )}
-        <form onSubmit={onSend}>
-          <InputGroup
-            data-grok-surface="composer"
-            size="xl"
-            xstyle={[styles.composerFrame, grokPrimitiveStyles.noFocusRing]}
-          >
+        <form onSubmit={submitDraft}>
+          <InputGroup size="xl" xstyle={[styles.composerFrame, grokPrimitiveStyles.noFocusRing]}>
             <InputGroupTextarea
-              aria-label={`Message ${agent.name}`}
+              aria-label={strings.conversation.messageLabel(agent.name)}
               disabled={!canCompose}
-              onChange={(event) => onDraftChange(event.target.value)}
+              onChange={(event) => setDraft(event.target.value)}
               onKeyDown={submitOnEnter}
-              placeholder={running ? `${agent.name} is thinking…` : `Message ${agent.name}`}
+              placeholder={
+                running
+                  ? strings.conversation.thinkingPlaceholder(agent.name)
+                  : strings.conversation.messagePlaceholder(agent.name)
+              }
               rows={1}
               value={draft}
             />
             <InputGroupAddon align="inline-end">
               {running ? (
                 <InputGroupButton
-                  aria-label="Stop response"
-                  onClick={onStop}
+                  aria-label={strings.conversation.stop}
+                  onClick={() => abort.mutate(undefined)}
                   size="icon-sm"
                   variant="default"
                   xstyle={[styles.composerAction, grokPrimitiveStyles.noFocusRing]}
@@ -185,7 +199,7 @@ export function Conversation({
                 </InputGroupButton>
               ) : (
                 <InputGroupButton
-                  aria-label="Send message"
+                  aria-label={strings.conversation.send}
                   disabled={!draft.trim() || !canCompose}
                   size="icon-sm"
                   type="submit"

@@ -93,10 +93,15 @@ const styles = stylex.create({
   },
 });
 
+// Shared with alert-dialog.tsx, which renders the same popup surface.
+export const dialogStyles = styles;
+
 export const Dialog = DialogPrimitive.Root;
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogPortal = DialogPrimitive.Portal;
 export const DialogClose = DialogPrimitive.Close;
+export const createDialogHandle = DialogPrimitive.createHandle;
+export type DialogHandle<Payload> = DialogPrimitive.Handle<Payload>;
 
 type StyledProps<Props> = Omit<Props, "className" | "style"> & {
   className?: string;

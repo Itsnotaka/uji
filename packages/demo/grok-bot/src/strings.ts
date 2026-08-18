@@ -1,22 +1,46 @@
-// All user-facing chrome copy for the grok-bot demo. Per-agent copy (names, roles,
-// descriptions, starter prompts) lives in demo-data.ts.
+// All user-facing chrome copy for the grok-bot demo.
 export const strings = {
   app: {
     name: "June",
+    retry: "Try again",
   },
   sidebar: {
     newChat: "New chat",
+    newAgent: "New agent",
     commands: "Commands",
     commandsShortcut: "⌘K",
     openCommands: "Open commands",
     resize: "Resize sidebar",
-    botList: "Bots",
+    botList: "Agents",
     noMessages: "No messages yet",
   },
   contextMenu: {
     open: "Open",
     newChat: "New chat",
     editAgent: "Edit agent",
+    deleteAgent: "Delete agent",
+  },
+  agentForm: {
+    nameLabel: "Name",
+    namePlaceholder: "e.g. Scout",
+    roleLabel: "Role",
+    rolePlaceholder: "What is this agent for?",
+    instructionsLabel: "Instructions",
+    instructionsPlaceholder:
+      "Describe how this agent should behave, what it is best at, and what it should never do.",
+    toneLabel: "Color",
+  },
+  createDialog: {
+    title: "New agent",
+    description: "Give it a name, a job, and instructions. You can change everything later.",
+    submit: "Create agent",
+    submitting: "Creating…",
+  },
+  deleteDialog: {
+    title: (name: string) => `Delete ${name}?`,
+    body: "Its conversations will no longer be shown. This cannot be undone.",
+    confirm: "Delete agent",
+    cancel: "Cancel",
   },
   account: {
     menuLabel: "Account",
@@ -38,12 +62,21 @@ export const strings = {
     connectPending: "Waiting for browser…",
     connectHint: "Sign-in opens in your browser and takes about a minute.",
     signInBrowserNotice: "Finish signing in in your browser.",
+    createFirstTitle: "Create your first agent",
+    createFirstBody:
+      "An agent is a name, a job, and instructions. Make one for planning, writing, research, or anything you return to often.",
+    createFirstCta: "New agent",
   },
   conversation: {
     opening: (name: string) => `Opening ${name}…`,
     conversationWith: (name: string) => `Conversation with ${name}`,
     viewDetails: (name: string) => `View ${name} details`,
     emptyHint: "Or write your own message below.",
+    suggestions: [
+      "Introduce yourself. What can you help with?",
+      "Help me think through a decision",
+      "Draft a short update from my notes",
+    ],
     messagePlaceholder: (name: string) => `Message ${name}`,
     thinkingPlaceholder: (name: string) => `${name} is thinking…`,
     messageLabel: (name: string) => `Message ${name}`,

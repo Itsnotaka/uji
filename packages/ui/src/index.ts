@@ -23,6 +23,17 @@ export type {
   ContextMenuSeparatorProps,
 } from "./components/ui/context-menu.tsx";
 export {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogPortal,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "./components/ui/alert-dialog.tsx";
+export {
+  createDialogHandle,
   Dialog,
   DialogClose,
   DialogContent,
@@ -34,6 +45,7 @@ export {
   DialogTitle,
   DialogTrigger,
 } from "./components/ui/dialog.tsx";
+export type { DialogHandle } from "./components/ui/dialog.tsx";
 export type {
   DialogContentProps,
   DialogDescriptionProps,

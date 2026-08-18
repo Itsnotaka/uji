@@ -1,17 +1,7 @@
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { isAgentTone, type Agent, type AgentId } from "../agents.ts";
-
-interface ProfileRow {
-  id: string;
-  name: string;
-  role: string;
-  instructions: string;
-  avatar: string;
-}
-
-const SEEDED_KEY = "agents_seeded";
 
 export class AgentProfileRepo {
   private readonly database: DatabaseSync;
@@ -31,56 +21,32 @@ export class AgentProfileRepo {
         updated_at INTEGER NOT NULL
       ) WITHOUT ROWID
     `);
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS demo_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      ) WITHOUT ROWID
-    `);
-    const columns = this.database
-      .prepare("SELECT name FROM pragma_table_info('demo_agent_profiles')")
-      .all() as unknown as { name: string }[];
-    const names = new Set(columns.map((column) => column.name));
-    if (!names.has("avatar")) {
+    const columns = new Set(
+      this.database
+        .prepare("SELECT name FROM pragma_table_info('demo_agent_profiles')")
+        .all()
+        .map((row) => row["name"]),
+    );
+    if (!columns.has("avatar")) {
       this.database.exec(
         "ALTER TABLE demo_agent_profiles ADD COLUMN avatar TEXT NOT NULL DEFAULT 'neutral'",
       );
     }
-    if (!names.has("created_at")) {
+    if (!columns.has("created_at")) {
       this.database.exec(
         "ALTER TABLE demo_agent_profiles ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
       );
     }
   }
 
-  seedOnce(createSeed: () => Agent): void {
-    const seeded = this.database
-      .prepare("SELECT value FROM demo_meta WHERE key = ?")
-      .get(SEEDED_KEY);
-    if (seeded !== undefined) return;
-    // Databases from before user-created agents may already hold edited profiles; keep them.
-    const count = this.database
-      .prepare("SELECT COUNT(*) AS count FROM demo_agent_profiles")
-      .get() as unknown as { count: number };
-    if (count.count === 0) this.insert(createSeed());
-    this.database
-      .prepare("INSERT INTO demo_meta (key, value) VALUES (?, '1')")
-      .run(SEEDED_KEY);
-  }
-
   list(): Agent[] {
-    const rows = this.database
+    return this.database
       .prepare(
         "SELECT id, name, role, instructions, avatar FROM demo_agent_profiles ORDER BY created_at, id",
       )
-      .all() as unknown as ProfileRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      role: row.role,
-      instructions: row.instructions,
-      avatar: isAgentTone(row.avatar) ? row.avatar : "neutral",
-    }));
+      .all()
+      .map(agentFromRow)
+      .filter((agent): agent is Agent => agent !== null);
   }
 
   insert(agent: Agent): void {
@@ -110,4 +76,11 @@ export class AgentProfileRepo {
   close(): void {
     this.database.close();
   }
+}
+
+function agentFromRow(row: Record<string, SQLOutputValue>): Agent | null {
+  const { id, name, role, instructions, avatar } = row;
+  if (typeof id !== "string" || typeof name !== "string") return null;
+  if (typeof role !== "string" || typeof instructions !== "string") return null;
+  return { id, name, role, instructions, avatar: isAgentTone(avatar) ? avatar : "neutral" };
 }

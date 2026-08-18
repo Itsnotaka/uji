@@ -1,59 +1,75 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import type { StreamFn } from "@june/core";
-import { agents, type AgentId } from "../src/demo-data.ts";
+import { parseAgentDraft, type AgentDraft, type AgentId } from "../src/agents.ts";
 import type { JuneDesktopEvent } from "../src/desktop-api.ts";
 import { JuneHost, type JuneHostDependencies } from "../src/main/june-host.ts";
 
-test("every demo agent runs and restores its own persisted conversation", async () => {
+const juneDraft: AgentDraft = {
+  name: "June",
+  role: "Chief of staff",
+  instructions: "Help the user think, plan, write, and follow through.",
+  avatar: "orange",
+};
+
+const scoutDraft: AgentDraft = {
+  name: "Scout",
+  role: "Research lead",
+  instructions: "Evaluate evidence supplied by the user and finish with a recommendation.",
+  avatar: "blue",
+};
+
+void test("starts empty and persists user-created agents and their conversations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-agents-"));
   const databasePath = join(directory, "sessions.db");
   const events: JuneDesktopEvent[] = [];
   const prompts = new Map<AgentId, string>();
   const dependencies = deterministicDependencies(prompts);
   const host = new JuneHost(databasePath, (event) => events.push(event), dependencies);
+  let seedId = "";
+  let scoutId = "";
 
   try {
     const initial = await host.initialize();
-    assert.equal(initial.activeAgentId, "june");
+    assert.deepEqual(initial.agents, []);
+    assert.equal(initial.activeAgentId, null);
     assert.deepEqual(initial.messages, []);
+    await assert.rejects(() => host.send("no agent yet"), /Create an agent first/);
 
-    const targeted = await host.newChat("slacker");
-    assert.equal(targeted.activeAgentId, "slacker");
-    assert.deepEqual(targeted.messages, []);
+    const first = await host.createAgent(juneDraft);
+    assert.equal(first.agents.length, 1);
+    const seed = first.agents[0];
+    assert.ok(seed);
+    assert.equal(seed.name, "June");
+    assert.equal(seed.avatar, "orange");
+    assert.equal(first.activeAgentId, seed.id);
+    seedId = seed.id;
 
-    for (const agent of agents) {
-      const selected = await host.selectAgent(agent.id);
-      assert.equal(selected.activeAgentId, agent.id);
-      const fresh = await host.newChat();
-      assert.deepEqual(fresh.messages, []);
+    const answered = await host.send("A real request");
+    assert.equal(answered.messages.length, 2);
+    assert.equal(messageText(answered.messages[1]?.message.content), "Handled: A real request");
+    assert.equal(answered.agentPreviews[seedId], "Handled: A real request");
+    assert.equal(prompts.get(seedId), seed.instructions);
 
-      const prompt = `A real request for ${agent.name}`;
-      const answered = await host.send(prompt);
-      assert.equal(answered.activeAgentId, agent.id);
-      assert.equal(answered.messages.length, 2);
-      assert.equal(messageText(answered.messages[0]?.message.content), prompt);
-      assert.equal(
-        messageText(answered.messages[1]?.message.content),
-        `${agent.name} handled: ${prompt}`,
-      );
-      assert.equal(answered.agentPreviews[agent.id], `${agent.name} handled: ${prompt}`);
-      assert.equal(prompts.get(agent.id), agent.instructions);
-    }
+    const created = await host.createAgent(scoutDraft);
+    assert.equal(created.agents.length, 2);
+    assert.ok(created.activeAgentId);
+    assert.notEqual(created.activeAgentId, seedId);
+    assert.deepEqual(created.messages, []);
+    scoutId = created.activeAgentId;
+    assert.equal(created.agentPreviews[scoutId], "");
 
-    for (const agent of agents) {
-      const restored = await host.selectAgent(agent.id);
-      assert.equal(restored.activeAgentId, agent.id);
-      assert.equal(restored.messages.length, 2);
-      assert.equal(
-        messageText(restored.messages[1]?.message.content),
-        `${agent.name} handled: A real request for ${agent.name}`,
-      );
-    }
+    const scoutAnswered = await host.send("Scout request");
+    assert.equal(scoutAnswered.messages.length, 2);
+    assert.equal(prompts.get(scoutId), scoutDraft.instructions);
+
+    const restored = await host.selectAgent(seedId);
+    assert.equal(restored.messages.length, 2);
+    assert.equal(messageText(restored.messages[0]?.message.content), "A real request");
 
     assert.ok(events.some((event) => event.type === "running" && event.running));
     assert.ok(events.some((event) => event.type === "delta"));
@@ -65,28 +81,71 @@ test("every demo agent runs and restores its own persisted conversation", async 
   const restoredHost = new JuneHost(databasePath, () => undefined, dependencies);
   try {
     const resumed = await restoredHost.initialize();
-    assert.equal(resumed.activeAgentId, "rawr");
-    assert.equal(resumed.messages.length, 2);
-
-    for (const agent of agents) {
-      const restored = await restoredHost.selectAgent(agent.id);
-      assert.equal(restored.messages.length, 2);
-      assert.equal(
-        messageText(restored.messages[0]?.message.content),
-        `A real request for ${agent.name}`,
-      );
-    }
+    assert.equal(resumed.agents.length, 2);
+    assert.equal(resumed.activeAgentId, scoutId);
+    const scout = resumed.agents.find((agent) => agent.id === scoutId);
+    assert.deepEqual(scout, { id: scoutId, ...scoutDraft });
+    const reselected = await restoredHost.selectAgent(seedId);
+    assert.equal(reselected.messages.length, 2);
   } finally {
     await restoredHost.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("the product renderer has no preview-only agent branches", async () => {
+void test("deleted agents stay deleted and their conversations disappear", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "june-delete-"));
+  const databasePath = join(directory, "sessions.db");
+  const dependencies = deterministicDependencies(new Map());
+  const host = new JuneHost(databasePath, () => undefined, dependencies);
+  let seedId = "";
+
+  try {
+    await host.initialize();
+    const seeded = await host.createAgent(juneDraft);
+    assert.ok(seeded.activeAgentId);
+    seedId = seeded.activeAgentId;
+    await host.send("Keep this");
+
+    const created = await host.createAgent(scoutDraft);
+    assert.ok(created.activeAgentId);
+    const scoutId = created.activeAgentId;
+    await host.send("Scoped to Scout");
+
+    const afterScoutDelete = await host.deleteAgent(scoutId);
+    assert.equal(afterScoutDelete.agents.length, 1);
+    assert.equal(afterScoutDelete.activeAgentId, seedId);
+    assert.equal(afterScoutDelete.agentPreviews[scoutId], undefined);
+    assert.equal(afterScoutDelete.messages.length, 2);
+
+    const afterSeedDelete = await host.deleteAgent(seedId);
+    assert.equal(afterSeedDelete.agents.length, 0);
+    assert.equal(afterSeedDelete.activeAgentId, null);
+    assert.deepEqual(afterSeedDelete.messages, []);
+  } finally {
+    await host.close();
+  }
+
+  const restoredHost = new JuneHost(databasePath, () => undefined, dependencies);
+  try {
+    const resumed = await restoredHost.initialize();
+    assert.equal(resumed.agents.length, 0);
+    assert.equal(resumed.activeAgentId, null);
+
+    const recreated = await restoredHost.createAgent(scoutDraft);
+    assert.equal(recreated.agents.length, 1);
+  } finally {
+    await restoredHost.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+void test("the product renderer has no preview-only agent branches", async () => {
   const files = [
     "src/App.tsx",
     "src/components/conversation.tsx",
     "src/components/bot-details.tsx",
+    "src/components/search-palette.tsx",
     "src/components/sidebar.tsx",
   ];
   const source = (
@@ -101,7 +160,7 @@ test("the product renderer has no preview-only agent branches", async () => {
   assert.doesNotMatch(source, /Icon(?:PlusMedium|SidebarHiddenRightWide) size=/);
 });
 
-test("signed-out users can complete login and start any agent", async () => {
+void test("signed-out users can complete login and message an agent", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-login-"));
   let signedIn = false;
   const events: JuneDesktopEvent[] = [];
@@ -123,15 +182,11 @@ test("signed-out users can complete login and start any agent", async () => {
 
   try {
     assert.equal((await host.initialize()).auth.signedIn, false);
+    await host.createAgent(juneDraft);
     await assert.rejects(() => host.send("before login"), /Sign in with ChatGPT first/);
     assert.equal((await host.login()).auth.signedIn, true);
-    await host.selectAgent("tweeter");
     const answered = await host.send("Launch note");
-    assert.equal(answered.activeAgentId, "tweeter");
-    assert.equal(
-      messageText(answered.messages[1]?.message.content),
-      "Tweeter handled: Launch note",
-    );
+    assert.equal(messageText(answered.messages[1]?.message.content), "Handled: Launch note");
     assert.ok(
       events.some((event) => event.type === "status" && event.message === "Opening test login…"),
     );
@@ -141,39 +196,43 @@ test("signed-out users can complete login and start any agent", async () => {
   }
 });
 
-test("agent settings persist and become the next harness instructions", async () => {
+void test("agent settings persist and become the next harness instructions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-profile-"));
   const databasePath = join(directory, "sessions.db");
   const prompts = new Map<AgentId, string>();
   const dependencies = deterministicDependencies(prompts);
   const host = new JuneHost(databasePath, () => undefined, dependencies);
-  const changes = {
+  const changes: AgentDraft = {
     name: "Signal",
     role: "Launch editor",
     instructions: "Write one concise launch message using only facts supplied by the user.",
+    avatar: "violet",
   };
+  let seedId = "";
 
   try {
     await host.initialize();
-    await host.selectAgent("tweeter");
-    const updated = await host.updateAgent("tweeter", changes);
+    const created = await host.createAgent(juneDraft);
+    assert.ok(created.activeAgentId);
+    seedId = created.activeAgentId;
+    const updated = await host.updateAgent(seedId, changes);
     assert.deepEqual(
-      updated.agents.find((agent) => agent.id === "tweeter"),
-      { id: "tweeter", avatar: "blue", ...changes },
+      updated.agents.find((agent) => agent.id === seedId),
+      { id: seedId, ...changes },
     );
     await host.send("Ship it");
-    assert.equal(prompts.get("tweeter"), changes.instructions);
+    assert.equal(prompts.get(seedId), changes.instructions);
 
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
       const row = database
-        .prepare("SELECT name, role, instructions FROM demo_agent_profiles WHERE id = ?")
-        .get("tweeter");
+        .prepare("SELECT name, role, instructions, avatar FROM demo_agent_profiles WHERE id = ?")
+        .get(seedId);
+      assert.ok(row);
       assert.deepEqual({ ...row }, changes);
     } finally {
       database.close();
     }
-    await assert.rejects(() => access(`${databasePath}.agents.json`));
   } finally {
     await host.close();
   }
@@ -182,13 +241,21 @@ test("agent settings persist and become the next harness instructions", async ()
   try {
     const restored = await restoredHost.initialize();
     assert.deepEqual(
-      restored.agents.find((agent) => agent.id === "tweeter"),
-      { id: "tweeter", avatar: "blue", ...changes },
+      restored.agents.find((agent) => agent.id === seedId),
+      { id: seedId, ...changes },
     );
   } finally {
     await restoredHost.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+void test("agent drafts are parsed at the boundary", () => {
+  assert.deepEqual(parseAgentDraft({ ...scoutDraft, name: "  Scout  " }), scoutDraft);
+  assert.throws(() => parseAgentDraft({ ...scoutDraft, name: "  " }), /Name is required/);
+  assert.throws(() => parseAgentDraft({ ...scoutDraft, avatar: "magenta" }), /avatar color/);
+  assert.throws(() => parseAgentDraft(undefined), /Agent details are missing/);
+  assert.throws(() => parseAgentDraft({ ...scoutDraft, name: "n".repeat(81) }), /80 characters/);
 });
 
 function deterministicDependencies(prompts: Map<AgentId, string>): JuneHostDependencies {
@@ -203,11 +270,9 @@ function deterministicDependencies(prompts: Map<AgentId, string>): JuneHostDepen
 
 function deterministicStream(agentId: AgentId, prompts: Map<AgentId, string>): StreamFn {
   return async (context, options) => {
-    const agent = agents.find((candidate) => candidate.id === agentId);
-    assert.ok(agent, "the harness must receive a registered agent prompt");
-    prompts.set(agent.id, context.systemPrompt);
+    prompts.set(agentId, context.systemPrompt);
     const userMessage = context.messages.findLast((message) => message.role === "user");
-    const response = `${agent.name} handled: ${messageText(userMessage?.content)}`;
+    const response = `Handled: ${messageText(userMessage?.content)}`;
     options.onDelta?.({ kind: "text", text: response });
     return {
       items: [
@@ -222,13 +287,7 @@ function deterministicStream(agentId: AgentId, prompts: Map<AgentId, string>): S
   };
 }
 
-function messageText(content: unknown): string {
+function messageText(content: string | { text?: string }[] | undefined): string {
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => {
-      if (typeof part !== "object" || part === null || !("text" in part)) return "";
-      return typeof part.text === "string" ? part.text : "";
-    })
-    .join("");
+  return content?.map((part) => part.text ?? "").join("") ?? "";
 }

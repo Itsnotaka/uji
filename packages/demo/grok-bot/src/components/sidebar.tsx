@@ -16,6 +16,7 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
+  DialogTrigger,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
@@ -29,7 +30,11 @@ import {
 import { colorVars, controlVars, fontVars, spaceVars } from "@june/ui/tokens.stylex";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { SidebarProps } from "@/view-model";
+import { useLogin } from "@/hooks/use-login";
+import { strings } from "@/strings";
 import { AgentAvatar } from "./agent";
+import { AgentCreateDialog } from "./agent-dialogs";
+import { commandPaletteHandle } from "./search-palette";
 import { grokControlVars, grokPrimitiveStyles } from "../theme.stylex";
 
 const styles = stylex.create({
@@ -92,15 +97,13 @@ export function Sidebar({
   collapsed,
   previews,
   running,
-  signingIn,
   selectedId,
   onEdit,
-  onLogin,
   onNewChat,
-  onOpenSearch,
   onResize,
   onSelect,
 }: SidebarProps) {
+  const login = useLogin();
   function beginResize(event: ReactPointerEvent<HTMLDivElement>) {
     const sidebarLeft = event.currentTarget.parentElement?.getBoundingClientRect().left ?? 0;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -149,20 +152,25 @@ export function Sidebar({
       </div>
 
       {!collapsed && (
-        <Button
-          aria-label="Open commands"
-          className="mx-3 my-1 w-[calc(100%-24px)] shrink-0"
-          data-grok-surface="search"
-          onClick={onOpenSearch}
-          variant="ghost"
-          xstyle={[styles.search, grokPrimitiveStyles.noFocusRing]}
+        <DialogTrigger
+          handle={commandPaletteHandle}
+          render={
+            <Button
+              aria-label={strings.sidebar.openCommands}
+              className="mx-3 my-1 w-[calc(100%-24px)] shrink-0"
+              variant="ghost"
+              xstyle={[styles.search, grokPrimitiveStyles.noFocusRing]}
+            />
+          }
         >
           <IconBox>
             <IconMagnifyingGlass />
           </IconBox>
-          <span>Commands</span>
-          <kbd className="ml-auto text-[10px] font-normal text-muted-foreground">⌘K</kbd>
-        </Button>
+          <span>{strings.sidebar.commands}</span>
+          <kbd className="ml-auto text-caption font-normal text-muted-foreground">
+            {strings.sidebar.commandsShortcut}
+          </kbd>
+        </DialogTrigger>
       )}
 
       <nav className="mt-1 flex min-h-0 w-full flex-1 flex-col px-2" aria-label="Bots">
@@ -192,7 +200,7 @@ export function Sidebar({
                     {agent.name}
                   </strong>
                   <small className="block truncate text-[13px] leading-[18px] font-[420] text-muted-foreground">
-                    {previews[agent.id]}
+                    {previews[agent.id] || strings.sidebar.noMessages}
                   </small>
                 </span>
               )}
@@ -223,6 +231,25 @@ export function Sidebar({
             </ContextMenuContent>
           </ContextMenu>
         ))}
+        <AgentCreateDialog
+          trigger={
+            <Button
+              className={cn(
+                "min-w-0 shrink-0 text-left text-muted-foreground",
+                collapsed && "mx-auto",
+              )}
+              variant="ghost"
+              xstyle={[styles.agent, grokPrimitiveStyles.noFocusRing]}
+            >
+              <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted">
+                <IconBox glyphSize={12}>
+                  <IconPlusMedium />
+                </IconBox>
+              </span>
+              {!collapsed && <span className="text-label">{strings.sidebar.newAgent}</span>}
+            </Button>
+          }
+        />
       </nav>
 
       <DropdownMenu>
@@ -248,23 +275,27 @@ export function Sidebar({
             </AvatarFallback>
           </Avatar>
           {!collapsed && (
-            <strong className="min-w-0 flex-1 truncate text-left text-[13px] leading-[18px] font-medium">
-              {auth.signedIn ? "ChatGPT" : signingIn ? "Signing in…" : "Not signed in"}
+            <strong className="min-w-0 flex-1 truncate text-left text-label font-medium">
+              {auth.signedIn
+                ? strings.account.signedIn
+                : login.isPending
+                  ? strings.account.signingIn
+                  : strings.account.signedOut}
             </strong>
           )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" style={{ minWidth: 228 }}>
           <DropdownMenuGroup>
-            <DropdownMenuLabel>Account</DropdownMenuLabel>
+            <DropdownMenuLabel>{strings.account.menuLabel}</DropdownMenuLabel>
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled>{auth.label}</DropdownMenuItem>
           {!auth.signedIn && (
-            <DropdownMenuItem disabled={signingIn} onClick={onLogin}>
+            <DropdownMenuItem disabled={login.isPending} onClick={() => login.mutate(undefined)}>
               <IconBox>
                 <IconArrowBoxRight />
               </IconBox>
-              {signingIn ? "Waiting for browser…" : "Sign in with ChatGPT"}
+              {login.isPending ? strings.account.signInPending : strings.account.signIn}
             </DropdownMenuItem>
           )}
         </DropdownMenuContent>
