@@ -5,7 +5,6 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { registerJuneEvents } from "./june-view.ts";
 import { applyThemePreference, loadThemePreference } from "./theme.ts";
-import "./styles.css";
 
 const root = document.querySelector("#root");
 

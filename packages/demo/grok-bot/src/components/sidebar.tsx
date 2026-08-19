@@ -146,16 +146,16 @@ const styles = stylex.create({
     boxShadow: `${hairline} ${colorVars["--june-color-border-weak"]}`,
   },
   newAgent: {
-    height: railSlot,
+    height: grokControlVars["--grok-control-search-height"],
     color: {
       default: colorVars["--june-color-muted-foreground"],
       ":hover": { "@media (hover: hover)": colorVars["--june-color-foreground"] },
     },
   },
+  // Matches the avatar column width so the label aligns with agent names above.
   glyphSlot: {
     display: "grid",
     width: avatarVars["--june-avatar-size-md"],
-    height: avatarVars["--june-avatar-size-md"],
     flexShrink: 0,
     placeItems: "center",
   },

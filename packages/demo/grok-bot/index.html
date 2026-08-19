@@ -9,13 +9,11 @@
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://chatgpt.com https://auth.openai.com"
     />
     <title>June</title>
-    <!-- First @layer statement wins ordering: Tailwind's layers must precede StyleX's
-         priority layers so component styles beat preflight regardless of which
-         stylesheet the dev server injects first. -->
-    <style>
-      @layer properties, theme, base, components, utilities, priority1, priority2, priority3,
-        priority4, priority5, priority6, priority7, priority8;
-    </style>
+    <!-- Tailwind must load as a static link so it is declared before the StyleX sheet
+         that @stylexjs/unplugin injects into head in dev (in build the plugin appends
+         StyleX CSS to this asset). Later-declared cascade layers win, so this ordering
+         lets StyleX component styles beat Tailwind preflight. -->
+    <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <div id="root"></div>
