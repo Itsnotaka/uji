@@ -6,6 +6,7 @@ export const strings = {
   },
   sidebar: {
     newChat: "New chat",
+    search: "Search",
     newAgent: "New agent",
     commands: "Commands",
     commandsShortcut: "⌘K",
@@ -59,6 +60,8 @@ export const strings = {
     conversationWith: (name: string) => `Conversation with ${name}`,
     viewDetails: (name: string) => `View ${name} details`,
     emptyHint: "Or write your own message below.",
+    connectTitle: "Connect ChatGPT",
+    connectBody: "Sign in to send messages with your agents.",
     suggestions: [
       "Introduce yourself. What can you help with?",
       "Help me think through a decision",
