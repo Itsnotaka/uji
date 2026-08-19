@@ -9,6 +9,7 @@ import { mergeStyleProps, type XStyle } from "@june/ui/style";
 import {
   borderVars,
   colorVars,
+  controlVars,
   elevationVars,
   fontVars,
   motionVars,
@@ -26,7 +27,7 @@ const styles = stylex.create({
     opacity: { default: 1, "[data-starting-style]": 0, "[data-ending-style]": 0 },
     transitionProperty: "opacity",
     transitionDuration: {
-      default: motionVars["--june-motion-fast"],
+      default: motionVars["--june-motion-normal"],
       "@media (prefers-reduced-motion: reduce)": "0s",
     },
     transitionTimingFunction: motionVars["--june-motion-ease-out"],
@@ -61,7 +62,7 @@ const styles = stylex.create({
     scale: { default: 1, "[data-starting-style]": 0.98, "[data-ending-style]": 0.98 },
     transitionProperty: "opacity, scale",
     transitionDuration: {
-      default: motionVars["--june-motion-fast"],
+      default: motionVars["--june-motion-normal"],
       "@media (prefers-reduced-motion: reduce)": "0s",
     },
     transitionTimingFunction: motionVars["--june-motion-ease-out"],
@@ -71,7 +72,13 @@ const styles = stylex.create({
     top: spaceVars["--june-space-2"],
     right: spaceVars["--june-space-2"],
   },
-  header: { display: "flex", flexDirection: "column", gap: spaceVars["--june-space-2"] },
+  header: {
+    display: "flex",
+    flexDirection: "column",
+    // Clears the absolutely positioned close button.
+    paddingInlineEnd: controlVars["--june-control-height-sm"],
+    gap: spaceVars["--june-space-1"],
+  },
   footer: {
     display: "flex",
     alignItems: "center",

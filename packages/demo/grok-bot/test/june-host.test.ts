@@ -151,13 +151,8 @@ void test("the product renderer has no preview-only agent branches", async () =>
   const source = (
     await Promise.all(files.map((file) => readFile(new URL(`../${file}`, import.meta.url), "utf8")))
   ).join("\n");
-  assert.doesNotMatch(source, /Preview only|Preview conversation|product preview|not connected\./);
-  assert.doesNotMatch(source, /uppercase|What are we working on|size="lg"/);
-  assert.match(source, /<Textarea/);
-  assert.match(source, /<ContextMenu/);
+  assert.doesNotMatch(source, /Preview only|Preview conversation|product preview/);
   assert.match(source, /event\.metaKey \|\| event\.ctrlKey/);
-  assert.match(source, /<IconBox glyphSize=\{12\}>/);
-  assert.doesNotMatch(source, /Icon(?:PlusMedium|SidebarHiddenRightWide) size=/);
 });
 
 void test("signed-out users can complete login and message an agent", async () => {

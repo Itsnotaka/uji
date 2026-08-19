@@ -30,7 +30,7 @@ function createWindow(): void {
     minWidth: 512,
     minHeight: 520,
     // Native prepaint cannot consume renderer CSS variables; mirror the background token pair.
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#070707" : "#fcfcfc",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#090a0b" : "#fdfdfc",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),

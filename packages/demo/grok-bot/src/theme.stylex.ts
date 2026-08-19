@@ -10,11 +10,3 @@ export const grokControlVars = stylex.defineVars({
   "--grok-control-composer-radius": "22px",
   "--grok-control-message-radius": "18px",
 });
-
-export const grokPrimitiveStyles = stylex.create({
-  noFocusRing: {
-    outlineStyle: { default: "none", ":focus-visible": "none", ":focus-within": "none" },
-    outlineWidth: { default: 0, ":focus-visible": 0, ":focus-within": 0 },
-    outlineOffset: { default: 0, ":focus-visible": 0, ":focus-within": 0 },
-  },
-});

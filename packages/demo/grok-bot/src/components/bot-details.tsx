@@ -2,12 +2,23 @@ import { useState, type FormEvent, type PointerEvent as ReactPointerEvent } from
 import { IconSidebarHiddenRightWide } from "central-icons";
 
 import { Button, IconBox, Input, Textarea, cn } from "@june/ui";
-import type { BotDetailsProps } from "@/view-model";
+import type { Agent } from "@/agents";
 import { useUpdateAgent } from "@/hooks/use-update-agent";
 import { strings } from "@/strings";
 import { AgentAvatar } from "./agent";
 import { AgentDeleteDialog } from "./agent-dialogs";
-import { grokPrimitiveStyles } from "../theme.stylex";
+
+const fieldStyle = "grid gap-2";
+const labelStyle = "text-detail font-medium text-muted-foreground";
+
+export type BotDetailsProps = {
+  agent: Agent;
+  className?: string;
+  overlay: boolean;
+  width: number;
+  onClose: () => void;
+  onResize: (width: number) => void;
+};
 
 // The host keys this panel by agent id, so field state re-initializes per agent.
 export function BotDetails({
@@ -64,114 +75,113 @@ export function BotDetails({
 
   return (
     <aside
-      aria-label={`${agent.name} settings`}
+      aria-label={strings.details.title}
       className={cn(
-        "relative shrink-0 border-l border-border bg-background",
+        "relative flex shrink-0 flex-col border-l border-border bg-background",
         overlay && "absolute inset-y-0 right-0 z-20",
         className,
       )}
       style={{ width }}
     >
-      <header className="flex h-11 items-center gap-2 border-b border-border px-3">
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <AgentAvatar agent={{ ...agent, name }} size="sm" />
-        <strong className="min-w-0 flex-1 truncate text-[13px] font-medium">Agent settings</strong>
-        <Button
-          aria-label="Close agent settings"
-          onClick={onClose}
-          size="icon-sm"
-          variant="ghost"
-          xstyle={grokPrimitiveStyles.noFocusRing}
-        >
+        <strong className="min-w-0 flex-1 truncate text-label font-medium">
+          {strings.details.title}
+        </strong>
+        <Button aria-label={strings.details.close} onClick={onClose} size="icon-sm" variant="ghost">
           <IconBox glyphSize={12}>
             <IconSidebarHiddenRightWide />
           </IconBox>
         </Button>
       </header>
 
-      <form
-        className="flex h-[calc(100%-44px)] min-h-0 flex-col gap-4 overflow-y-auto p-5"
-        onSubmit={submit}
-      >
-        <label className="grid gap-1.5 text-xs font-medium" htmlFor={`${agent.id}-name`}>
-          Name
-          <Input
-            autoComplete="off"
-            id={`${agent.id}-name`}
-            maxLength={80}
-            onChange={(event) => {
-              setName(event.target.value);
-              setStatus(undefined);
-            }}
-            required
-            spellCheck={false}
-            value={name}
-          />
-        </label>
+      <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => void submit(event)}>
+        <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-4 py-5">
+          <div className={fieldStyle}>
+            <label className={labelStyle} htmlFor={`${agent.id}-name`}>
+              {strings.details.nameLabel}
+            </label>
+            <Input
+              autoComplete="off"
+              id={`${agent.id}-name`}
+              maxLength={80}
+              onChange={(event) => {
+                setName(event.target.value);
+                setStatus(undefined);
+              }}
+              required
+              spellCheck={false}
+              value={name}
+            />
+          </div>
 
-        <label className="grid gap-1.5 text-xs font-medium" htmlFor={`${agent.id}-role`}>
-          Role
-          <Input
-            autoComplete="off"
-            id={`${agent.id}-role`}
-            maxLength={120}
-            onChange={(event) => {
-              setRole(event.target.value);
-              setStatus(undefined);
-            }}
-            required
-            spellCheck={false}
-            value={role}
-          />
-        </label>
+          <div className={fieldStyle}>
+            <label className={labelStyle} htmlFor={`${agent.id}-role`}>
+              {strings.details.roleLabel}
+            </label>
+            <Input
+              autoComplete="off"
+              id={`${agent.id}-role`}
+              maxLength={120}
+              onChange={(event) => {
+                setRole(event.target.value);
+                setStatus(undefined);
+              }}
+              required
+              spellCheck={false}
+              value={role}
+            />
+          </div>
 
-        <label
-          className="grid min-h-0 flex-1 grid-rows-[auto_minmax(180px,1fr)] gap-1.5 text-xs font-medium"
-          htmlFor={`${agent.id}-instructions`}
-        >
-          Instructions
-          <Textarea
-            id={`${agent.id}-instructions`}
-            maxLength={12_000}
-            onChange={(event) => {
-              setInstructions(event.target.value);
-              setStatus(undefined);
-            }}
-            required
-            value={instructions}
-            xstyle={grokPrimitiveStyles.noFocusRing}
-          />
-        </label>
+          <div className={cn(fieldStyle, "min-h-0 flex-1 grid-rows-[auto_minmax(160px,1fr)]")}>
+            <label className={labelStyle} htmlFor={`${agent.id}-instructions`}>
+              {strings.details.instructionsLabel}
+            </label>
+            <Textarea
+              className="resize-none"
+              id={`${agent.id}-instructions`}
+              maxLength={12_000}
+              onChange={(event) => {
+                setInstructions(event.target.value);
+                setStatus(undefined);
+              }}
+              required
+              value={instructions}
+            />
+          </div>
+        </div>
 
-        <div className="flex min-h-8 items-center justify-end gap-3">
+        <div className="flex min-h-14 shrink-0 items-center gap-3 border-t border-border px-4">
           {status && (
-            <span className="mr-auto text-detail text-muted-foreground" role="status">
+            <span
+              className="min-w-0 flex-1 truncate text-detail text-muted-foreground"
+              role="status"
+            >
               {status}
             </span>
           )}
-          <AgentDeleteDialog
-            agent={agent}
-            onDeleted={onClose}
-            trigger={
-              <Button size="sm" variant="destructive">
-                {strings.contextMenu.deleteAgent}
-              </Button>
-            }
-          />
-          <Button
-            disabled={!changed || saving}
-            size="sm"
-            type="submit"
-            xstyle={grokPrimitiveStyles.noFocusRing}
-          >
+          <Button className="ml-auto" disabled={!changed || saving} size="sm" type="submit">
             {saving ? strings.details.saving : strings.details.save}
           </Button>
         </div>
       </form>
 
+      <div className="flex shrink-0 items-center border-t border-border px-4 py-3">
+        <AgentDeleteDialog
+          agent={agent}
+          onDeleted={onClose}
+          trigger={
+            <Button size="sm" variant="destructive">
+              {strings.contextMenu.deleteAgent}
+            </Button>
+          }
+        />
+      </div>
+
       {!overlay && (
         <div
-          aria-label="Resize agent settings"
-          className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize touch-none"
+          aria-label={strings.details.resize}
+          className="absolute inset-y-0 -left-0.5 z-20 w-1.5 cursor-col-resize touch-none"
           onPointerDown={beginResize}
           role="separator"
         />

@@ -22,9 +22,12 @@ const styles = stylex.create({
     resize: "vertical",
     borderWidth: borderVars["--june-border-control-width"],
     borderStyle: "solid",
+    // Fields never ring: browsers mark any input focus as :focus-visible, so an outline
+    // would flash on click. Focus is the border emphasis instead.
     borderColor: {
       default: colorVars["--june-color-border"],
-      ":focus-visible": colorVars["--june-color-ring"],
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-border-strong"] },
+      ":focus": colorVars["--june-color-border-strong"],
       "[aria-invalid=true]": colorVars["--june-color-destructive"],
     },
     borderRadius: radiusVars["--june-radius-field"],
@@ -37,10 +40,7 @@ const styles = stylex.create({
     fontSize: fontVars["--june-font-size-body"],
     fontWeight: fontVars["--june-font-weight-regular"],
     lineHeight: fontVars["--june-leading-body"],
-    outlineColor: colorVars["--june-color-ring"],
-    outlineStyle: { default: "none", ":focus-visible": "solid" },
-    outlineWidth: controlVars["--june-control-focus-width"],
-    outlineOffset: controlVars["--june-control-focus-offset"],
+    outlineStyle: "none",
     opacity: { default: 1, ":disabled": controlVars["--june-control-disabled-opacity"] },
     transitionProperty: "background-color, border-color, outline-color, opacity",
     transitionDuration: {

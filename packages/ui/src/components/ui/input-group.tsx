@@ -10,6 +10,7 @@ import {
   controlVars,
   elevationVars,
   fontVars,
+  motionVars,
   radiusVars,
 } from "@june/ui/tokens.stylex";
 
@@ -23,13 +24,21 @@ const styles = stylex.create({
     minWidth: 0,
     borderWidth: borderVars["--june-border-hairline-width"],
     borderStyle: "solid",
-    borderColor: colorVars["--june-color-border"],
+    borderColor: {
+      default: colorVars["--june-color-border"],
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-border-strong"] },
+      ":focus-within": colorVars["--june-color-border-strong"],
+    },
     backgroundColor: colorVars["--june-color-field-background"],
     boxShadow: elevationVars["--june-elevation-field"],
-    outlineColor: colorVars["--june-color-ring"],
-    outlineStyle: { default: "none", ":focus-within": "solid" },
-    outlineWidth: controlVars["--june-control-focus-width"],
-    outlineOffset: controlVars["--june-control-focus-offset"],
+    // Fields never ring; :focus-within border emphasis above is the focus indicator.
+    outlineStyle: "none",
+    transitionProperty: "border-color",
+    transitionDuration: {
+      default: motionVars["--june-motion-fast"],
+      "@media (prefers-reduced-motion: reduce)": "0s",
+    },
+    transitionTimingFunction: motionVars["--june-motion-ease-out"],
   },
   md: { minHeight: controlVars["--june-control-height-md"] },
   xl: { minHeight: controlVars["--june-control-height-xl"] },
@@ -179,7 +188,8 @@ export function InputGroupAddon({
       role="group"
       onClick={(event) => {
         onClick?.(event);
-        if (event.defaultPrevented || (event.target as HTMLElement).closest("button")) return;
+        if (event.defaultPrevented) return;
+        if (event.target instanceof Element && event.target.closest("button")) return;
         event.currentTarget.parentElement
           ?.querySelector<HTMLInputElement | HTMLTextAreaElement>("input, textarea")
           ?.focus();

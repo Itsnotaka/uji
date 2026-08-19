@@ -2,10 +2,6 @@
 
 @source "../../../ui/src";
 
-@theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
 @layer base {
   html,
   body,
@@ -18,8 +14,9 @@
     min-width: 320px;
     min-height: 520px;
     overflow: hidden;
-    font-size: 13px;
-    font-weight: 420;
+    font-size: var(--june-font-size-label);
+    font-weight: var(--june-font-weight-regular);
+    line-height: var(--june-leading-label);
     -webkit-font-smoothing: antialiased;
   }
 }

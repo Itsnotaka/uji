@@ -26,7 +26,7 @@ export function ContextMenuContent({
   alignOffset = 0,
   className,
   side = "bottom",
-  sideOffset = 4,
+  sideOffset = 0,
   style,
   xstyle,
   ...props
@@ -75,7 +75,7 @@ export function ContextMenuItem({
   );
 }
 
-export interface ContextMenuSeparatorProps extends StyledProps<ContextMenuPrimitive.Separator.Props> {}
+export type ContextMenuSeparatorProps = StyledProps<ContextMenuPrimitive.Separator.Props>;
 
 export function ContextMenuSeparator({
   className,
@@ -92,6 +92,19 @@ export function ContextMenuSeparator({
   );
 }
 
-export function ContextMenuShortcut({ className, ...props }: React.ComponentProps<"span">) {
-  return <span className={className} {...stylex.props(menuStyles.shortcut)} {...props} />;
+export type ContextMenuShortcutProps = StyledProps<React.ComponentProps<"span">>;
+
+export function ContextMenuShortcut({
+  className,
+  style,
+  xstyle,
+  ...props
+}: ContextMenuShortcutProps) {
+  return (
+    <span
+      data-slot="context-menu-shortcut"
+      {...mergeStyleProps(stylex.props(menuStyles.shortcut, xstyle), className, style)}
+      {...props}
+    />
+  );
 }

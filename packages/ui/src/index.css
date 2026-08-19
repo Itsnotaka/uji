@@ -9,7 +9,6 @@
   * {
     box-sizing: border-box;
     border-color: var(--june-color-border);
-    outline-color: color-mix(in srgb, var(--june-color-ring) 50%, transparent);
   }
 
   html {
@@ -19,5 +18,12 @@
   body {
     background: var(--june-color-background);
     color: var(--june-color-foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Kit components restate this; the base rule keeps ad-hoc focusables on the same ring. */
+  :focus-visible {
+    outline: var(--june-control-focus-width) solid var(--june-color-ring);
+    outline-offset: var(--june-control-focus-offset);
   }
 }

@@ -3,7 +3,7 @@ import * as stylex from "@stylexjs/stylex";
 import type * as React from "react";
 
 import { mergeStyleProps, type XStyle } from "@june/ui/style";
-import { avatarVars, colorVars, fontVars, radiusVars } from "@june/ui/tokens.stylex";
+import { avatarVars, colorVars, fontVars, motionVars, radiusVars } from "@june/ui/tokens.stylex";
 
 const styles = stylex.create({
   root: {
@@ -94,9 +94,77 @@ const toneStyles = stylex.create({
   },
 });
 
+const solidToneStyles = stylex.create({
+  neutral: {
+    borderColor: "transparent",
+    backgroundColor: colorVars["--june-color-avatar-neutral-solid"],
+    color: colorVars["--june-color-avatar-solid-foreground"],
+  },
+  orange: {
+    borderColor: "transparent",
+    backgroundColor: colorVars["--june-color-avatar-orange-solid"],
+    color: colorVars["--june-color-avatar-solid-foreground"],
+  },
+  blue: {
+    borderColor: "transparent",
+    backgroundColor: colorVars["--june-color-avatar-blue-solid"],
+    color: colorVars["--june-color-avatar-solid-foreground"],
+  },
+  violet: {
+    borderColor: "transparent",
+    backgroundColor: colorVars["--june-color-avatar-violet-solid"],
+    color: colorVars["--june-color-avatar-solid-foreground"],
+  },
+  green: {
+    borderColor: "transparent",
+    backgroundColor: colorVars["--june-color-avatar-green-solid"],
+    color: colorVars["--june-color-avatar-solid-foreground"],
+  },
+});
+
+const interactiveStyles = stylex.create({
+  // Tints the fill with its own on-fill text color, so hover lifts a dark fill and
+  // deepens a light one without a per-tone hover token.
+  hover: {
+    // The inset tint is clipped to the padding box, so a border would keep an untinted
+    // 1px rim around the fill. Tone fills draw no border anyway.
+    borderWidth: 0,
+    boxShadow: {
+      default: "none",
+      ":hover": {
+        "@media (hover: hover)":
+          "inset 0 0 0 100vmax color-mix(in oklab, currentcolor 12%, transparent)",
+      },
+    },
+    // Repeats Button's transition list: this style is applied last, so a bare
+    // "box-shadow" would drop the host's own transitions.
+    transitionProperty: "box-shadow, background-color, border-color, color, opacity",
+    transitionDuration: {
+      default: motionVars["--june-motion-fast"],
+      "@media (prefers-reduced-motion: reduce)": "0s",
+    },
+    transitionTimingFunction: motionVars["--june-motion-ease-out"],
+  },
+});
+
 export type AvatarSize = keyof typeof sizeStyles;
 export type AvatarShape = keyof typeof shapeStyles;
 export type AvatarTone = keyof typeof toneStyles;
+export type AvatarVariant = "soft" | "solid";
+
+const variantToneStyles = { soft: toneStyles, solid: solidToneStyles } as const;
+
+/**
+ * Tone fill plus its on-fill text color, for interactive surfaces that carry agent
+ * identity (the composer send button). Static surfaces use `<Avatar variant="solid">`.
+ */
+export const avatarToneSolid: Record<AvatarTone, XStyle> = {
+  neutral: [solidToneStyles.neutral, interactiveStyles.hover],
+  orange: [solidToneStyles.orange, interactiveStyles.hover],
+  blue: [solidToneStyles.blue, interactiveStyles.hover],
+  violet: [solidToneStyles.violet, interactiveStyles.hover],
+  green: [solidToneStyles.green, interactiveStyles.hover],
+};
 
 export interface AvatarProps extends Omit<AvatarPrimitive.Root.Props, "className" | "style"> {
   className?: string;
@@ -104,6 +172,7 @@ export interface AvatarProps extends Omit<AvatarPrimitive.Root.Props, "className
   size?: AvatarSize;
   tone?: AvatarTone;
   style?: React.CSSProperties;
+  variant?: AvatarVariant;
   xstyle?: XStyle;
 }
 
@@ -113,6 +182,7 @@ export function Avatar({
   size = "md",
   tone = "neutral",
   style,
+  variant = "soft",
   xstyle,
   ...props
 }: AvatarProps) {
@@ -120,8 +190,16 @@ export function Avatar({
     <AvatarPrimitive.Root
       data-slot="avatar"
       data-size={size}
+      data-tone={tone}
+      data-variant={variant}
       {...mergeStyleProps(
-        stylex.props(styles.root, sizeStyles[size], shapeStyles[shape], toneStyles[tone], xstyle),
+        stylex.props(
+          styles.root,
+          sizeStyles[size],
+          shapeStyles[shape],
+          variantToneStyles[variant][tone],
+          xstyle,
+        ),
         className,
         style,
       )}

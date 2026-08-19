@@ -1,5 +1,11 @@
-import { Avatar, AvatarFallback } from "@june/ui";
-import type { AgentAvatarProps } from "@/view-model";
+import { Avatar, AvatarFallback, type AvatarSize } from "@june/ui";
+import type { Agent } from "@/agents";
+
+export type AgentAvatarProps = {
+  agent: Agent;
+  className?: string;
+  size?: AvatarSize;
+};
 
 export function AgentAvatar({ agent, className, size = "md" }: AgentAvatarProps) {
   return (

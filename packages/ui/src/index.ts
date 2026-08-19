@@ -1,4 +1,4 @@
-export { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar.tsx";
+export { Avatar, AvatarFallback, AvatarImage, avatarToneSolid } from "./components/ui/avatar.tsx";
 export type {
   AvatarFallbackProps,
   AvatarImageProps,
@@ -6,6 +6,7 @@ export type {
   AvatarShape,
   AvatarSize,
   AvatarTone,
+  AvatarVariant,
 } from "./components/ui/avatar.tsx";
 export { Button } from "./components/ui/button.tsx";
 export type { ButtonProps, ButtonSize, ButtonVariant } from "./components/ui/button.tsx";
@@ -21,6 +22,7 @@ export type {
   ContextMenuContentProps,
   ContextMenuItemProps,
   ContextMenuSeparatorProps,
+  ContextMenuShortcutProps,
 } from "./components/ui/context-menu.tsx";
 export {
   AlertDialog,

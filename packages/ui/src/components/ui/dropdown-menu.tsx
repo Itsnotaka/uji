@@ -21,8 +21,9 @@ export const menuStyles = stylex.create({
   positioner: { zIndex: overlayVars["--june-layer-menu"] },
   popup: {
     boxSizing: "border-box",
-    width: "var(--anchor-width)",
+    width: "max-content",
     minWidth: overlayVars["--june-menu-min-width"],
+    maxWidth: overlayVars["--june-menu-max-width"],
     maxHeight: overlayVars["--june-menu-max-height"],
     padding: spaceVars["--june-space-1"],
     overflowX: "hidden",
@@ -35,8 +36,8 @@ export const menuStyles = stylex.create({
     boxShadow: elevationVars["--june-elevation-menu"],
     color: colorVars["--june-color-popover-foreground"],
     fontFamily: fontVars["--june-font-family-ui"],
-    fontSize: fontVars["--june-font-size-body"],
-    lineHeight: fontVars["--june-leading-body"],
+    fontSize: fontVars["--june-font-size-label"],
+    lineHeight: fontVars["--june-leading-label"],
     outline: "none",
     transformOrigin: "var(--transform-origin)",
     opacity: { default: 1, "[data-starting-style]": 0, "[data-ending-style]": 0 },
@@ -62,8 +63,8 @@ export const menuStyles = stylex.create({
       "[data-highlighted]": colorVars["--june-color-muted-hover"],
     },
     color: colorVars["--june-color-popover-foreground"],
-    fontSize: fontVars["--june-font-size-body"],
-    lineHeight: fontVars["--june-leading-body"],
+    fontSize: fontVars["--june-font-size-label"],
+    lineHeight: fontVars["--june-leading-label"],
     outline: "none",
     opacity: { default: 1, "[data-disabled]": controlVars["--june-control-disabled-opacity"] },
     userSelect: "none",
@@ -81,6 +82,7 @@ export const menuStyles = stylex.create({
     },
   },
   inset: { paddingInlineStart: controlVars["--june-control-menu-inset"] },
+  indicatorGutter: { paddingInlineEnd: controlVars["--june-control-menu-inset"] },
   subTrigger: {
     backgroundColor: {
       default: "transparent",
@@ -287,7 +289,12 @@ export function DropdownMenuCheckboxItem({
       data-inset={inset || undefined}
       data-slot="dropdown-menu-checkbox-item"
       {...mergeStyleProps(
-        stylex.props(menuStyles.item, inset && menuStyles.inset, xstyle),
+        stylex.props(
+          menuStyles.item,
+          menuStyles.indicatorGutter,
+          inset && menuStyles.inset,
+          xstyle,
+        ),
         className,
         style,
       )}
@@ -322,7 +329,12 @@ export function DropdownMenuRadioItem({
       data-inset={inset || undefined}
       data-slot="dropdown-menu-radio-item"
       {...mergeStyleProps(
-        stylex.props(menuStyles.item, inset && menuStyles.inset, xstyle),
+        stylex.props(
+          menuStyles.item,
+          menuStyles.indicatorGutter,
+          inset && menuStyles.inset,
+          xstyle,
+        ),
         className,
         style,
       )}

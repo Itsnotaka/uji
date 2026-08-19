@@ -10,10 +10,16 @@
   --color-muted: var(--june-color-muted);
   --color-muted-hover: var(--june-color-muted-hover);
   --color-muted-foreground: var(--june-color-muted-foreground);
+  --color-tertiary-foreground: var(--june-color-tertiary-foreground);
   --color-destructive: var(--june-color-destructive);
   --color-border: var(--june-color-border);
+  --color-border-weak: var(--june-color-border-weak);
+  --color-border-strong: var(--june-color-border-strong);
   --color-ring: var(--june-color-ring);
   --color-sidebar: var(--june-color-sidebar);
+  --font-weight-regular: var(--june-font-weight-regular);
+  --font-weight-medium: var(--june-font-weight-medium);
+  --font-weight-semibold: var(--june-font-weight-semibold);
   --text-caption: var(--june-font-size-caption);
   --text-caption--line-height: var(--june-leading-caption);
   --text-detail: var(--june-font-size-detail);

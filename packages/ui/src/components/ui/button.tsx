@@ -35,9 +35,13 @@ const styles = stylex.create({
     outlineStyle: { default: "none", ":focus-visible": "solid" },
     outlineWidth: controlVars["--june-control-focus-width"],
     outlineOffset: controlVars["--june-control-focus-offset"],
-    opacity: { default: 1, ":disabled": controlVars["--june-control-disabled-opacity"] },
-    pointerEvents: { default: "auto", ":disabled": "none" },
-    transitionProperty: "background-color, border-color, color, opacity, transform",
+    opacity: {
+      default: 1,
+      ":disabled": controlVars["--june-control-disabled-opacity"],
+      "[data-disabled]": controlVars["--june-control-disabled-opacity"],
+    },
+    pointerEvents: { default: "auto", ":disabled": "none", "[data-disabled]": "none" },
+    transitionProperty: "background-color, border-color, color, opacity",
     transitionDuration: {
       default: motionVars["--june-motion-fast"],
       "@media (prefers-reduced-motion: reduce)": "0s",
@@ -48,14 +52,19 @@ const styles = stylex.create({
     backgroundColor: {
       default: colorVars["--june-color-primary"],
       ":hover": { "@media (hover: hover)": colorVars["--june-color-primary-hover"] },
+      "[data-popup-open]": colorVars["--june-color-primary-hover"],
     },
     color: colorVars["--june-color-primary-foreground"],
   },
   outline: {
-    borderColor: colorVars["--june-color-border"],
+    borderColor: {
+      default: colorVars["--june-color-border"],
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-border-strong"] },
+    },
     backgroundColor: {
-      default: colorVars["--june-color-background"],
+      default: "transparent",
       ":hover": { "@media (hover: hover)": colorVars["--june-color-muted"] },
+      "[data-popup-open]": colorVars["--june-color-muted"],
     },
     color: colorVars["--june-color-foreground"],
   },
@@ -63,13 +72,15 @@ const styles = stylex.create({
     backgroundColor: {
       default: colorVars["--june-color-muted"],
       ":hover": { "@media (hover: hover)": colorVars["--june-color-muted-hover"] },
+      "[data-popup-open]": colorVars["--june-color-muted-hover"],
     },
     color: colorVars["--june-color-foreground"],
   },
   ghost: {
     backgroundColor: {
       default: "transparent",
-      ":hover": { "@media (hover: hover)": colorVars["--june-color-muted"] },
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-muted-hover"] },
+      "[data-popup-open]": colorVars["--june-color-muted-hover"],
     },
     color: colorVars["--june-color-foreground"],
   },
@@ -77,6 +88,7 @@ const styles = stylex.create({
     backgroundColor: {
       default: colorVars["--june-color-destructive-muted"],
       ":hover": { "@media (hover: hover)": colorVars["--june-color-destructive-hover"] },
+      "[data-popup-open]": colorVars["--june-color-destructive-hover"],
     },
     color: colorVars["--june-color-destructive"],
   },
@@ -106,7 +118,7 @@ const styles = stylex.create({
   },
   lg: {
     height: controlVars["--june-control-height-lg"],
-    paddingInline: controlVars["--june-control-padding-md"],
+    paddingInline: controlVars["--june-control-padding-lg"],
     fontSize: fontVars["--june-font-size-body"],
   },
   icon: {

@@ -1,24 +1,30 @@
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useMemo, type ReactElement, type ReactNode } from "react";
 import { IconMagnifyingGlass, IconPencil, IconPlusMedium } from "central-icons";
 import * as stylex from "@stylexjs/stylex";
 
 import {
-  Button,
   createDialogHandle,
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
   IconBox,
-  Input,
 } from "@june/ui";
-import { mergeStyleProps } from "@june/ui/style";
-import { colorVars, elevationVars, fontVars, spaceVars } from "@june/ui/tokens.stylex";
+import {
+  Command,
+  CommandCollection,
+  CommandEmpty,
+  CommandGroup,
+  CommandGroupLabel,
+  CommandInput,
+  CommandInputGroup,
+  CommandItem,
+  CommandList,
+  useCommandFilter,
+} from "@june/ui/components/ui/command";
 import type { Agent, AgentId } from "@/agents";
-import type { SearchPaletteProps } from "@/view-model";
 import { strings } from "@/strings";
 import { AgentAvatar } from "./agent";
-import { grokControlVars, grokPrimitiveStyles } from "../theme.stylex";
 
 // Detached-trigger handle: the palette opens from the sidebar button and the ⌘K shortcut,
 // neither of which lives next to this dialog.
@@ -32,224 +38,195 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+// A palette belongs near the top of the window, not centred, so it overrides the
+// kit dialog's placement. Everything else about the surface stays the kit's.
 const styles = stylex.create({
-  input: {
-    height: fontVars["--june-leading-body"],
-    flex: 1,
-    paddingBlock: 0,
-    paddingInline: 0,
-    borderWidth: 0,
-    borderRadius: 0,
-    backgroundColor: "transparent",
-    outline: "none",
-  },
-  result: {
-    width: "100%",
-    minHeight: grokControlVars["--grok-control-agent-height"],
-    justifyContent: "flex-start",
-    gap: spaceVars["--june-space-2"],
-    paddingBlock: spaceVars["--june-space-2"],
-    paddingInline: spaceVars["--june-space-2"],
-    borderWidth: 0,
-    borderRadius: grokControlVars["--grok-control-agent-radius"],
-  },
-  activeResult: { backgroundColor: colorVars["--june-color-muted-hover"] },
-  dialog: {
-    borderColor: colorVars["--june-color-border"],
-    backgroundColor: colorVars["--june-color-popover"],
-    boxShadow: elevationVars["--june-elevation-menu"],
-  },
-  overlay: { backgroundColor: colorVars["--june-color-scrim"] },
-  header: {
+  popup: {
+    top: "12vh",
     display: "flex",
-    alignItems: "center",
-    gap: "4px",
-    paddingTop: "14px",
-    paddingRight: "10px",
-    paddingBottom: "14px",
-    paddingLeft: "14px",
-    borderBottomColor: colorVars["--june-color-border-weak"],
-  },
-  list: {
-    display: "flex",
-    height: "360px",
     flexDirection: "column",
-    rowGap: "2px",
-    overflowY: "auto",
-    padding: "8px",
+    width: "560px",
+    maxWidth: "calc(100vw - 32px)",
+    maxHeight: "min(480px, calc(100dvh - 22vh))",
+    gap: 0,
+    overflow: "hidden",
+    padding: 0,
+    transform: "translateX(-50%)",
+    transformOrigin: "top center",
   },
+  list: { flex: 1, minHeight: 0 },
 });
 
-type Command = {
+export type SearchPaletteProps = {
+  agents: readonly Agent[];
+  running: boolean;
+  selectedId: AgentId | null;
+  onEdit: (id: AgentId) => void;
+  onNewChat: (id: AgentId) => void;
+  onSelect: (id: AgentId) => void;
+};
+
+type PaletteActions = Pick<SearchPaletteProps, "onEdit" | "onNewChat" | "onSelect">;
+
+type PaletteKind = "open" | "newChat" | "edit";
+
+type PaletteCommand = {
   id: string;
-  kind: "open" | "new" | "edit";
+  kind: PaletteKind;
   agent: Agent;
   label: string;
   detail: string;
 };
 
-export function SearchPalette({
-  agents,
-  running,
-  selectedId,
-  onEdit,
-  onNewChat,
-  onSelect,
-}: SearchPaletteProps) {
+type PaletteGroup = {
+  value: string;
+  items: readonly PaletteCommand[];
+};
+
+// One row per kind keeps the item markup and the dispatch uniform: the list renders
+// every command the same way and looks its behaviour up here instead of branching.
+const paletteKinds: Record<
+  PaletteKind,
+  { glyph: (agent: Agent) => ReactNode; run: (actions: PaletteActions, agent: Agent) => void }
+> = {
+  open: {
+    glyph: (agent) => <AgentAvatar agent={agent} size="sm" />,
+    run: (actions, agent) => actions.onSelect(agent.id),
+  },
+  newChat: {
+    glyph: () => <CommandGlyph icon={<IconPlusMedium />} />,
+    run: (actions, agent) => actions.onNewChat(agent.id),
+  },
+  edit: {
+    glyph: () => <CommandGlyph icon={<IconPencil />} />,
+    run: (actions, agent) => actions.onEdit(agent.id),
+  },
+};
+
+export function SearchPalette(props: SearchPaletteProps) {
   return (
     <Dialog handle={commandPaletteHandle}>
-      <DialogContent
-        motionDuration="0ms"
-        overlayXstyle={styles.overlay}
-        style={{ width: 560, maxWidth: "92vw", gap: 0, overflow: "hidden", padding: 0 }}
-        showCloseButton={false}
-        xstyle={styles.dialog}
-      >
+      <DialogContent showCloseButton={false} xstyle={styles.popup}>
         <DialogTitle className="sr-only">{strings.palette.title}</DialogTitle>
         <DialogDescription className="sr-only">{strings.palette.description}</DialogDescription>
-        <PaletteContent
-          agents={agents}
-          running={running}
-          selectedId={selectedId}
-          onEdit={onEdit}
-          onNewChat={onNewChat}
-          onSelect={onSelect}
-        />
+        <PaletteCommands {...props} />
       </DialogContent>
     </Dialog>
   );
 }
 
-function PaletteContent({
-  agents,
-  running,
-  selectedId,
-  onEdit,
-  onNewChat,
-  onSelect,
-}: SearchPaletteProps) {
-  const [query, setQuery] = useState("");
-  const [activeIndex, setActiveIndex] = useState(0);
-  const commands = useMemo(() => buildCommands(agents, selectedId), [agents, selectedId]);
-  const results = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return commands;
-    return commands.filter((command) =>
-      `${command.label} ${command.detail} ${command.agent.name} ${command.agent.role}`
-        .toLowerCase()
-        .includes(normalized),
-    );
-  }, [commands, query]);
-  const highlightedIndex = Math.min(activeIndex, Math.max(0, results.length - 1));
-
-  function run(command: Command) {
-    if (running) return;
-    if (command.kind === "open") onSelect(command.agent.id);
-    if (command.kind === "new") onNewChat(command.agent.id);
-    if (command.kind === "edit") onEdit(command.agent.id);
-    commandPaletteHandle.close();
-  }
-
-  function navigate(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setActiveIndex(Math.min(highlightedIndex + 1, results.length - 1));
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setActiveIndex(Math.max(highlightedIndex - 1, 0));
-    } else if (event.key === "Enter" && results[highlightedIndex]) {
-      event.preventDefault();
-      run(results[highlightedIndex]);
-    }
-  }
+// Remounted with the dialog, so the query, the highlight, and the scroll position
+// all reset on close without any of them being state this component owns.
+function PaletteCommands({ agents, running, selectedId, ...actions }: SearchPaletteProps) {
+  const { contains } = useCommandFilter();
+  const groups = useMemo(() => buildGroups(agents, selectedId), [agents, selectedId]);
 
   return (
-    <>
-      <div {...mergeStyleProps(stylex.props(styles.header), "border-b")}>
-        <IconBox className="text-muted-foreground">
+    <Command
+      autoHighlight="always"
+      filter={(command: PaletteCommand, query) => contains(command, query, searchText)}
+      inline
+      items={groups}
+      keepHighlight
+      open
+    >
+      <CommandInputGroup>
+        <IconBox>
           <IconMagnifyingGlass />
         </IconBox>
-        <Input
+        <CommandInput
           aria-label={strings.palette.inputLabel}
           autoFocus
-          xstyle={[styles.input, grokPrimitiveStyles.noFocusRing]}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setActiveIndex(0);
-          }}
-          onKeyDown={navigate}
           placeholder={strings.palette.placeholder}
-          value={query}
         />
-      </div>
-      <div {...stylex.props(styles.list)} role="listbox">
-        {results.map((command, index) => (
-          <Button
-            aria-selected={index === highlightedIndex}
-            className="text-left"
-            disabled={running}
-            key={command.id}
-            onClick={() => run(command)}
-            onMouseEnter={() => setActiveIndex(index)}
-            role="option"
-            variant="ghost"
-            xstyle={[
-              styles.result,
-              grokPrimitiveStyles.noFocusRing,
-              index === highlightedIndex && styles.activeResult,
-            ]}
-          >
-            {command.kind === "open" ? (
-              <AgentAvatar agent={command.agent} />
-            ) : (
-              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
-                <IconBox>{command.kind === "new" ? <IconPlusMedium /> : <IconPencil />}</IconBox>
-              </span>
-            )}
-            <span className="min-w-0 flex-1">
-              <strong className="block truncate text-sm leading-5 font-medium">
-                {command.label}
-              </strong>
-              <small className="block truncate text-label font-normal text-muted-foreground">
-                {command.detail}
-              </small>
-            </span>
-          </Button>
-        ))}
-        {results.length === 0 && (
-          <p className="grid flex-1 place-items-center text-sm text-muted-foreground">
-            {strings.palette.empty}
-          </p>
+      </CommandInputGroup>
+
+      <CommandEmpty>
+        <p className="flex min-h-24 items-center px-3 text-detail text-muted-foreground">
+          {strings.palette.empty}
+        </p>
+      </CommandEmpty>
+
+      <CommandList xstyle={styles.list}>
+        {(group: PaletteGroup) => (
+          <CommandGroup items={group.items} key={group.value}>
+            <CommandGroupLabel>{group.value}</CommandGroupLabel>
+            <CommandCollection>
+              {(command: PaletteCommand) => (
+                <CommandItem
+                  disabled={isBlocked(command, running, selectedId)}
+                  key={command.id}
+                  onClick={() => {
+                    paletteKinds[command.kind].run(actions, command.agent);
+                    commandPaletteHandle.close();
+                  }}
+                  value={command}
+                >
+                  {paletteKinds[command.kind].glyph(command.agent)}
+                  <span className="min-w-0 flex-1 truncate">{command.label}</span>
+                  <span className="min-w-0 max-w-1/2 truncate text-detail text-muted-foreground">
+                    {command.detail}
+                  </span>
+                </CommandItem>
+              )}
+            </CommandCollection>
+          </CommandGroup>
         )}
-      </div>
-    </>
+      </CommandList>
+    </Command>
   );
 }
 
-function buildCommands(agents: readonly Agent[], selectedId: AgentId | null): Command[] {
+function CommandGlyph({ icon }: { icon: ReactElement<{ size?: number }> }) {
+  return (
+    <span className="grid size-6 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+      <IconBox glyphSize={12}>{icon}</IconBox>
+    </span>
+  );
+}
+
+// App.tsx short-circuits a select on the already-selected agent before its running
+// guard, so those rows stay live mid-response like the sidebar's. Starting a chat
+// does not, and it hits the guard.
+function isBlocked(command: PaletteCommand, running: boolean, selectedId: AgentId | null): boolean {
+  if (!running) return false;
+  return command.kind === "newChat" || command.agent.id !== selectedId;
+}
+
+function searchText(command: PaletteCommand): string {
+  return `${command.label} ${command.detail} ${command.agent.name} ${command.agent.role}`;
+}
+
+function buildGroups(agents: readonly Agent[], selectedId: AgentId | null): PaletteGroup[] {
   const selected = agents.find((agent) => agent.id === selectedId) ?? agents[0];
-  if (selected === undefined) return [];
+  const actions: PaletteCommand[] =
+    selected === undefined
+      ? []
+      : [
+          {
+            id: `newChat:${selected.id}`,
+            kind: "newChat",
+            agent: selected,
+            label: strings.palette.newChat,
+            detail: selected.name,
+          },
+          {
+            id: `edit:${selected.id}`,
+            kind: "edit",
+            agent: selected,
+            label: strings.palette.editAgent,
+            detail: selected.name,
+          },
+        ];
+  const opens = agents.map((agent): PaletteCommand => ({
+    id: `open:${agent.id}`,
+    kind: "open",
+    agent,
+    label: agent.name,
+    detail: agent.role,
+  }));
   return [
-    {
-      id: `new:${selected.id}`,
-      kind: "new",
-      agent: selected,
-      label: strings.palette.newChat,
-      detail: selected.name,
-    },
-    {
-      id: `edit:${selected.id}`,
-      kind: "edit",
-      agent: selected,
-      label: strings.palette.editAgent,
-      detail: selected.name,
-    },
-    ...agents.map((agent): Command => ({
-      id: `open:${agent.id}`,
-      kind: "open",
-      agent,
-      label: agent.name,
-      detail: agent.role,
-    })),
-  ];
+    { value: strings.palette.sectionActions, items: actions },
+    { value: strings.palette.sectionAgents, items: opens },
+  ].filter((group) => group.items.length > 0);
 }

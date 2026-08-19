@@ -77,9 +77,15 @@ const bannedPatterns = [
   [/\buseEffect\b/, "useEffect (the renderer is effect-free by design)"],
   [/data-grok-surface/, "data-grok-surface (retired audit hook)"],
   [/noFocusRing/, "noFocusRing (focus-visible must stay intact)"],
-  [/\btext-\[\d+px\]|\bleading-\[\d+px\]|\bfont-\[\d+\]/, "arbitrary type utilities (use the token scale)"],
+  [
+    /\btext-\[\d+px\]|\bleading-\[\d+px\]|\bfont-\[\d+\]/,
+    "arbitrary type utilities (use the token scale)",
+  ],
   [/from "@base-ui\//, "direct @base-ui import (go through @june/ui)"],
-  [/ as unknown\b| as const\b|[)\]}] as [A-Z]|= [\w$.()[\]]+ as [A-Z]/, "an `as` assertion (narrow or parse instead)"],
+  [
+    / as unknown\b| as const\b|[)\]}] as [A-Z]|= [\w$.()[\]]+ as [A-Z]/,
+    "an `as` assertion (narrow or parse instead)",
+  ],
 ];
 const importRename = /^\s*(?:import\b|(?:type\s+)?[\w$]+ as [\w$]+,?\s*$|.*\bfrom\s+["'])/;
 for (const file of demoFiles) {
