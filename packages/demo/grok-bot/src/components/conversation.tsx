@@ -1,5 +1,11 @@
-import { useCallback, useState, type FormEvent, type KeyboardEvent } from "react";
-import { IconArrowUp, IconChevronRightSmall, IconStop } from "central-icons";
+import { Fragment, useCallback, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  IconArrowUp,
+  IconExclamationCircle,
+  IconSidebarHiddenRightWide,
+  IconSidebarSimpleRightWide,
+  IconStop,
+} from "central-icons";
 import * as stylex from "@stylexjs/stylex";
 
 import {
@@ -13,12 +19,14 @@ import {
   InputGroupTextarea,
   IconBox,
   cn,
+  type AvatarSize,
 } from "@june/ui";
 import { mergeStyleProps } from "@june/ui/style";
 import {
   borderVars,
   colorVars,
   controlVars,
+  elevationVars,
   fontVars,
   motionVars,
   radiusVars,
@@ -30,19 +38,19 @@ import { useLogin } from "@/hooks/use-login";
 import { useSendMessage } from "@/hooks/use-send-message";
 import { strings } from "@/strings";
 import { messageText } from "@/messages";
-import { AgentAvatar } from "./agent";
 import { grokControlVars } from "../theme.stylex";
 
 export type ConversationProps = {
   agent: Agent;
   auth: AuthStatus;
   className?: string;
+  detailsOpen: boolean;
   initializing: boolean;
   messages: JuneSnapshot["messages"];
   notice?: string;
   running: boolean;
   streamingText: string;
-  onOpenDetails: () => void;
+  onToggleDetails: () => void;
 };
 
 type Turn = {
@@ -51,6 +59,7 @@ type Turn = {
   fromUser: boolean;
   timestamp: number;
   continues: boolean;
+  opensDay: boolean;
 };
 
 const caretBlink = stylex.keyframes({ "50%": { opacity: 0 } });
@@ -61,14 +70,6 @@ const styles = stylex.create({
     borderBottomStyle: "solid",
     borderBottomColor: colorVars["--june-color-border-weak"],
   },
-  headerButton: {
-    justifyContent: "flex-start",
-    maxWidth: "100%",
-    gap: controlVars["--june-control-gap-md"],
-    paddingInline: controlVars["--june-control-padding-xs"],
-    borderWidth: 0,
-  },
-  headerChevron: { color: colorVars["--june-color-tertiary-foreground"] },
   // Rows opt out of scroll anchoring so the trailing anchor is the only candidate:
   // growth below the last row pins the view to the bottom, and a reader who has
   // scrolled up keeps their place because the anchor is then out of the scrollport.
@@ -79,6 +80,10 @@ const styles = stylex.create({
   log: { minHeight: "calc(100% + 1px)" },
   row: { overflowAnchor: "none" },
   scrollAnchor: { height: "1px", overflowAnchor: "auto" },
+  daySeparator: {
+    color: colorVars["--june-color-muted-foreground"],
+    fontVariantNumeric: "tabular-nums",
+  },
   bubble: {
     maxWidth: "80%",
     borderRadius: grokControlVars["--grok-control-message-radius"],
@@ -128,9 +133,17 @@ const styles = stylex.create({
     textAlign: "start",
   },
   connect: { borderRadius: radiusVars["--june-radius-pill"] },
+  connectCard: {
+    borderWidth: borderVars["--june-border-hairline-width"],
+    borderStyle: "solid",
+    borderColor: colorVars["--june-color-border"],
+    borderRadius: radiusVars["--june-radius-dialog"],
+    backgroundColor: colorVars["--june-color-field-background"],
+    boxShadow: elevationVars["--june-elevation-field"],
+  },
   composerFrame: { borderRadius: grokControlVars["--grok-control-composer-radius"] },
   composerAction: { borderRadius: radiusVars["--june-radius-pill"] },
-  notice: { color: colorVars["--june-color-warning"] },
+  noticeIcon: { color: colorVars["--june-color-warning"] },
 });
 
 const column = "mx-auto w-full max-w-2xl";
@@ -140,12 +153,13 @@ export function Conversation({
   agent,
   auth,
   className,
+  detailsOpen,
   initializing,
   messages,
   notice,
   running,
   streamingText,
-  onOpenDetails,
+  onToggleDetails,
 }: ConversationProps) {
   const sendMessage = useSendMessage();
   const login = useLogin();
@@ -156,6 +170,11 @@ export function Conversation({
   const canCompose = !initializing && !running && auth.signedIn && !sendMessage.isPending;
   const turns = conversationTurns(messages);
   const thinking = running && streamingText === "";
+  const streaming = streamingText !== "" || thinking;
+  const lastTurn = turns.at(-1);
+  // The answer in flight is happening now, so it opens a day of its own whenever the
+  // stored history stopped on an earlier day.
+  const streamOpensDay = lastTurn === undefined || !sameDay(lastTurn.timestamp, Date.now());
 
   const pinToBottom = useCallback(
     (node: HTMLDivElement | null) => {
@@ -196,22 +215,21 @@ export function Conversation({
       <header
         {...mergeStyleProps(
           stylex.props(styles.header),
-          "flex min-w-0 items-center px-2 [-webkit-app-region:drag]",
+          "flex min-w-0 items-center gap-2 px-3 [-webkit-app-region:drag]",
         )}
       >
+        <ToneAvatar agent={agent} size="xs" />
+        <span className="text-label min-w-0 truncate font-medium">{agent.name}</span>
         <Button
+          aria-expanded={detailsOpen}
           aria-label={strings.conversation.viewDetails(agent.name)}
-          className="min-w-0 [-webkit-app-region:no-drag]"
-          onClick={onOpenDetails}
-          size="sm"
+          className="ml-auto [-webkit-app-region:no-drag]"
+          onClick={onToggleDetails}
+          size="icon-sm"
           variant="ghost"
-          xstyle={styles.headerButton}
         >
-          <AgentAvatar agent={agent} size="xs" />
-          <span className="text-label min-w-0 truncate font-medium">{agent.name}</span>
-          <span className="text-detail text-muted-foreground min-w-0 truncate">{agent.role}</span>
-          <IconBox glyphSize={12} xstyle={styles.headerChevron}>
-            <IconChevronRightSmall />
+          <IconBox glyphSize={14}>
+            {detailsOpen ? <IconSidebarHiddenRightWide /> : <IconSidebarSimpleRightWide />}
           </IconBox>
         </Button>
       </header>
@@ -224,14 +242,10 @@ export function Conversation({
           <p className="text-label text-muted-foreground grid h-full place-items-center">
             {strings.conversation.opening(agent.name)}
           </p>
-        ) : !auth.signedIn ? (
-          <SignedOut
-            notice={notice}
-            onConnect={() => login.mutate(undefined)}
-            pending={login.isPending}
-          />
-        ) : turns.length === 0 && streamingText === "" && !running ? (
-          <AgentHero agent={agent} onSuggest={send} ready={canCompose} />
+        ) : turns.length === 0 && !streaming ? (
+          // Signed out is not a gate: the agent still introduces itself, and the connect
+          // card above the composer carries the one action that is available.
+          <AgentHero agent={agent} onSuggest={send} ready={canCompose} suggest={auth.signedIn} />
         ) : (
           <div
             aria-live="polite"
@@ -239,9 +253,13 @@ export function Conversation({
             role="log"
           >
             {turns.map((turn) => (
-              <Message key={turn.id} turn={turn} />
+              <Fragment key={turn.id}>
+                {turn.opensDay && <DaySeparator timestamp={turn.timestamp} />}
+                <Message turn={turn} />
+              </Fragment>
             ))}
-            {(streamingText !== "" || thinking) && (
+            {streaming && streamOpensDay && <DaySeparator timestamp={Date.now()} />}
+            {streaming && (
               // Deltas would otherwise re-announce the whole answer on every token; the
               // finished turn lands in the log above and is announced once. It always opens
               // a run rather than continuing the previous answer: it follows the message the
@@ -250,7 +268,7 @@ export function Conversation({
                 aria-live="off"
                 {...mergeStyleProps(
                   stylex.props(styles.row),
-                  "mt-3 flex items-end gap-2 first:mt-0",
+                  cn("flex items-end gap-2", !streamOpensDay && "mt-3"),
                 )}
               >
                 <div
@@ -275,14 +293,18 @@ export function Conversation({
       </div>
 
       <div className="px-6 pt-2 pb-5">
-        <div className={column}>
-          {notice !== undefined && auth.signedIn && (
-            <p
-              {...mergeStyleProps(stylex.props(styles.notice), "text-caption mb-2 text-center")}
-              role="status"
-            >
+        <div className={cn(column, "flex flex-col gap-2")}>
+          {notice !== undefined && (
+            <p className="text-detail flex items-center justify-center gap-1.5" role="status">
+              {/* Warning tone rides the glyph. As text it misses AA against the light theme. */}
+              <IconBox glyphSize={12} xstyle={styles.noticeIcon}>
+                <IconExclamationCircle />
+              </IconBox>
               {notice}
             </p>
+          )}
+          {!auth.signedIn && (
+            <ConnectCard onConnect={() => login.mutate(undefined)} pending={login.isPending} />
           )}
           <form onSubmit={submitDraft}>
             <InputGroup size="xl" xstyle={styles.composerFrame}>
@@ -337,32 +359,31 @@ export function Conversation({
   );
 }
 
-function SignedOut({
-  notice,
-  pending,
-  onConnect,
-}: {
-  notice?: string;
-  pending: boolean;
-  onConnect: () => void;
-}) {
+function ToneAvatar({ agent, size }: { agent: Agent; size: AvatarSize }) {
   return (
-    <div className="grid h-full place-items-center">
-      <div className="flex max-w-sm flex-col items-center gap-3 text-center">
-        <h1 className="text-title font-medium">{strings.onboarding.welcomeTitle}</h1>
-        <p className="text-label text-muted-foreground">{strings.onboarding.welcomeBody}</p>
-        <Button disabled={pending} onClick={onConnect} size="sm" xstyle={styles.connect}>
-          {pending ? strings.onboarding.connectPending : strings.onboarding.connect}
-        </Button>
-        <small className="text-caption text-muted-foreground">
-          {strings.onboarding.connectHint}
-        </small>
-        {notice !== undefined && (
-          <small className="text-caption text-muted-foreground" role="status">
-            {notice}
-          </small>
-        )}
-      </div>
+    <Avatar shape="rounded" size={size} tone={agent.avatar} variant="solid">
+      <AvatarFallback>{initial(agent.name)}</AvatarFallback>
+    </Avatar>
+  );
+}
+
+function ConnectCard({ pending, onConnect }: { pending: boolean; onConnect: () => void }) {
+  return (
+    <div
+      {...mergeStyleProps(stylex.props(styles.connectCard), "flex items-center gap-3 px-4 py-3")}
+    >
+      {/* The only CTA string available is the title verbatim, so the card states the
+          problem once and lets the button carry the action. */}
+      <p className="text-label min-w-0">{strings.conversation.connectBody}</p>
+      <Button
+        className="ml-auto shrink-0"
+        disabled={pending}
+        onClick={onConnect}
+        size="sm"
+        xstyle={styles.connect}
+      >
+        {pending ? strings.onboarding.connectPending : strings.onboarding.connect}
+      </Button>
     </div>
   );
 }
@@ -370,40 +391,58 @@ function SignedOut({
 function AgentHero({
   agent,
   ready,
+  suggest,
   onSuggest,
 }: {
   agent: Agent;
   ready: boolean;
+  suggest: boolean;
   onSuggest: (body: string) => void;
 }) {
   return (
     <div className="grid h-full place-items-center">
       <div className="flex w-full max-w-sm flex-col items-center gap-6 text-center">
         <div className="flex flex-col items-center gap-3">
-          <Avatar shape="rounded" size="lg" tone={agent.avatar} variant="solid">
-            <AvatarFallback>{initial(agent.name)}</AvatarFallback>
-          </Avatar>
+          <ToneAvatar agent={agent} size="lg" />
           <div className="flex flex-col gap-1">
             <h1 className="text-title font-medium">{agent.name}</h1>
-            <p className="text-label text-muted-foreground">{agent.role}</p>
+            {agent.role !== "" && <p className="text-label text-muted-foreground">{agent.role}</p>}
           </div>
         </div>
-        <div className="flex w-full flex-col gap-2">
-          {strings.conversation.suggestions.map((suggestion) => (
-            <Button
-              disabled={!ready}
-              key={suggestion}
-              onClick={() => onSuggest(suggestion)}
-              variant="outline"
-              xstyle={styles.suggestion}
-            >
-              {suggestion}
-            </Button>
-          ))}
-        </div>
-        <p className="text-detail text-muted-foreground">{strings.conversation.emptyHint}</p>
+        {suggest && (
+          <>
+            <div className="flex w-full flex-col gap-2">
+              {strings.conversation.suggestions.map((suggestion) => (
+                <Button
+                  disabled={!ready}
+                  key={suggestion}
+                  onClick={() => onSuggest(suggestion)}
+                  variant="outline"
+                  xstyle={styles.suggestion}
+                >
+                  {suggestion}
+                </Button>
+              ))}
+            </div>
+            <p className="text-detail text-muted-foreground">{strings.conversation.emptyHint}</p>
+          </>
+        )}
       </div>
     </div>
+  );
+}
+
+function DaySeparator({ timestamp }: { timestamp: number }) {
+  return (
+    <time
+      {...mergeStyleProps(
+        stylex.props(styles.row, styles.daySeparator),
+        "text-detail block py-4 text-center",
+      )}
+      dateTime={new Date(timestamp).toISOString()}
+    >
+      {`${dayLabel(timestamp)} ${formatTime(timestamp)}`}
+    </time>
   );
 }
 
@@ -415,7 +454,8 @@ function Message({ turn }: { turn: Turn }) {
         cn(
           "group flex items-end gap-2",
           turn.fromUser && "flex-row-reverse",
-          !turn.continues && "mt-3 first:mt-0",
+          // A day separator already spaces the turn it introduces.
+          !turn.continues && !turn.opensDay && "mt-3",
         ),
       )}
     >
@@ -455,12 +495,16 @@ function conversationTurns(entries: JuneSnapshot["messages"]): Turn[] {
     const body = messageText(entry.message.content);
     if (body.trim() === "") continue;
     const fromUser = role === "user";
+    const previous = turns.at(-1);
+    const opensDay = previous === undefined || !sameDay(previous.timestamp, entry.timestamp);
     turns.push({
       id: entry.id,
       body,
       fromUser,
       timestamp: entry.timestamp,
-      continues: turns.at(-1)?.fromUser === fromUser,
+      // A day separator already breaks the run, so the joined corner would read as a lie.
+      continues: !opensDay && previous?.fromUser === fromUser,
+      opensDay,
     });
   }
   return turns;
@@ -474,4 +518,41 @@ function formatTime(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
     timestamp,
   );
+}
+
+const dayInMs = 86_400_000;
+
+function startOfDay(timestamp: number): number {
+  const date = new Date(timestamp);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function sameDay(a: number, b: number): boolean {
+  return startOfDay(a) === startOfDay(b);
+}
+
+// Separator labels are derived data rather than chrome copy, so today/yesterday come from
+// Intl (localized, no hardcoded words) and older days fall back to an absolute date.
+function dayLabel(timestamp: number): string {
+  const days = Math.round((startOfDay(timestamp) - startOfDay(Date.now())) / dayInMs);
+  if (days === 0 || days === -1) {
+    const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(
+      days,
+      "day",
+    );
+    return relative.charAt(0).toLocaleUpperCase() + relative.slice(1);
+  }
+  if (new Date(timestamp).getFullYear() !== new Date().getFullYear()) {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }).format(timestamp);
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  }).format(timestamp);
 }

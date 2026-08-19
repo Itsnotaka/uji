@@ -58,7 +58,6 @@ export type SidebarProps = {
   auth: AuthStatus;
   className?: string;
   collapsed: boolean;
-  previews: Readonly<Record<AgentId, string>>;
   running: boolean;
   selectedId: AgentId | null;
   themePreference: ThemePreference;
@@ -90,7 +89,7 @@ const styles = stylex.create({
     borderRightStyle: "solid",
     borderRightColor: colorVars["--june-color-border"],
   },
-  commands: {
+  search: {
     width: "100%",
     height: grokControlVars["--grok-control-search-height"],
     justifyContent: "flex-start",
@@ -108,7 +107,7 @@ const styles = stylex.create({
     fontWeight: fontVars["--june-font-weight-regular"],
     lineHeight: fontVars["--june-leading-label"],
   },
-  commandsCollapsed: {
+  searchCollapsed: {
     width: controlVars["--june-control-height-md"],
     justifyContent: "center",
     paddingInline: 0,
@@ -123,6 +122,76 @@ const styles = stylex.create({
     fontSize: fontVars["--june-font-size-caption"],
     lineHeight: fontVars["--june-leading-detail"],
   },
+  grid: {
+    display: "grid",
+    width: "100%",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: spaceVars["--june-space-1"],
+    alignContent: "start",
+  },
+  gridCollapsed: {
+    width: railSlot,
+    gridTemplateColumns: "minmax(0, 1fr)",
+  },
+  tile: {
+    width: "100%",
+    height: "auto",
+    flexDirection: "column",
+    justifyContent: "flex-start",
+    gap: spaceVars["--june-space-1"],
+    paddingInline: spaceVars["--june-space-1"],
+    paddingBlock: spaceVars["--june-space-2"],
+    borderWidth: 0,
+    borderRadius: grokControlVars["--grok-control-agent-radius"],
+    backgroundColor: {
+      default: "transparent",
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-muted"] },
+    },
+  },
+  tileCollapsed: {
+    paddingInline: 0,
+    paddingBlock: spaceVars["--june-space-1"],
+  },
+  tileSelected: {
+    backgroundColor: {
+      default: colorVars["--june-color-muted-hover"],
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-muted-hover"] },
+    },
+  },
+  role: {
+    maxWidth: "100%",
+    overflow: "hidden",
+    paddingInline: controlVars["--june-control-padding-xs"],
+    borderRadius: radiusVars["--june-radius-control"],
+    backgroundColor: colorVars["--june-color-muted"],
+    // Opaque, not muted-foreground: the chip wash stacks on the tile wash, and two
+    // translucent layers drop 12px muted text under 4.5:1 on a selected tile in light mode.
+    color: colorVars["--june-color-foreground"],
+    fontSize: fontVars["--june-font-size-detail"],
+    fontWeight: fontVars["--june-font-weight-regular"],
+    lineHeight: fontVars["--june-leading-detail"],
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  newTile: {
+    color: {
+      default: colorVars["--june-color-muted-foreground"],
+      ":hover": { "@media (hover: hover)": colorVars["--june-color-foreground"] },
+    },
+  },
+  // An empty avatar slot: same footprint and squircle as a real agent avatar.
+  newGlyph: {
+    display: "grid",
+    width: avatarVars["--june-avatar-size-lg"],
+    height: avatarVars["--june-avatar-size-lg"],
+    placeItems: "center",
+    borderRadius: radiusVars["--june-radius-avatar"],
+    boxShadow: `${hairline} ${colorVars["--june-color-border"]}`,
+  },
+  newGlyphCollapsed: {
+    width: avatarVars["--june-avatar-size-md"],
+    height: avatarVars["--june-avatar-size-md"],
+  },
   row: {
     width: "100%",
     justifyContent: "flex-start",
@@ -135,29 +204,6 @@ const styles = stylex.create({
     width: railSlot,
     justifyContent: "center",
     paddingInline: 0,
-  },
-  agent: { height: grokControlVars["--grok-control-agent-height"] },
-  agentCollapsed: { height: railSlot },
-  selected: {
-    backgroundColor: {
-      default: colorVars["--june-color-muted-hover"],
-      ":hover": { "@media (hover: hover)": colorVars["--june-color-muted-hover"] },
-    },
-    boxShadow: `${hairline} ${colorVars["--june-color-border-weak"]}`,
-  },
-  newAgent: {
-    height: grokControlVars["--grok-control-search-height"],
-    color: {
-      default: colorVars["--june-color-muted-foreground"],
-      ":hover": { "@media (hover: hover)": colorVars["--june-color-foreground"] },
-    },
-  },
-  // Matches the avatar column width so the label aligns with agent names above.
-  glyphSlot: {
-    display: "grid",
-    width: avatarVars["--june-avatar-size-md"],
-    flexShrink: 0,
-    placeItems: "center",
   },
   divider: {
     width: "100%",
@@ -182,7 +228,6 @@ export function Sidebar({
   auth,
   className,
   collapsed,
-  previews,
   running,
   selectedId,
   themePreference,
@@ -257,9 +302,9 @@ export function Sidebar({
           handle={commandPaletteHandle}
           render={
             <Button
-              aria-label={strings.sidebar.openCommands}
+              aria-label={strings.palette.inputLabel}
               variant="ghost"
-              xstyle={[styles.commands, collapsed && styles.commandsCollapsed]}
+              xstyle={[styles.search, collapsed && styles.searchCollapsed]}
             />
           }
         >
@@ -268,7 +313,7 @@ export function Sidebar({
           </IconBox>
           {!collapsed && (
             <>
-              <span>{strings.sidebar.commands}</span>
+              <span>{strings.sidebar.search}</span>
               <kbd {...stylex.props(styles.keycap)}>{strings.sidebar.commandsShortcut}</kbd>
             </>
           )}
@@ -282,79 +327,83 @@ export function Sidebar({
           collapsed && "items-center",
         )}
       >
-        {agents.map((agent) => (
-          <ContextMenu key={agent.id}>
-            <ContextMenuTrigger
-              render={
-                <Button
-                  aria-current={agent.id === selectedId ? "true" : undefined}
-                  aria-label={agent.name}
-                  className="min-w-0 text-left"
+        <div {...stylex.props(styles.grid, collapsed && styles.gridCollapsed)}>
+          {agents.map((agent) => (
+            <ContextMenu key={agent.id}>
+              <ContextMenuTrigger
+                render={
+                  <Button
+                    aria-current={agent.id === selectedId ? "true" : undefined}
+                    aria-label={agent.name}
+                    className="min-w-0"
+                    disabled={running && agent.id !== selectedId}
+                    onClick={() => onSelect(agent.id)}
+                    variant="ghost"
+                    xstyle={[
+                      styles.tile,
+                      collapsed && styles.tileCollapsed,
+                      agent.id === selectedId && styles.tileSelected,
+                    ]}
+                  />
+                }
+              >
+                <AgentAvatar agent={agent} size={collapsed ? "md" : "lg"} />
+                {!collapsed && (
+                  <span className="flex min-w-0 max-w-full flex-col items-center gap-0.5">
+                    <strong className="text-label max-w-full truncate font-medium">
+                      {agent.name}
+                    </strong>
+                    {agent.role.trim() !== "" && (
+                      <small {...stylex.props(styles.role)}>{agent.role}</small>
+                    )}
+                  </span>
+                )}
+              </ContextMenuTrigger>
+              <ContextMenuContent sideOffset={4}>
+                <ContextMenuItem
                   disabled={running && agent.id !== selectedId}
                   onClick={() => onSelect(agent.id)}
-                  variant="ghost"
-                  xstyle={[
-                    styles.row,
-                    styles.agent,
-                    collapsed && styles.rowCollapsed,
-                    collapsed && styles.agentCollapsed,
-                    agent.id === selectedId && styles.selected,
-                  ]}
-                />
-              }
-            >
-              <AgentAvatar agent={agent} />
-              {!collapsed && (
-                <span className="min-w-0 flex-1">
-                  <strong className="text-label block truncate font-medium">{agent.name}</strong>
-                  <small className="text-detail text-muted-foreground block truncate">
-                    {previews[agent.id] || strings.sidebar.noMessages}
-                  </small>
-                </span>
-              )}
-            </ContextMenuTrigger>
-            <ContextMenuContent sideOffset={4}>
-              <ContextMenuItem
-                disabled={running && agent.id !== selectedId}
-                onClick={() => onSelect(agent.id)}
-              >
-                <IconBox>
-                  <IconChatBubble7 />
-                </IconBox>
-                {strings.contextMenu.open}
-              </ContextMenuItem>
-              <ContextMenuItem disabled={running} onClick={() => onNewChat(agent.id)}>
-                <IconBox>
-                  <IconPlusMedium />
-                </IconBox>
-                {strings.contextMenu.newChat}
-              </ContextMenuItem>
-              <ContextMenuSeparator />
-              <ContextMenuItem disabled={running} onClick={() => onEdit(agent.id)}>
-                <IconBox>
-                  <IconPencil />
-                </IconBox>
-                {strings.contextMenu.editAgent}
-              </ContextMenuItem>
-            </ContextMenuContent>
-          </ContextMenu>
-        ))}
+                >
+                  <IconBox>
+                    <IconChatBubble7 />
+                  </IconBox>
+                  {strings.contextMenu.open}
+                </ContextMenuItem>
+                <ContextMenuItem disabled={running} onClick={() => onNewChat(agent.id)}>
+                  <IconBox>
+                    <IconPlusMedium />
+                  </IconBox>
+                  {strings.contextMenu.newChat}
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem disabled={running} onClick={() => onEdit(agent.id)}>
+                  <IconBox>
+                    <IconPencil />
+                  </IconBox>
+                  {strings.contextMenu.editAgent}
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+          ))}
 
-        <Button
-          aria-label={strings.sidebar.newAgent}
-          className="min-w-0 shrink-0 text-left"
-          disabled={createAgent.isPending}
-          onClick={() => createAgent.mutate(blankAgentDraft())}
-          variant="ghost"
-          xstyle={[styles.row, styles.newAgent, collapsed && styles.rowCollapsed]}
-        >
-          <span {...stylex.props(styles.glyphSlot)}>
-            <IconBox>
-              <IconPlusMedium />
-            </IconBox>
-          </span>
-          {!collapsed && <span className="text-label">{strings.sidebar.newAgent}</span>}
-        </Button>
+          <Button
+            aria-label={strings.sidebar.newAgent}
+            className="min-w-0"
+            disabled={createAgent.isPending}
+            onClick={() => createAgent.mutate(blankAgentDraft())}
+            variant="ghost"
+            xstyle={[styles.tile, styles.newTile, collapsed && styles.tileCollapsed]}
+          >
+            <span {...stylex.props(styles.newGlyph, collapsed && styles.newGlyphCollapsed)}>
+              <IconBox>
+                <IconPlusMedium />
+              </IconBox>
+            </span>
+            {!collapsed && (
+              <span className="text-label max-w-full truncate">{strings.sidebar.newAgent}</span>
+            )}
+          </Button>
+        </div>
       </nav>
 
       <div {...stylex.props(styles.divider)} />

@@ -94,7 +94,6 @@ function Workspace({ view }: { view: JuneView }) {
         agents={view.agents}
         auth={view.auth}
         collapsed={sidebarCollapsed}
-        previews={view.agentPreviews}
         onEdit={(id) => selectAgentById(id, () => setDetailsOpen(true))}
         onNewChat={startChat}
         onResize={(width) => setSidebarWidth(Math.min(400, Math.max(240, width)))}
@@ -112,11 +111,12 @@ function Workspace({ view }: { view: JuneView }) {
             <Conversation
               agent={activeAgent}
               auth={view.auth}
+              detailsOpen={detailsOpen}
               initializing={switching}
               key={activeAgent.id}
               messages={view.messages}
               notice={view.notice}
-              onOpenDetails={() => setDetailsOpen(true)}
+              onToggleDetails={() => setDetailsOpen((open) => !open)}
               running={running}
               streamingText={view.streamingText}
             />
