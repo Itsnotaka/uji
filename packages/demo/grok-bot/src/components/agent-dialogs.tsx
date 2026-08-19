@@ -132,7 +132,7 @@ function CreateAgentForm({ onCreated }: { onCreated: () => void }) {
 
       <DialogFooter>
         {status && (
-          <span className="mr-auto text-detail text-destructive" role="status">
+          <span className="text-destructive text-detail mr-auto" role="status">
             {status}
           </span>
         )}
@@ -161,7 +161,7 @@ function TonePicker({ initial, value, onChange }: TonePickerProps) {
       <div className="flex gap-3">
         {agentTones.map((tone) => (
           <label
-            className="grid cursor-default place-items-center rounded-xl outline-offset-2 outline-foreground has-[:checked]:outline-2 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+            className="has-focus-visible:ring-ring outline-foreground grid cursor-default place-items-center rounded-xl outline-offset-2 has-checked:outline-2 has-focus-visible:ring-2"
             key={tone}
           >
             <input
@@ -237,7 +237,7 @@ function DeleteAgentActions({
   return (
     <AlertDialogFooter>
       {status && (
-        <span className="mr-auto text-detail text-destructive" role="status">
+        <span className="text-destructive text-detail mr-auto" role="status">
           {status}
         </span>
       )}

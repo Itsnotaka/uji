@@ -77,15 +77,15 @@ export function BotDetails({
     <aside
       aria-label={strings.details.title}
       className={cn(
-        "relative flex shrink-0 flex-col border-l border-border bg-background",
+        "bg-background border-border relative flex shrink-0 flex-col border-l",
         overlay && "absolute inset-y-0 right-0 z-20",
         className,
       )}
       style={{ width }}
     >
-      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
+      <header className="border-border flex h-11 shrink-0 items-center gap-2 border-b px-3">
         <AgentAvatar agent={{ ...agent, name }} size="sm" />
-        <strong className="min-w-0 flex-1 truncate text-label font-medium">
+        <strong className="text-label min-w-0 flex-1 truncate font-medium">
           {strings.details.title}
         </strong>
         <Button aria-label={strings.details.close} onClick={onClose} size="icon-sm" variant="ghost">
@@ -151,10 +151,10 @@ export function BotDetails({
           </div>
         </div>
 
-        <div className="flex min-h-14 shrink-0 items-center gap-3 border-t border-border px-4">
+        <div className="border-border flex min-h-14 shrink-0 items-center gap-3 border-t px-4">
           {status && (
             <span
-              className="min-w-0 flex-1 truncate text-detail text-muted-foreground"
+              className="text-detail text-muted-foreground min-w-0 flex-1 truncate"
               role="status"
             >
               {status}
@@ -166,7 +166,7 @@ export function BotDetails({
         </div>
       </form>
 
-      <div className="flex shrink-0 items-center border-t border-border px-4 py-3">
+      <div className="border-border flex shrink-0 items-center border-t px-4 py-3">
         <AgentDeleteDialog
           agent={agent}
           onDeleted={onClose}

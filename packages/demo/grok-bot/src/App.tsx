@@ -28,11 +28,11 @@ export function App() {
   const viewQuery = useJuneViewQuery();
 
   if (viewQuery.isPending) {
-    return <div className="h-full bg-background" />;
+    return <div className="bg-background h-full" />;
   }
   if (viewQuery.isError) {
     return (
-      <div className="grid h-full place-items-center bg-background text-foreground">
+      <div className="bg-background text-foreground grid h-full place-items-center">
         <div className="flex max-w-sm flex-col items-center gap-3 text-center">
           <p className="text-label text-muted-foreground">{errorMessage(viewQuery.error)}</p>
           <Button onClick={() => void viewQuery.refetch()} size="sm" variant="outline">
@@ -87,7 +87,7 @@ function Workspace({ view }: { view: JuneView }) {
 
   return (
     <div
-      className="grid h-full min-h-0 bg-background font-sans text-foreground"
+      className="bg-background text-foreground grid h-full min-h-0 font-sans"
       style={{ gridTemplateColumns: `${visibleSidebarWidth}px minmax(0, 1fr)` }}
     >
       <Sidebar
@@ -104,7 +104,7 @@ function Workspace({ view }: { view: JuneView }) {
         selectedId={selectedId}
         themePreference={theme}
       />
-      <main className="relative flex min-w-0 bg-background">
+      <main className="bg-background relative flex min-w-0">
         {activeAgent === undefined ? (
           <EmptyWorkspace />
         ) : (

@@ -235,7 +235,7 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "relative flex min-w-0 flex-col bg-sidebar text-foreground",
+        "bg-sidebar text-foreground relative flex min-w-0 flex-col",
         collapsed && "items-center",
         className,
         stylex.props(styles.aside).className,
@@ -305,8 +305,8 @@ export function Sidebar({
               <AgentAvatar agent={agent} />
               {!collapsed && (
                 <span className="min-w-0 flex-1">
-                  <strong className="block truncate text-label font-medium">{agent.name}</strong>
-                  <small className="block truncate text-detail text-muted-foreground">
+                  <strong className="text-label block truncate font-medium">{agent.name}</strong>
+                  <small className="text-detail text-muted-foreground block truncate">
                     {previews[agent.id] || strings.sidebar.noMessages}
                   </small>
                 </span>
@@ -360,7 +360,7 @@ export function Sidebar({
 
       <div {...stylex.props(styles.divider)} />
 
-      <div className={cn("flex w-full shrink-0 justify-center px-2 py-2", collapsed && "px-0")}>
+      <div className={cn("flex w-full shrink-0 justify-center p-2", collapsed && "px-0")}>
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
@@ -386,7 +386,7 @@ export function Sidebar({
             </Avatar>
             {!collapsed && (
               <>
-                <strong className="min-w-0 flex-1 truncate text-left text-label font-medium">
+                <strong className="text-label min-w-0 flex-1 truncate text-left font-medium">
                   {auth.signedIn
                     ? strings.account.signedIn
                     : login.isPending

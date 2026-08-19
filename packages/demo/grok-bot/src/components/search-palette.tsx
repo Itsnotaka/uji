@@ -142,7 +142,7 @@ function PaletteCommands({ agents, running, selectedId, ...actions }: SearchPale
       </CommandInputGroup>
 
       <CommandEmpty>
-        <p className="flex min-h-24 items-center px-3 text-detail text-muted-foreground">
+        <p className="text-detail text-muted-foreground flex min-h-24 items-center px-3">
           {strings.palette.empty}
         </p>
       </CommandEmpty>
@@ -164,7 +164,7 @@ function PaletteCommands({ agents, running, selectedId, ...actions }: SearchPale
                 >
                   {paletteKinds[command.kind].glyph(command.agent)}
                   <span className="min-w-0 flex-1 truncate">{command.label}</span>
-                  <span className="min-w-0 max-w-1/2 truncate text-detail text-muted-foreground">
+                  <span className="text-detail text-muted-foreground max-w-1/2 min-w-0 truncate">
                     {command.detail}
                   </span>
                 </CommandItem>
@@ -179,7 +179,7 @@ function PaletteCommands({ agents, running, selectedId, ...actions }: SearchPale
 
 function CommandGlyph({ icon }: { icon: ReactElement<{ size?: number }> }) {
   return (
-    <span className="grid size-6 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+    <span className="bg-muted text-muted-foreground grid size-6 shrink-0 place-items-center rounded-lg">
       <IconBox glyphSize={12}>{icon}</IconBox>
     </span>
   );

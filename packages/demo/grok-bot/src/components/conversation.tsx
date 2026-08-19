@@ -188,7 +188,7 @@ export function Conversation({
   return (
     <section
       className={cn(
-        "grid min-w-0 flex-1 grid-rows-[44px_minmax(0,1fr)_auto] bg-background",
+        "bg-background grid min-w-0 flex-1 grid-rows-[44px_minmax(0,1fr)_auto]",
         className,
       )}
       aria-label={strings.conversation.conversationWith(agent.name)}
@@ -208,8 +208,8 @@ export function Conversation({
           xstyle={styles.headerButton}
         >
           <AgentAvatar agent={agent} size="xs" />
-          <span className="min-w-0 truncate text-label font-medium">{agent.name}</span>
-          <span className="min-w-0 truncate text-detail text-muted-foreground">{agent.role}</span>
+          <span className="text-label min-w-0 truncate font-medium">{agent.name}</span>
+          <span className="text-detail text-muted-foreground min-w-0 truncate">{agent.role}</span>
           <IconBox glyphSize={12} xstyle={styles.headerChevron}>
             <IconChevronRightSmall />
           </IconBox>
@@ -221,7 +221,7 @@ export function Conversation({
         ref={pinToBottom}
       >
         {initializing ? (
-          <p className="grid h-full place-items-center text-label text-muted-foreground">
+          <p className="text-label text-muted-foreground grid h-full place-items-center">
             {strings.conversation.opening(agent.name)}
           </p>
         ) : !auth.signedIn ? (
@@ -256,7 +256,7 @@ export function Conversation({
                 <div
                   {...mergeStyleProps(
                     stylex.props(styles.bubble, styles.agentBubble),
-                    "px-3.5 py-2 text-body whitespace-pre-wrap",
+                    "text-body px-3.5 py-2 whitespace-pre-wrap",
                   )}
                 >
                   {streamingText}
@@ -278,7 +278,7 @@ export function Conversation({
         <div className={column}>
           {notice !== undefined && auth.signedIn && (
             <p
-              {...mergeStyleProps(stylex.props(styles.notice), "mb-2 text-center text-caption")}
+              {...mergeStyleProps(stylex.props(styles.notice), "text-caption mb-2 text-center")}
               role="status"
             >
               {notice}
@@ -426,7 +426,7 @@ function Message({ turn }: { turn: Turn }) {
             turn.fromUser ? styles.userBubble : styles.agentBubble,
             turn.continues && (turn.fromUser ? styles.continuesUser : styles.continuesAgent),
           ),
-          "px-3.5 py-2 text-body whitespace-pre-wrap",
+          "text-body px-3.5 py-2 whitespace-pre-wrap",
         )}
       >
         {turn.body}
