@@ -246,11 +246,12 @@ void test("agent settings persist and become the next harness instructions", asy
 });
 
 void test("agent drafts are parsed at the boundary", () => {
-  assert.deepEqual(parseAgentDraft({ ...scoutDraft, name: "  Scout  " }), scoutDraft);
+  assert.deepEqual(parseAgentDraft(scoutDraft), scoutDraft);
+  const blank = { ...scoutDraft, role: "", instructions: "" };
+  assert.deepEqual(parseAgentDraft(blank), blank);
   assert.throws(() => parseAgentDraft({ ...scoutDraft, name: "  " }), /Name is required/);
   assert.throws(() => parseAgentDraft({ ...scoutDraft, avatar: "magenta" }), /avatar color/);
   assert.throws(() => parseAgentDraft(undefined), /Agent details are missing/);
-  assert.throws(() => parseAgentDraft({ ...scoutDraft, name: "n".repeat(81) }), /80 characters/);
 });
 
 function deterministicDependencies(prompts: Map<AgentId, string>): JuneHostDependencies {

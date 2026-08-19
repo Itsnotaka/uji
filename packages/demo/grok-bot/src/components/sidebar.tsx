@@ -46,10 +46,10 @@ import type { PointerEvent as ReactPointerEvent, ReactElement } from "react";
 import type { Agent, AgentId } from "@/agents";
 import type { AuthStatus } from "@/desktop-api";
 import type { ThemePreference } from "@/theme";
+import { blankAgentDraft, useCreateAgent } from "@/hooks/use-create-agent";
 import { useLogin } from "@/hooks/use-login";
 import { strings } from "@/strings";
 import { AgentAvatar } from "./agent";
-import { AgentCreateDialog } from "./agent-dialogs";
 import { commandPaletteHandle } from "./search-palette";
 import { grokControlVars } from "../theme.stylex";
 
@@ -193,6 +193,7 @@ export function Sidebar({
   onThemeChange,
 }: SidebarProps) {
   const login = useLogin();
+  const createAgent = useCreateAgent();
 
   function beginResize(event: ReactPointerEvent<HTMLDivElement>) {
     const sidebarLeft = event.currentTarget.parentElement?.getBoundingClientRect().left ?? 0;
@@ -339,23 +340,21 @@ export function Sidebar({
           </ContextMenu>
         ))}
 
-        <AgentCreateDialog
-          trigger={
-            <Button
-              aria-label={strings.sidebar.newAgent}
-              className="min-w-0 shrink-0 text-left"
-              variant="ghost"
-              xstyle={[styles.row, styles.newAgent, collapsed && styles.rowCollapsed]}
-            >
-              <span {...stylex.props(styles.glyphSlot)}>
-                <IconBox>
-                  <IconPlusMedium />
-                </IconBox>
-              </span>
-              {!collapsed && <span className="text-label">{strings.sidebar.newAgent}</span>}
-            </Button>
-          }
-        />
+        <Button
+          aria-label={strings.sidebar.newAgent}
+          className="min-w-0 shrink-0 text-left"
+          disabled={createAgent.isPending}
+          onClick={() => createAgent.mutate(blankAgentDraft())}
+          variant="ghost"
+          xstyle={[styles.row, styles.newAgent, collapsed && styles.rowCollapsed]}
+        >
+          <span {...stylex.props(styles.glyphSlot)}>
+            <IconBox>
+              <IconPlusMedium />
+            </IconBox>
+          </span>
+          {!collapsed && <span className="text-label">{strings.sidebar.newAgent}</span>}
+        </Button>
       </nav>
 
       <div {...stylex.props(styles.divider)} />

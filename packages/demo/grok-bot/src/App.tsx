@@ -2,7 +2,7 @@ import { useState, useSyncExternalStore } from "react";
 
 import { Button } from "@june/ui";
 import { agentById, type AgentId } from "@/agents";
-import { AgentCreateDialog } from "@/components/agent-dialogs";
+import { blankAgentDraft, useCreateAgent } from "@/hooks/use-create-agent";
 import { BotDetails } from "@/components/bot-details";
 import { Conversation } from "@/components/conversation";
 import { SearchPalette } from "@/components/search-palette";
@@ -146,14 +146,19 @@ function Workspace({ view }: { view: JuneView }) {
 }
 
 function EmptyWorkspace() {
+  const createAgent = useCreateAgent();
   return (
     <section className="grid flex-1 place-items-center p-6">
       <div className="flex max-w-sm flex-col items-center gap-3 text-center">
         <h1 className="text-title font-medium">{strings.onboarding.createFirstTitle}</h1>
         <p className="text-label text-muted-foreground">{strings.onboarding.createFirstBody}</p>
-        <AgentCreateDialog
-          trigger={<Button size="sm">{strings.onboarding.createFirstCta}</Button>}
-        />
+        <Button
+          disabled={createAgent.isPending}
+          onClick={() => createAgent.mutate(blankAgentDraft())}
+          size="sm"
+        >
+          {strings.onboarding.createFirstCta}
+        </Button>
       </div>
     </section>
   );

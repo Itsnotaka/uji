@@ -127,7 +127,6 @@ export function BotDetails({
                 setRole(event.target.value);
                 setStatus(undefined);
               }}
-              required
               spellCheck={false}
               value={role}
             />
@@ -145,7 +144,6 @@ export function BotDetails({
                 setInstructions(event.target.value);
                 setStatus(undefined);
               }}
-              required
               value={instructions}
             />
           </div>

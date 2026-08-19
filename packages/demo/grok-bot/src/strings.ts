@@ -20,21 +20,8 @@ export const strings = {
     editAgent: "Edit agent",
     deleteAgent: "Delete agent",
   },
-  agentForm: {
-    nameLabel: "Name",
-    namePlaceholder: "e.g. Scout",
-    roleLabel: "Role",
-    rolePlaceholder: "What is this agent for?",
-    instructionsLabel: "Instructions",
-    instructionsPlaceholder:
-      "Describe how this agent should behave, what it is best at, and what it should never do.",
-    toneLabel: "Color",
-  },
-  createDialog: {
-    title: "New agent",
-    description: "Give it a name, a job, and instructions. You can change everything later.",
-    submit: "Create agent",
-    submitting: "Creating…",
+  agents: {
+    defaultName: "New agent",
   },
   deleteDialog: {
     title: (name: string) => `Delete ${name}?`,
