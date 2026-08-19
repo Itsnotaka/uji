@@ -5,7 +5,7 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
-    "colors:audit": "node scripts/audit-grok-stylex.mjs",
+    "tokens:audit": "node scripts/audit-tokens.mjs",
     "build": "electron-vite build",
     "dev": "electron-vite dev",
     "package": "pnpm build && electron-builder --dir --config electron-builder.config.ts",

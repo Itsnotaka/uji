@@ -105,4 +105,4 @@ export const strings = {
     saving: "Saving…",
     saved: "Saved",
   },
-} as const;
+};
