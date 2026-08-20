@@ -484,9 +484,6 @@ function Message({ turn }: { turn: Turn }) {
   );
 }
 
-// TODO(schema): Render canonical discriminated message parts directly once the SDK stops exposing
-// provider-shaped ResponseItem content; entries that are not chat turns (reasoning, tool calls)
-// only fall out here because they carry no role and no text.
 function conversationTurns(entries: JuneSnapshot["messages"]): Turn[] {
   const turns: Turn[] = [];
   for (const entry of entries) {

@@ -1,4 +1,5 @@
 import process from "node:process";
+import { describeToolCall, displayDelta } from "./format.ts";
 import type { RunFlags } from "./run.ts";
 import { openHarness, resolveRuntime } from "./run.ts";
 
@@ -6,23 +7,20 @@ import { openHarness, resolveRuntime } from "./run.ts";
 export async function runPrint(flags: RunFlags): Promise<void> {
   const runtime = await resolveRuntime(flags);
   if (runtime === undefined) {
-    throw new Error("Couldn't find a stored credential. Run `pnpm june login`.");
+    throw new Error("Couldn't find a stored credential. Run `pnpm start login`.");
   }
   const { harness, suspended, sessionId, repo } = await openHarness(runtime, flags);
   let needsNewline = false;
   harness.subscribe((event) => {
-    if (event.type === "message_update" && event.delta.kind === "text") {
-      process.stdout.write(event.delta.text);
+    const delta = event.type === "message_update" ? displayDelta(event) : undefined;
+    if (delta?.kind === "text") {
+      process.stdout.write(delta.text);
       needsNewline = true;
     } else if (event.type === "tool_execution_start") {
       if (needsNewline) process.stdout.write("\n");
       needsNewline = false;
-      const args = event.args as { command?: string };
-      console.log(
-        event.toolName === "bash" && typeof args === "object" && args !== null
-          ? `$ ${args.command ?? ""}`
-          : `[${event.toolName}] ${JSON.stringify(event.args)}`,
-      );
+      const { title } = describeToolCall(event.toolName, event.args);
+      console.log(event.toolName === "bash" ? title : `[${title}]`);
     }
   });
   process.once("SIGINT", () => void harness.abort());

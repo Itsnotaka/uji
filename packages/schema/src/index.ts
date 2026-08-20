@@ -1,74 +1,41 @@
 /**
- * Wire types shared by core, ai, and clients. OpenAI Responses item shapes
- * are the v0 session wire; June parts come later and adapt from these.
+ * Wire types shared by core, ai, and clients.
+ *
+ * The neutral message model (`message.ts`), the model description
+ * (`model.ts`), and the tool and request context (`tool.ts`) are the contract
+ * every provider adapter meets.
  */
-
-export interface ContentPart {
-  type: string;
-  text?: string;
-}
-
-/** Text part of a tool result. */
-export interface ToolResultTextPart {
-  type: "text";
-  text: string;
-}
-
-/** Image part of a tool result. Base64 payload; provider-agnostic. */
-export interface ToolResultImagePart {
-  type: "image";
-  data: string;
-  mimeType: string;
-}
+export * from "./message.ts";
+export * from "./model.ts";
+export * from "./tool.ts";
 
 /**
- * Tool result content is a list of these parts. Sessions store them verbatim;
- * provider adapters encode them into each API's shape at request time.
+ * A skill: a folder with a `SKILL.md` whose frontmatter names it and says when
+ * to use it. The catalog (name, description, filePath) goes into the system
+ * prompt; the body is loaded on demand. Shared by core, the skills plugin, and
+ * clients, so it lives on the wire.
+ *
+ * Based on https://github.com/earendil-works/pi/blob/dev/packages/agent/src/harness/types.ts
  */
-export type ToolResultPart = ToolResultTextPart | ToolResultImagePart;
-
-/**
- * One item on the Responses wire: message, reasoning, function_call,
- * function_call_output. Plain `{role, content}` input items carry no `type`.
- * `output` holds June tool-result parts (or a bare string); it is encoded to
- * the provider's shape by the adapter, not stored pre-encoded.
- */
-export interface ResponseItem {
-  type?: string;
-  role?: string;
-  content?: ContentPart[] | string;
-  call_id?: string;
-  name?: string;
-  arguments?: string;
-  output?: string | ToolResultPart[];
-  encrypted_content?: string;
-  [key: string]: unknown;
-}
-
-/** Reasoning level requested for a turn. "off" omits the reasoning field. */
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-
-/** Why an assistant turn stopped. */
-export type StopReason = "stop" | "length" | "error" | "aborted";
-
-/** Streaming delta: assistant text or reasoning summary text. */
-export interface StreamDelta {
-  kind: "text" | "reasoning";
-  text: string;
-}
-
-/** Token usage for one assistant step. */
-export interface TurnUsage {
-  input: number;
-  output: number;
-  total: number;
-}
-
-/** A tool the model can call, in Responses function-tool shape. */
-export interface ToolDefinition {
-  type: "function";
+export interface Skill {
+  /** Stable skill name used for lookup and model-visible listings. */
   name: string;
+  /** Short model-visible description of when to use the skill. */
   description: string;
-  parameters: Record<string, unknown>;
-  strict: boolean;
+  /** Full skill instructions. */
+  content: string;
+  /** Absolute path to the skill file. Used for model-visible location and resolving relative references. */
+  filePath: string;
+  /** Exclude this skill from model-visible skill lists while still allowing explicit invocation. */
+  disableModelInvocation?: boolean;
+}
+
+/** Prompt template that can be formatted into a prompt for explicit invocation. */
+export interface PromptTemplate {
+  /** Stable template name used for lookup or command routing. */
+  name: string;
+  /** Optional description for command lists or autocomplete. */
+  description?: string;
+  /** Template content. Argument placeholders are formatted at invocation. */
+  content: string;
 }

@@ -7,9 +7,9 @@ This is June's roadmap, not a parity checklist for another project. The target i
 `blueprint.md`: one durable conversation model, a small agent loop, peer clients, replaceable providers and
 tools, and host-owned policy. The current source and tests decide what exists today.
 
-The [pi harness specification](https://github.com/earendil-works/pi/blob/main/packages/agent/docs/harness.md)
-is used as an adversarial reference. It exposes crash windows, races, and API questions that June must answer.
-Its register layout, method names, storage backends, and feature count are not June acceptance criteria.
+External harness implementations are used as adversarial references for crash windows, races, and API
+questions. Their register layouts, method names, storage backends, and feature counts are not June acceptance
+criteria.
 
 ## How status is assigned
 
@@ -28,39 +28,39 @@ boundaries. A client demo is not a reusable host contract. A TypeScript annotati
 Every package is private and unpublished. "Exists" means the code is present and runnable in this workspace;
 it does not mean the API is stable or production-ready.
 
-| Area                    | Status      | Evidence and limit                                                                                                                                                                                                                       |
-| ----------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Standalone agent loop   | Exists      | `runAgentLoop` and `runAgentLoopContinue` stream assistant turns, execute tools, and drain steering and follow-up input. `packages/core/test/agent-loop.test.ts` covers the loop, not the durable harness                                |
-| Durable session storage | Partial     | `SqliteSessionRepo` stores immutable entries, records, lane moves, facts, usage, and a fenced writer lease in one SQLite database. It is the only backend and has no storage version or migrations                                       |
-| Durable harness         | Partial     | `AgentHarness` records run intent, prompt entries, tool intent, output, usage, queues, abort requests, and terminal records. It is single-lane and has untested admission, terminal, observer, and recovery races                        |
-| Tool results and images | Partial     | `AgentToolResult.content` is part-based, `read` detects images by magic bytes, and the provider adapter encodes images at request time. `ResponseItem.output` still accepts `string`, and canonical conversation parts remain open-ended |
-| Coding tools            | Exists      | `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, with injectable bash operations and image processing. File tools still bind directly to a local `cwd`                                                                         |
-| Provider layer          | Partial     | `@june/ai` has provider definitions, credentials, OAuth flows, and Responses streaming. The production desktop composition currently selects `openai-codex` and a file credential store                                                  |
-| Desktop host proof      | Partial     | Electron's main process owns sessions and the harness; the renderer uses a preload API. That product-specific API is not a language-neutral protocol and does not expose the full core contract                                          |
-| Peer client packages    | Not started | `@june/protocol`, `@june/server`, and `@june/client` are reserved in the blueprint but have no directories                                                                                                                               |
-| Extension package       | Not started | `@june/plugin` is named in the blueprint but has no directory                                                                                                                                                                            |
+| Area                    | Status      | Evidence and limit                                                                                                                                                                                                |
+| ----------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Standalone agent loop   | Exists      | `runAgentLoop` and `runAgentLoopContinue` use the canonical `Message` loop and types. `packages/core/test/upstream/agent-loop.test.ts` covers the loop; the durable harness remains separate                      |
+| Durable session storage | Partial     | `SqliteSessionRepo` stores immutable entries, records, lane moves, facts, usage, and a fenced writer lease in one SQLite database. It is the only backend and has no storage version or migrations                |
+| Durable harness         | Partial     | `AgentHarness` records run intent, prompt entries, tool intent, output, usage, queues, abort requests, and terminal records. It is single-lane and has untested admission, terminal, observer, and recovery races |
+| Tool results and images | Exists      | `Message` is the only conversation contract. Tool results contain strict text/image parts, sessions store them unchanged, and provider adapters encode them at request time                                       |
+| Coding tools            | Exists      | `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`, with injectable bash operations and image processing. File tools still bind directly to a local `cwd`                                                  |
+| Provider layer          | Partial     | `@june/ai` has `Models`, credentials, OAuth flows, and OpenAI, OpenAI Codex, and Anthropic adapters. The production desktop composition currently selects `openai-codex` and a file credential store              |
+| Desktop host proof      | Partial     | Electron's main process owns sessions and the harness; the renderer uses a preload API. That product-specific API is not a language-neutral protocol and does not expose the full core contract                   |
+| Peer client packages    | Not started | `@june/protocol`, `@june/server`, and `@june/client` are reserved in the blueprint but have no directories                                                                                                        |
+| Extension package       | Not started | `@june/plugin` is named in the blueprint but has no directory                                                                                                                                                     |
 
 ## M0: Make the existing core trustworthy
 
 These are release blockers for the current durable core. They precede new surface area because every client,
 plugin, approval flow, and subagent would inherit these semantics.
 
-| ID        | Status      | Required outcome                                                                                                                       | Evidence for today's verdict                                                                                                                                                     |
-| --------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GAP-C01` | Partial     | Serialize admission per lane so two concurrent `prompt()` calls cannot both be accepted                                                | `prompt()` checks `activeRun`, then awaits queue and storage work; `executeRun()` sets `activeRun` only afterward                                                                |
-| `GAP-C02` | Partial     | Make `prompt`, queue, abort, resume, and close one coherent lifecycle state machine                                                    | Queue admission reads process-local `activeRun`; `operation_finished` is committed before `activeRun` is cleared; `resume()` does not reject a live run                          |
-| `GAP-C03` | Partial     | Define durable provider intent and atomic response/usage settlement, including the policy for an uncertain provider call after a crash | `step_attempt` reserves neither response nor usage identity; response entry and usage record are separate commits                                                                |
-| `GAP-C04` | Partial     | Settle every assistant tool call exactly once, including calls skipped after abort                                                     | The loop can stop a sequential or parallel tool batch when the signal aborts, leaving later calls without `function_call_output` items                                           |
-| `GAP-C05` | Partial     | Isolate observers so a throwing or slow subscriber cannot change agent execution or prevent other subscribers from receiving an event  | `AgentHarness.emit()` awaits listeners in sequence and lets listener errors escape into the run                                                                                  |
-| `GAP-C06` | Not started | Add harness-level race, abort, crash-point, resume, and observer-failure tests                                                         | Core tests cover the standalone loop and SQLite storage; no test constructs `AgentHarness`                                                                                       |
-| `GAP-C07` | Partial     | Use collision-resistant durable IDs and validate persisted/wire values at runtime                                                      | `newId()` keeps eight hex characters from a UUID; schema interfaces and custom entry data are accepted without runtime decoding                                                  |
-| `GAP-C08` | Partial     | Make the canonical conversation and tool-result part contract strict end to end                                                        | Tool execution returns `ToolResultPart[]`, but `ResponseItem.output` remains `string \| ToolResultPart[]` and `ContentPart.type` is any string                                   |
-| `GAP-C09` | Partial     | Close every owned resource and prevent process or repository bookkeeping from growing across repeated opens                            | Closed `SqliteSessionStorage` objects remain in `SqliteSessionRepo.active`; detached child tracking is a no-op; host shutdown does not yet define command termination guarantees |
-| `GAP-C10` | Partial     | Index an explicit searchable-text projection, never raw entry JSON or base64 image payloads                                            | SQLite FTS triggers index the serialized entry payload, which can include images, reasoning metadata, and provider fields                                                        |
+| ID        | Status      | Required outcome                                                                                                                       | Evidence for today's verdict                                                                                                                                                |
+| --------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GAP-C01` | Partial     | Serialize admission per lane so two concurrent `prompt()` calls cannot both be accepted                                                | `prompt()` checks `activeRun`, then awaits queue and storage work; `executeRun()` sets `activeRun` only afterward                                                           |
+| `GAP-C02` | Partial     | Make `prompt`, queue, abort, resume, and close one coherent lifecycle state machine                                                    | Queue admission reads process-local `activeRun`; `operation_finished` is committed before `activeRun` is cleared; `resume()` does not reject a live run                     |
+| `GAP-C03` | Partial     | Define durable provider intent and atomic response/usage settlement, including the policy for an uncertain provider call after a crash | `step_attempt` reserves neither response nor usage identity; response entry and usage record are separate commits                                                           |
+| `GAP-C04` | Partial     | Settle every assistant tool call exactly once, including calls skipped after abort                                                     | The loop can stop a sequential or parallel tool batch when the signal aborts, leaving later calls without `ToolResultMessage` settlements                                   |
+| `GAP-C05` | Partial     | Isolate observers so a throwing or slow subscriber cannot change agent execution or prevent other subscribers from receiving an event  | `AgentHarness.emit()` awaits listeners in sequence and lets listener errors escape into the run                                                                             |
+| `GAP-C06` | Not started | Add harness-level race, abort, crash-point, resume, and observer-failure tests                                                         | Core tests cover the standalone loop and SQLite storage; no test constructs `AgentHarness`                                                                                  |
+| `GAP-C07` | Partial     | Use collision-resistant durable IDs and validate persisted/wire values at runtime                                                      | `newId()` keeps eight hex characters from a UUID; schema interfaces and custom entry data are accepted without runtime decoding                                             |
+| `GAP-C08` | Exists      | Keep the canonical conversation and tool-result part contract strict end to end                                                        | Core, sessions, providers, and both demos use `Message`; tool results accept only discriminated text/image parts and the v0 Responses-item layer is deleted                 |
+| `GAP-C09` | Partial     | Close every owned resource and prevent process or repository bookkeeping from growing across repeated opens                            | Closed session storage is removed from repository tracking; detached child tracking is not implemented and host shutdown does not yet define command termination guarantees |
+| `GAP-C10` | Partial     | Index an explicit searchable-text projection, never raw entry JSON or base64 image payloads                                            | SQLite FTS triggers index the serialized entry payload, which can include images, reasoning metadata, and provider fields                                                   |
 
 M0 is complete only when the behavior is represented in tests, not when comments describe the intended race
 handling. June may implement this with transactions, a serialized lane actor, an explicit operation state, or a
-smaller equivalent; copying pi's internal register scheme is not required.
+smaller equivalent; copying another implementation's internal register scheme is not required.
 
 ## M1: Finish June's durable session surface
 
@@ -128,7 +128,7 @@ recreate materially different products without private session models.
 | Notion-style agent                  | Structured content parts, app-owned tools, provenance, and optional workspace                    |
 | Subagent workflow                   | Multiple lanes or equivalent child execution, suspension, usage attribution, and one event model |
 
-## What June takes from the pi harness review
+## What June takes from external harness reviews
 
 The reference review changes June's test plan more than its API design.
 
@@ -137,7 +137,7 @@ The reference review changes June's test plan more than its API design.
 | Adopt the problem       | Atomic admission, explicit effect uncertainty, total recoverable operation state, coherent tool-call settlement, snapshot/subscription race handling, schema evolution, and adversarial crash tests |
 | Decide in June          | Whether the durable mechanism is a transaction, lane actor, state record, or another smaller abstraction; exact compaction and fork semantics; public error and event names                         |
 | Defer until required    | Multiple concrete storage backends, manual drive mode, a broad hook registry, and branch indexes                                                                                                    |
-| Reject as a parity goal | Matching pi's register namespace, UUID version, backend count, API names, SQLite layout, or every operation and hook solely because pi has them                                                     |
+| Reject as a parity goal | Matching another project's register namespace, UUID version, backend count, API names, SQLite layout, or every operation and hook solely for parity                                                 |
 
 ## Dependency order
 

@@ -9,8 +9,10 @@ import {
   type StreamFn,
   type ThinkingLevel,
 } from "@june/core";
+import type { Api, Model } from "@june/ai";
 import { agentById, type Agent, type AgentDraft, type AgentId } from "../agents.ts";
 import type { AuthStatus, JuneDesktopEvent, JuneSnapshot } from "../desktop-api.ts";
+import { messageText } from "../messages.ts";
 import { AgentProfileRepo } from "./agent-profile-repo.ts";
 
 const AGENT_ENTRY_TYPE = "june.demo.agent";
@@ -19,7 +21,7 @@ export interface JuneHostDependencies {
   authStatus(): Promise<AuthStatus>;
   login(emit: (event: JuneDesktopEvent) => void): Promise<void>;
   createStreamFn(sessionId: string, agentId: AgentId): StreamFn;
-  model?: string;
+  model: Model<Api>;
   thinkingLevel?: ThinkingLevel;
 }
 
@@ -244,8 +246,8 @@ export class JuneHost {
 
   private forward(event: AgentEvent): void {
     if (event.type === "agent_start") this.emit({ type: "running", running: true });
-    if (event.type === "message_update" && event.delta.kind === "text") {
-      this.emit({ type: "delta", text: event.delta.text });
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      this.emit({ type: "delta", text: event.assistantMessageEvent.delta });
     }
     if (event.type === "agent_end") this.emit({ type: "running", running: false });
   }
@@ -337,11 +339,4 @@ function previewFrom(messages: MessageEntry[]): string {
 function conversationTitle(message: string): string {
   const normalized = message.replaceAll(/\s+/g, " ").trim();
   return normalized.length <= 48 ? normalized : `${normalized.slice(0, 47).trimEnd()}…`;
-}
-
-// content is the schema's v0 Responses wire shape (string | ContentPart[] | undefined);
-// this collapses once @june/schema ships canonical discriminated parts.
-function messageText(content: MessageEntry["message"]["content"]): string {
-  if (typeof content === "string") return content;
-  return content?.map((part) => part.text ?? "").join("") ?? "";
 }

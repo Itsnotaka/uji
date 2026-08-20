@@ -6,7 +6,7 @@
  * Based on https://github.com/earendil-works/pi/tree/main/packages/agent/src/harness/tools
  * and https://github.com/earendil-works/pi/tree/main/packages/coding-agent/src/core/tools
  */
-import type { AnyAgentTool } from "../types.ts";
+import type { AgentTool } from "../types.ts";
 import { createBashTool, type BashToolOptions } from "./bash.ts";
 import { createEditTool } from "./edit.ts";
 import { createFindTool, type FindToolOptions } from "./find.ts";
@@ -33,7 +33,7 @@ export interface ToolsOptions {
   ls?: LsToolOptions;
 }
 
-export function createAllTools(cwd: string, options?: ToolsOptions): AnyAgentTool[] {
+export function createAllTools(cwd: string, options?: ToolsOptions): AgentTool<any, any>[] {
   return [
     createReadTool(cwd, options?.read),
     createBashTool(cwd, options?.bash),

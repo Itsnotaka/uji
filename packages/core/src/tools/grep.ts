@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { Unsafe } from "typebox";
 import type { AgentTool, AgentToolResult } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
 import { resolveToCwd } from "./support/path-utils.ts";
@@ -23,7 +24,7 @@ import {
   truncateLine,
 } from "./support/truncate.ts";
 
-const grepSchema: Record<string, unknown> = {
+const grepSchema = Unsafe<GrepToolInput>({
   type: "object",
   properties: {
     pattern: { type: "string", description: "Search pattern (regex or literal string)" },
@@ -50,7 +51,7 @@ const grepSchema: Record<string, unknown> = {
     },
   },
   required: ["pattern"],
-};
+});
 
 export interface GrepToolInput {
   pattern: string;
@@ -134,7 +135,7 @@ function parseGrepInput(params: unknown): GrepToolInput {
 export function createGrepTool(
   cwd: string,
   options?: GrepToolOptions,
-): AgentTool<GrepToolInput, GrepToolDetails | undefined> {
+): AgentTool<typeof grepSchema, GrepToolDetails | undefined> {
   const customOps = options?.operations;
   return {
     name: "grep",

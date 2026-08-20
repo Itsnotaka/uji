@@ -4,6 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import {
+  EventStream,
+  type AssistantMessage,
+  type AssistantMessageEvent,
+  type Message,
+  type Model,
+} from "@june/ai";
 import type { StreamFn } from "@june/core";
 import { parseAgentDraft, type AgentDraft, type AgentId } from "../src/agents.ts";
 import type { JuneDesktopEvent } from "../src/desktop-api.ts";
@@ -22,6 +29,32 @@ const scoutDraft: AgentDraft = {
   instructions: "Evaluate evidence supplied by the user and finish with a recommendation.",
   avatar: "blue",
 };
+
+const testModel: Model<"openai-responses"> = {
+  id: "test-model",
+  name: "Test Model",
+  api: "openai-responses",
+  provider: "test",
+  baseUrl: "http://localhost",
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 32_000,
+  maxTokens: 4_096,
+};
+
+class DeterministicAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+  constructor() {
+    super(
+      (event) => event.type === "done" || event.type === "error",
+      (event) => {
+        if (event.type === "done") return event.message;
+        if (event.type === "error") return event.error;
+        throw new Error("Unexpected event type");
+      },
+    );
+  }
+}
 
 void test("starts empty and persists user-created agents and their conversations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-agents-"));
@@ -259,31 +292,46 @@ function deterministicDependencies(prompts: Map<AgentId, string>): JuneHostDepen
     authStatus: () => Promise.resolve({ signedIn: true, label: "Test provider connected" }),
     login: () => Promise.resolve(),
     createStreamFn: (_sessionId, agentId) => deterministicStream(agentId, prompts),
-    model: "test-model",
+    model: testModel,
     thinkingLevel: "off",
   };
 }
 
 function deterministicStream(agentId: AgentId, prompts: Map<AgentId, string>): StreamFn {
-  return async (context, options) => {
+  return (_model, context) => {
     prompts.set(agentId, context.systemPrompt);
     const userMessage = context.messages.findLast((message) => message.role === "user");
     const response = `Handled: ${messageText(userMessage?.content)}`;
-    options.onDelta?.({ kind: "text", text: response });
-    return {
-      items: [
-        {
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: response }],
-        },
-      ],
+    const message: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: response }],
+      api: testModel.api,
+      provider: testModel.provider,
+      model: testModel.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
       stopReason: "stop",
+      timestamp: Date.now(),
     };
+    const stream = new DeterministicAssistantStream();
+    queueMicrotask(() => {
+      stream.push({ type: "start", partial: message });
+      stream.push({ type: "text_start", contentIndex: 0, partial: message });
+      stream.push({ type: "text_delta", contentIndex: 0, delta: response, partial: message });
+      stream.push({ type: "text_end", contentIndex: 0, content: response, partial: message });
+      stream.push({ type: "done", reason: "stop", message });
+    });
+    return stream;
   };
 }
 
-function messageText(content: string | { text?: string }[] | undefined): string {
+function messageText(content: Message["content"] | undefined): string {
   if (typeof content === "string") return content;
-  return content?.map((part) => part.text ?? "").join("") ?? "";
+  return content?.map((part) => (part.type === "text" ? part.text : "")).join("") ?? "";
 }

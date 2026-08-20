@@ -30,9 +30,9 @@ A client never runs the loop. It talks to a harness, the harness drives the loop
    |    \
    |     `--> AgentTool[] ....... tool host: the process that owns cwd
    v
- StreamFn ................... createProviderStreamFn
+ StreamFn ................... Models.streamSimple
    v
- @june/ai provider .......... credential store, OAuth, streamed Responses client
+ @june/ai Models ............ providers, credentials, OAuth, neutral event streams
 ```
 
 The tool host is a placement, not a fixed location. Today every tool in `@june/core` runs against a `cwd` string in the harness process. Nothing about `AgentTool` requires that process to be local, but no remote tool host exists yet.
@@ -43,30 +43,29 @@ This is the shape `packages/demo/cli/src/run.ts` uses, trimmed. Node 26 runs the
 
 ```ts
 import process from "node:process";
-import { defaultProviders, FileCredentialStore, getProvider } from "@june/ai";
-import {
-  AgentHarness,
-  createAllTools,
-  createProviderStreamFn,
-  SqliteSessionRepo,
-} from "@june/core";
+import { createModels, FileCredentialStore, openaiCodexProvider } from "@june/ai";
+import { AgentHarness, createAllTools, SqliteSessionRepo } from "@june/core";
 
 const repo = new SqliteSessionRepo(".june/sessions.db");
 const session = await repo.create();
+const models = createModels({ credentials: new FileCredentialStore() });
+const provider = openaiCodexProvider();
+models.setProvider(provider);
+const model = models.getModel(provider.id, "gpt-5.6-luna");
+if (model === undefined) throw new Error("model unavailable");
 
 const { harness, suspended } = await AgentHarness.create({
   session,
-  streamFn: createProviderStreamFn({
-    provider: getProvider(defaultProviders(), "openai-codex"),
-    auth: { store: new FileCredentialStore() },
-  }),
+  streamFn: (requestedModel, context, options) =>
+    models.streamSimple(requestedModel, context, options),
   systemPrompt: "You are a coding agent. Be concise.",
   tools: createAllTools(process.cwd()),
+  model,
 });
 
 harness.subscribe((event) => {
-  if (event.type === "message_update" && event.delta.kind === "text") {
-    process.stdout.write(event.delta.text);
+  if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+    process.stdout.write(event.assistantMessageEvent.delta);
   }
 });
 
@@ -96,8 +95,8 @@ Every package is `private` and unpublished. "Shipped" below means the source exi
 
 | Package                            | Status              | One line                                                                                                                         |
 | ---------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `@june/schema`                     | Shipped             | Responses wire item types (`ResponseItem`, `ContentPart`, `ToolDefinition`) shared by core, ai, and clients                      |
-| `@june/ai`                         | Shipped             | Provider blocks, `CredentialStore`, ChatGPT OAuth and device-code login flows, streamed Responses client                         |
+| `@june/schema`                     | Shipped             | Neutral `Message`, `Model`, `Tool`, request-context, and content contracts shared across the runtime                             |
+| `@june/ai`                         | Shipped             | `Models`, provider adapters, model catalogs, credentials, auth flows, and neutral assistant event streams                        |
 | `@june/core`                       | Shipped             | The standalone agent loop, `AgentHarness`, the SQLite session backend, and seven tools (read, bash, edit, write, grep, find, ls) |
 | `@june/demo` (`packages/demo/cli`) | Shipped             | The `june` CLI: full-screen TUI, `-p` print mode, readline login funnel                                                          |
 | `@june/protocol`                   | Reserved, not built | The wire clients would bind to. No directory exists                                                                              |
@@ -171,7 +170,7 @@ Named so you do not assume they work.
 
 <Callout type="info" title="These docs are the settled subset">
   [`blueprint.md`](https://github.com/Itsnotaka/june/blob/main/blueprint.md) at the repo root is the
-  running design journal: brain dump, open questions, dated decisions, and comparisons against pi,
-  OpenCode v2, Flue, Cursor, and Linear. It records intent. These pages record only what the source
-  supports. When the two disagree, the source wins and the page is wrong.
+  running design journal: brain dump, open questions, dated decisions, and reference comparisons. It
+  records intent. These pages record only what the source supports. When the two disagree, the
+  source wins and the page is wrong.
 </Callout>

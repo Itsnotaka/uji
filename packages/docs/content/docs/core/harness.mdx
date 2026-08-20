@@ -23,20 +23,17 @@ You prompt a run that deletes files. The process dies while the tool is running.
 ```ts title="open.ts"
 import { join } from "node:path";
 import process from "node:process";
-import { defaultProviders, FileCredentialStore } from "@june/ai";
-import {
-  AgentHarness,
-  createAllTools,
-  createProviderStreamFn,
-  SqliteSessionRepo,
-  type HarnessTool,
-} from "@june/core";
+import { createModels, FileCredentialStore, openaiCodexProvider } from "@june/ai";
+import { AgentHarness, createAllTools, SqliteSessionRepo, type HarnessTool } from "@june/core";
 
 const repo = new SqliteSessionRepo(join(process.cwd(), ".june", "sessions.db"));
 const session = await repo.create();
 
-const provider = defaultProviders()[0];
-if (provider === undefined) throw new Error("no provider configured");
+const models = createModels({ credentials: new FileCredentialStore() });
+const provider = openaiCodexProvider();
+models.setProvider(provider);
+const model = models.getModel(provider.id, "gpt-5.6-luna");
+if (model === undefined) throw new Error("model unavailable");
 
 const replaySafe = new Set(["read", "grep", "find", "ls"]);
 const tools: HarnessTool[] = createAllTools(process.cwd()).map((tool) => ({
@@ -46,12 +43,11 @@ const tools: HarnessTool[] = createAllTools(process.cwd()).map((tool) => ({
 
 const { harness, suspended } = await AgentHarness.create({
   session,
-  streamFn: createProviderStreamFn({
-    provider,
-    auth: { store: new FileCredentialStore() },
-  }),
+  streamFn: (requestedModel, context, options) =>
+    models.streamSimple(requestedModel, context, options),
   systemPrompt: "You are a coding agent.",
   tools,
+  model,
 });
 
 const result = await harness.prompt("delete the stale migrations, then run the tests");
@@ -68,8 +64,7 @@ appendEntry   e_a1  user message "delete the stale migrations…"   leaf -> e_a1
                                           agent_start, turn_start
 appendRecord  step_attempt       runId=run_9f2c  step="assistant"  attempt=1
                                           provider streams   <- not durable
-appendEntry   e_b1  assistant text item                          leaf -> e_b1
-appendEntry   e_b2  function_call call_1                         leaf -> e_b2
+appendEntry   e_b1  AssistantMessage with text + toolCall call_1 leaf -> e_b1
 appendRecord  tool_started       runId=run_9f2c  toolCallId=call_1
                                  toolName="bash"  effectiveArgs={…}
                                  resultEntryId=e_c3  replay="never"
@@ -119,7 +114,7 @@ For every `ProvisionedEntry` in `op.intent.initialMessages`, if `session.getEntr
 <Step>
 ### Settle unsettled tool intents
 
-Read `findRecords({ type: "tool_started", runId: op.id })`. Skip any whose `resultEntryId` already has an entry: those settled before the crash. For each survivor, produce an output string by replay policy and append it as a `function_call_output` message entry **under the reserved `resultEntryId`**.
+Read `findRecords({ type: "tool_started", runId: op.id })`. Skip any whose `resultEntryId` already has an entry: those settled before the crash. For each survivor, produce an output by replay policy and append a `ToolResultMessage` **under the reserved `resultEntryId`**.
 
 For `replay: "never"` (the case above), the output is a literal error the model then reads on the next turn:
 
@@ -133,7 +128,7 @@ Re-issue it if the work is still needed.
 <Step>
 ### Decide whether the branch is continuable
 
-Read `session.getBranch("main")`. The run continues only if the last entry is a message whose `role` is `"user"` or whose `type` is `"function_call_output"`. Otherwise the branch ends on an assistant message with nothing owed, so `resume()` commits `operation_finished` with outcome `completed` and returns.
+Read `session.getBranch("main")`. The run continues only if the last entry is a message whose role is `"user"` or `"toolResult"`. Otherwise the branch ends on an assistant message with nothing owed, so `resume()` commits `operation_finished` with outcome `completed` and returns.
 
 </Step>
 
@@ -147,12 +142,12 @@ The same `executeRun` path that `prompt()` uses reads the branch into `messages`
 </Steps>
 
 ```text title="commits, second process"
-appendEntry   e_c3  function_call_output call_1 "Error: tool call \"bash\" was
+appendEntry   e_c3  ToolResultMessage call_1 "Error: tool call \"bash\" was
                     interrupted before completing…"            leaf -> e_c3
                                           agent_start, turn_start
 appendRecord  step_attempt       runId=run_9f2c  step="assistant"  attempt=1
                                           provider streams
-appendEntry   e_d4  assistant text item                        leaf -> e_d4
+appendEntry   e_d4  AssistantMessage                           leaf -> e_d4
 appendRecord  usage              runId=run_9f2c  cause="assistant"
 appendRecord  operation_finished runId=run_9f2c  outcome="completed"
 ```
@@ -171,7 +166,7 @@ Every tool call is bracketed by two commits with the uncertain part in the middl
 ```text
 commit:  tool_started { toolCallId, toolName, effectiveArgs, resultEntryId, replay }
          tool.execute(...)                                    <- the uncertain part
-commit:  entry under resultEntryId = { type: "function_call_output", call_id, output }
+commit:  entry under resultEntryId = { role: "toolResult", toolCallId, content, isError }
 ```
 
 `effectiveArgs` is the prepared value seen by hooks and `execute`. Before committing it, the harness
@@ -204,20 +199,20 @@ An open operation is derived, not stored: `findOpenOperations(lane)` selects `op
 
 `executeRun` passes `runAgentLoopContinue` an event sink that turns events into commits. This is the complete mapping.
 
-| Loop event                                     | Durable write                                                                                                                                     |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prompt()` acceptance (before the loop starts) | `operation_started` record, then one `appendEntry` per drained `nextRun` item and per prompt message                                              |
-| `turn_start`                                   | `step_attempt` record with `step: "assistant"` and an incrementing `attempt`                                                                      |
-| `beforeToolCall`                               | `tool_started` record with `effectiveArgs`, a fresh `resultEntryId`, and the tool's `replay` policy                                               |
-| `tool_execution_end` with `result.usage`       | `usage` record with `cause: "tool"`                                                                                                               |
-| `message_end`                                  | `appendEntry`: id resolved as provisioned queue id, else the `tool_started` `resultEntryId` matching `message.call_id`, else a fresh `newId("e")` |
-| `turn_end` with `message.usage !== undefined`  | `usage` record with `cause: "assistant"`                                                                                                          |
-| run end (or a thrown error)                    | `operation_finished` record with `outcome` and, when failed, `error`                                                                              |
-| `abort()`                                      | `abort_requested` record, committed _before_ `controller.abort()` is called                                                                       |
+| Loop event                                     | Durable write                                                                                                                                        |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt()` acceptance (before the loop starts) | `operation_started` record, then one `appendEntry` per drained `nextRun` item and per prompt message                                                 |
+| `turn_start`                                   | `step_attempt` record with `step: "assistant"` and an incrementing `attempt`                                                                         |
+| `beforeToolCall`                               | `tool_started` record with `effectiveArgs`, a fresh `resultEntryId`, and the tool's `replay` policy                                                  |
+| `tool_execution_end` with `result.usage`       | `usage` record with `cause: "tool"`                                                                                                                  |
+| `message_end`                                  | `appendEntry`: id resolved as provisioned queue id, else the `tool_started` `resultEntryId` matching `message.toolCallId`, else a fresh `newId("e")` |
+| `turn_end` with `message.usage !== undefined`  | `usage` record with `cause: "assistant"`                                                                                                             |
+| run end (or a thrown error)                    | `operation_finished` record with `outcome` and, when failed, `error`                                                                                 |
+| `abort()`                                      | `abort_requested` record, committed _before_ `controller.abort()` is called                                                                          |
 
 Notes that follow from the table and matter in practice:
 
-- `message_start` is never persisted. Only `message_end` produces an entry, and the loop emits one `message_end` per `ResponseItem` in the turn: a turn carrying text plus a tool call commits two entries, not one.
+- `message_start` is never persisted. Only `message_end` produces an entry. One assistant turn is one `AssistantMessage`, even when its content includes both text and tool calls.
 - The `usage` record for a turn is committed after that turn's tool results, because the loop emits `turn_end` after the tool batch. A durable assistant response without its usage record is therefore reachable; usage is a separate commit, not part of a settlement transaction.
 - `appendEntry` consumes two `seq` values (the entry and the lane move it implies); `appendRecord` consumes one.
 - `attempt` counts turns within a run, not retries. There is no retry mechanism.
@@ -241,7 +236,7 @@ Every method takes its precondition from harness-local state (`closed`, prompt a
 | `subscribe(listener)`          | none                                                | returns an unsubscribe function                                   |
 | `state`                        | none                                                | getter returning `HarnessState`                                   |
 
-`input` is `string | ResponseItem | ResponseItem[]` for `prompt` and `string | ResponseItem` for the queues; a bare string becomes `{ role: "user", content: input }`.
+`input` is `string | Message | Message[]` for `prompt` and `string | Message` for the queues; a bare string becomes a timestamped `UserMessage`.
 
 <Callout type="warn">
 `Result.ok` does not mean the run succeeded. `executeRun` always resolves `Result.ok`; a provider failure lands as `{ kind: "failed", error: { code: "stream", … } }` and a thrown harness error as `{ kind: "failed", error: { code: "harness", … } }` inside the `ok` value. Only `LaneBusy`, `NoActiveRun`, `NothingToResume`, and `Closed` arrive as `Result.err`. Storage failures are thrown `SessionError`s and are not `Result`-typed at all.
@@ -261,14 +256,14 @@ if (!started.ok) {
 
 `abort()` commits `abort_requested` and then pulls the run's `AbortController`. The loop polls the signal only between the tool calls of a batch, never between turns, so the run ends because the injected [`StreamFn`](./stream-fn.mdx) returns `stopReason: "aborted"` on the next turn, which becomes `RunOutcome { kind: "aborted" }`.
 
-`HarnessState` is five fields (`isStreaming` plus the four optional `streamingText`, `model`, `thinkingLevel`, and `errorMessage`) updated as events pass through `emit`:
+`HarnessState` exposes the concrete model, streaming status, and optional streaming text, thinking level, and error message:
 
 ```ts
 const { isStreaming, streamingText, model, thinkingLevel, errorMessage } = harness.state;
 
 const unsubscribe = harness.subscribe((event) => {
-  if (event.type === "message_update" && event.delta.kind === "text") {
-    console.log(event.delta.text);
+  if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+    console.log(event.assistantMessageEvent.delta);
   }
 });
 ```
@@ -416,8 +411,8 @@ The class exposes the intended lifecycle, but it does not yet enforce all of its
 | No public queue cancellation                                                                    | The cancellation record is defined but cannot be written through the harness                     | `GAP-D05`                                |
 | No telemetry or retry policy                                                                    | Host observability and retry semantics remain application-specific                               | `GAP-D09` and an explicit retry decision |
 
-Pi's harness document is useful for discovering these pressure points, but June does not need its register
-namespace, operation names, or exact public API. The [roadmap](../roadmap.mdx) records the June-owned outcomes
+External harness designs are useful for discovering these pressure points, but June does not need another
+register namespace, operation names, or exact public API. The [roadmap](../roadmap.mdx) records the June-owned outcomes
 and the reference ideas that are adopted, deferred, or rejected.
 
 <Cards>

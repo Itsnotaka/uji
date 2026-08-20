@@ -15,7 +15,7 @@ A tool is a plain object. `@june/core` does not have a tool registry, a decorato
   type={{
     name: {
       description:
-        "Function name sent to the provider. The loop matches an incoming function_call to a tool by strict equality on this field.",
+        "Function name sent to the provider. The loop matches an incoming tool call to a tool by strict equality on this field.",
       type: "string",
       required: true,
     },
@@ -55,17 +55,14 @@ A tool is a plain object. `@june/core` does not have a tool registry, a decorato
   }}
 />
 
-`AgentToolResult<TDetails>` has required `content` (the `ToolResultPart[]` the model sees) and `details` (your typed payload for logs and UI), plus optional `usage` and `terminate`. Parts are `{ type: "text", text }` or `{ type: "image", data, mimeType }`; `toolResultContent(text)` wraps the common all-text case. The conversation is chat: any modality that can appear in it is carriable here, and whether a client renders a part is the client's business.
+`AgentToolResult<TDetails>` has required `content` (`(TextContent | ImageContent)[]`) and `details`
+(your typed payload for logs and UI), plus optional `usage` and `terminate`. `toolResultContent(text)`
+wraps the common all-text case. Sessions store these parts unchanged, provider adapters encode them at
+request time, and clients ignore content they cannot render.
 
-<Callout type="warn" title="The tool contract is stricter than the session wire">
-  Tools return `ToolResultPart[]`, but `@june/schema` still declares `ResponseItem.output` as
-  `string | ToolResultPart[]`, and its general `ContentPart.type` is any string. The provider
-  adapter handles both forms today. The roadmap tracks removing the legacy string path and defining
-  canonical conversation parts as `GAP-C08`; until then, a persisted item is not guaranteed to
-  satisfy the strict tool contract.
-</Callout>
-
-`TParams` defaults to `unknown`. The loop parses the provider's JSON string and calls `prepareArguments` exactly once. All built-in tools validate there; `edit` also repairs its supported legacy shapes there. `execute` receives the prepared `TParams` and does not parse it again.
+`TParameters` is a TypeBox schema. The loop validates provider arguments against it before execution.
+`prepareArguments` is an optional normalization seam that runs before schema validation; `execute` receives
+the resulting `Static<TParameters>` value.
 
 ### Rule 1: throw on failure
 
@@ -145,7 +142,7 @@ export function createWordCountTool(): AgentTool<WordCountInput, WordCountDetail
 
 ### How details reaches the UI
 
-`details` never goes to the model. Only `content` is serialized into the `function_call_output` item. `details` travels on the event stream:
+`details` never goes to the model. Only `content` is included in the `ToolResultMessage`. `details` travels on the event stream:
 
 | Event                   | When                                                | Carries                                                                                                             |
 | ----------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -221,7 +218,7 @@ Every tool's `label` equals its `name`.
 | `FindToolOptions` | `operations?: FindOperations` (`exists`, `glob`)                                     |
 | `BashToolOptions` | `operations?: BashOperations` (`exec`), `commandPrefix?`, `shellPath?`, `spawnHook?` |
 
-`edit` and `write` take no options: they use the local filesystem directly. Pi routes all tool file access through its `ExecutionEnv` effects boundary. June's direction is to grow that one seam instead of separate `operations` interfaces for each tool. `bash`'s `BashOperations` (the stand-in for `env.executeShell`) and the read-only `ls`/`grep`/`find` seams remain. `ImageProcessor` is the injectable image conversion/resizing hook (`(bytes, mimeType, { autoResizeImages }) => data/mimeType/hints or a failure message`); image processing needs native dependencies, which stay out of core.
+`edit` and `write` take no options: they use the local filesystem directly. June's direction is to grow one `ExecutionEnv` effects boundary instead of separate `operations` interfaces for each tool. `bash`'s `BashOperations` (the stand-in for `env.executeShell`) and the read-only `ls`/`grep`/`find` seams remain. `ImageProcessor` is the injectable image conversion/resizing hook (`(bytes, mimeType, { autoResizeImages }) => data/mimeType/hints or a failure message`); image processing needs native dependencies, which stay out of core.
 
 Two of these do not do what the symmetry suggests. `GrepOperations` does not make ripgrep pluggable: `grep` always spawns `rg`, and the overrides only affect the directory check and the file reads used to render context lines. `FindOperations.glob` does: supplying `operations` replaces ripgrep entirely for `find`; omitting it selects the local `rg --files` path.
 

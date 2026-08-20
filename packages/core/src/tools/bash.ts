@@ -10,6 +10,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
+import { Unsafe } from "typebox";
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
 import { OutputAccumulator } from "./support/output-accumulator.ts";
@@ -44,14 +45,14 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 }
 
 /** JSON Schema for the bash tool arguments (hand-converted from pi's TypeBox schema). */
-const bashParameters: Record<string, unknown> = {
+const bashParameters = Unsafe<BashToolInput>({
   type: "object",
   properties: {
     command: { type: "string", description: "Bash command to execute" },
     timeout: { type: "number", description: "Timeout in seconds (optional, no default timeout)" },
   },
   required: ["command"],
-};
+});
 
 export interface BashToolInput {
   command: string;
@@ -211,7 +212,7 @@ const BASH_UPDATE_THROTTLE_MS = 100;
 export function createBashTool(
   cwd: string,
   options?: BashToolOptions,
-): AgentTool<BashToolInput, BashToolDetails | undefined> {
+): AgentTool<typeof bashParameters, BashToolDetails | undefined> {
   const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
   const commandPrefix = options?.commandPrefix;
   const spawnHook = options?.spawnHook;

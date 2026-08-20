@@ -25,8 +25,8 @@ export function renderTranscript(harness: AgentHarness, write: (line: string) =>
         streaming = "";
         break;
       case "message_update":
-        if (event.delta.kind === "text") {
-          streaming += event.delta.text;
+        if (event.assistantMessageEvent.type === "text_delta") {
+          streaming += event.assistantMessageEvent.delta;
           write(streaming);
         }
         break;
@@ -54,20 +54,20 @@ export function renderTranscript(harness: AgentHarness, write: (line: string) =>
 
 `subscribe` returns the unsubscribe function, and the listener may return a promise: the harness
 awaits every listener before continuing, so slow rendering slows the run. Text arrives only through
-`message_update`; `message_end` carries the finished `ResponseItem`, which means you clear the
+`message_update`; `message_end` carries the finished `Message`, which means you clear the
 accumulator there and let your durable history render the completed message instead.
 
-| Event                           | What it carries                                | What a UI does with it                                                                               |
-| ------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `agent_start`                   | nothing                                        | Flip a busy indicator on.                                                                            |
-| `turn_start`                    | nothing                                        | Clear the streaming text buffer.                                                                     |
-| `message_update`                | `delta: { kind: "text" \| "reasoning"; text }` | Append `delta.text` for `"text"`; use `"reasoning"` for a thinking indicator.                        |
-| `message_start` / `message_end` | `message: ResponseItem`                        | `message_end` is the completed item; the harness appends it as an entry at the same moment.          |
-| `tool_execution_start`          | `toolCallId`, `toolName`, `args`               | Open a tool card. `args` is the raw arguments string from the model.                                 |
-| `tool_execution_update`         | `partialResult: AgentToolResult`, `args`       | Stream partial tool output. `args` is the raw JSON string from the function call.                    |
-| `tool_execution_end`            | `result`, `isError`                            | Close the card. The model receives `result.content`, prefixed with `Error: ` when `isError` is true. |
-| `turn_end`                      | `message: AssistantTurn`, `toolResults`        | Read `message.errorMessage`, `message.stopReason`, `message.usage`.                                  |
-| `agent_end`                     | `messages: ResponseItem[]`                     | Flip the busy indicator off.                                                                         |
+| Event                           | What it carries                            | What a UI does with it                                                                               |
+| ------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `agent_start`                   | nothing                                    | Flip a busy indicator on.                                                                            |
+| `turn_start`                    | nothing                                    | Clear the streaming text buffer.                                                                     |
+| `message_update`                | `assistantMessageEvent`                    | Render `text_delta` or `thinking_delta`; ignore unsupported event types.                             |
+| `message_start` / `message_end` | `message: Message`                         | `message_end` is the completed message; the harness appends it as an entry at the same moment.       |
+| `tool_execution_start`          | `toolCallId`, `toolName`, `args`           | Open a tool card. `args` is the raw arguments string from the model.                                 |
+| `tool_execution_update`         | `partialResult: AgentToolResult`, `args`   | Stream partial tool output. `args` is the raw JSON string from the function call.                    |
+| `tool_execution_end`            | `result`, `isError`                        | Close the card. The model receives `result.content`, prefixed with `Error: ` when `isError` is true. |
+| `turn_end`                      | `message: AssistantMessage`, `toolResults` | Read `message.errorMessage`, `message.stopReason`, `message.usage`.                                  |
+| `agent_end`                     | `messages: AgentMessage[]`                 | Flip the busy indicator off.                                                                         |
 
 <Callout type="info">
   `prompt()` emits `message_start` and `message_end` for the prompt entries itself, before the loop
@@ -201,7 +201,7 @@ to continue. Calling `resume()` is your decision.
 `resume()` does three things in order: it appends any prompt entry the crash left uncommitted, it
 settles every `tool_started` record whose reserved `resultEntryId` has no entry, and then it
 continues the loop from the durable branch. If the branch's last message is neither a user message
-nor a `function_call_output`, there is nothing to continue and the operation is closed as
+nor a `ToolResultMessage`, there is nothing to continue and the operation is closed as
 `completed`.
 
 | `replay`  | Set by                                                                                  | What resume does                                                                                                                      |
@@ -232,22 +232,19 @@ mutating ones do.
 
 ```ts
 import { runAgentLoop, toolResultContent } from "@june/core";
-import type { AgentLoopConfig, AgentTool, StreamFn } from "@june/core";
-import type { ResponseItem } from "@june/schema";
+import type { AgentLoopConfig, AgentMessage, AgentTool, StreamFn } from "@june/core";
+import type { Api, Model } from "@june/ai";
+import { Type } from "typebox";
 
-interface DeployParams {
-  environment: string;
-}
+const deployParameters = Type.Object({
+  environment: Type.Union([Type.Literal("staging"), Type.Literal("production")]),
+});
 
-const deploy: AgentTool<DeployParams> = {
+const deploy: AgentTool<typeof deployParameters, undefined> = {
   name: "deploy",
   label: "Deploy",
   description: "Deploy the current commit to an environment",
-  parameters: {
-    type: "object",
-    properties: { environment: { type: "string", enum: ["staging", "production"] } },
-    required: ["environment"],
-  },
+  parameters: deployParameters,
   execute: async (_toolCallId, params) => ({
     content: toolResultContent(`Deployed to ${params.environment}`),
     details: undefined,
@@ -256,10 +253,16 @@ const deploy: AgentTool<DeployParams> = {
 
 export async function run(
   streamFn: StreamFn,
+  model: Model<Api>,
   askOperator: (toolName: string, args: unknown) => Promise<boolean>,
-): Promise<ResponseItem[]> {
+): Promise<AgentMessage[]> {
   const config: AgentLoopConfig = {
-    model: "gpt-5.6-luna",
+    model,
+    convertToLlm: (messages) =>
+      messages.filter(
+        (message) =>
+          message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+      ),
     beforeToolCall: async ({ toolCall, args }) => {
       if (toolCall.name !== "deploy") return undefined;
       const approved = await askOperator(toolCall.name, args);
@@ -269,11 +272,11 @@ export async function run(
   };
 
   return runAgentLoop(
-    [{ role: "user", content: "Ship the current commit to production." }],
+    [{ role: "user", content: "Ship the current commit to production.", timestamp: Date.now() }],
     {
       systemPrompt: "You are a release agent.",
       messages: [],
-      tools: [deploy as AgentTool],
+      tools: [deploy],
     },
     config,
     () => {},

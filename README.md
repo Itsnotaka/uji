@@ -23,9 +23,9 @@ runs, not that it is on npm.
 
 | Package | What it is | Status |
 | --- | --- | --- |
-| `@june/schema` (`packages/schema`) | Responses wire item types: `ResponseItem`, `ContentPart`, `ToolDefinition` | Shipped |
-| `@june/ai` (`packages/ai`) | Provider blocks, `CredentialStore`, ChatGPT OAuth and device-code login, streamed Responses client | Shipped |
-| `@june/core` (`packages/core`) | `runAgentLoop`, `AgentHarness`, `SqliteSessionRepo`, `createProviderStreamFn`, seven tools (read, bash, edit, write, grep, find, ls) | Shipped |
+| `@june/schema` (`packages/schema`) | Neutral `Message`, `Model`, `Tool`, and request-context contracts | Shipped |
+| `@june/ai` (`packages/ai`) | `Models`, provider adapters, credential storage, OAuth, and provider event streams | Shipped |
+| `@june/core` (`packages/core`) | The `Message` loop and types, `AgentHarness`, `SqliteSessionRepo`, and seven tools (read, bash, edit, write, grep, find, ls) | Shipped |
 | `@june/ui` (`packages/ui`) | Shared Base UI primitives styled with StyleX: avatar, button, dialog, dropdown menu, input, input group, textarea | Shipped |
 | `@june/demo` (`packages/demo/cli`) | The `june` CLI: OpenTUI full-screen app, `-p` print mode, readline login funnel | Shipped |
 | `@june/demo-grok-bot` (`packages/demo/grok-bot`) | Electron desktop chat; the main process hosts the harness, the renderer sees a preload API | Demo |
@@ -51,17 +51,17 @@ pnpm check
 ## Demos
 
 The CLI lives in `packages/demo/cli`. It has no bin and no root script. From that directory,
-`pnpm june` runs the TypeScript source. Log in first; it has no `--help`, and usage prints only
+`pnpm start` runs the TypeScript source. Log in first; it has no `--help`, and usage prints only
 on the two failure paths.
 
 ```sh
 cd packages/demo/cli
-pnpm june login
-pnpm june status
-pnpm june
-pnpm june -p "summarize the files in packages/core/src"
-pnpm june -p --resume "now list what changed"
-pnpm june logout
+pnpm start login
+pnpm start status
+pnpm start
+pnpm start -p "summarize the files in packages/core/src"
+pnpm start -p --resume "now list what changed"
+pnpm start logout
 ```
 
 | Flag | Alias | Effect |
@@ -72,8 +72,9 @@ pnpm june logout
 | `--model <id>` | none | Model passed to the harness; falls back to `JUNE_MODEL` |
 | `--effort <level>` | none | Thinking level passed to the harness; falls back to `JUNE_EFFORT` |
 
-Provider auto-selection walks `defaultProviders()` (`openai-codex`, then `openai`), and takes the
-first whose auth resolves. Both default to `gpt-5.6-luna` at `medium` effort. Credentials are
+Provider auto-selection walks the CLI's explicitly registered providers (`openai-codex`, then `openai`)
+and takes the first whose auth resolves. Both default to `gpt-5.6-luna`; the CLI defaults to `medium`
+effort. Credentials are
 written to `$JUNE_HOME/auth.json` (default `~/.june/auth.json`, mode `0600`). Sessions go to
 `<cwd>/.june/sessions.db`, one SQLite file holding every session started from that directory.
 
@@ -105,7 +106,7 @@ pnpm lint         # oxlint, type-aware via oxlint-tsgolint
 pnpm typecheck    # turbo run typecheck (TypeScript 7 native tsc per package)
 ```
 
-From `packages/core`: `pnpm test` runs `node --test` over `test/*.test.ts`.
+From `packages/core`: `pnpm test` runs June's `node:test` files and the loop conformance suite under Vitest.
 
 There is no build step for the library packages. `@june/schema`, `@june/ai`, `@june/core`, and
 `@june/ui` each point `exports` at their TypeScript sources, and Node 26 strips types at load time.

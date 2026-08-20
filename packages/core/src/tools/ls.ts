@@ -6,6 +6,7 @@
  */
 import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import { join } from "node:path";
+import { Unsafe } from "typebox";
 import type { AgentTool } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
 import { pathExists, resolveToCwd } from "./support/path-utils.ts";
@@ -56,7 +57,7 @@ export interface LsToolOptions {
   operations?: LsOperations;
 }
 
-const lsParameters: Record<string, unknown> = {
+const lsParameters = Unsafe<LsToolInput>({
   type: "object",
   properties: {
     path: {
@@ -68,7 +69,7 @@ const lsParameters: Record<string, unknown> = {
       description: "Maximum number of entries to return (default: 500)",
     },
   },
-};
+});
 
 function parseLsParams(params: unknown): LsToolInput {
   if (params === undefined || params === null) {
@@ -90,7 +91,7 @@ function parseLsParams(params: unknown): LsToolInput {
 export function createLsTool(
   cwd: string,
   options?: LsToolOptions,
-): AgentTool<LsToolInput, LsToolDetails | undefined> {
+): AgentTool<typeof lsParameters, LsToolDetails | undefined> {
   const ops = options?.operations ?? defaultLsOperations;
   return {
     name: "ls",

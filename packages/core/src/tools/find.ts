@@ -12,6 +12,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { Unsafe } from "typebox";
 import type { AgentTool, AgentToolResult } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
 import { pathExists, resolveToCwd } from "./support/path-utils.ts";
@@ -37,7 +38,7 @@ export function relativizeFindResultPath(
   return hadTrailingSeparator && !posixPath.endsWith("/") ? `${posixPath}/` : posixPath;
 }
 
-const findSchema: Record<string, unknown> = {
+const findSchema = Unsafe<FindToolInput>({
   type: "object",
   properties: {
     pattern: {
@@ -48,7 +49,7 @@ const findSchema: Record<string, unknown> = {
     limit: { type: "number", description: "Maximum number of results (default: 1000)" },
   },
   required: ["pattern"],
-};
+});
 
 export interface FindToolInput {
   pattern: string;
@@ -115,7 +116,7 @@ function parseFindInput(params: unknown): FindToolInput {
 export function createFindTool(
   cwd: string,
   options?: FindToolOptions,
-): AgentTool<FindToolInput, FindToolDetails | undefined> {
+): AgentTool<typeof findSchema, FindToolDetails | undefined> {
   const customOps = options?.operations;
   return {
     name: "find",

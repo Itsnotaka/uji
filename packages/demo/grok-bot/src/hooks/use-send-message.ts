@@ -20,7 +20,7 @@ export function useSendMessage() {
               seq: Number.MAX_SAFE_INTEGER,
               parentId: null,
               timestamp: Date.now(),
-              message: { role: "user", content: text },
+              message: { role: "user", content: text, timestamp: Date.now() },
             },
           ],
           agentPreviews: { ...view.agentPreviews, [view.activeAgentId]: text },

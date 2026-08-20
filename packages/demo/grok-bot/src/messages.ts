@@ -1,10 +1,6 @@
-import type { JuneSnapshot } from "./desktop-api";
+import type { Message } from "@june/ai";
 
-// content is the schema's v0 Responses wire shape (string | ContentPart[] | undefined);
-// this collapses once @june/schema ships canonical discriminated parts.
-export function messageText(
-  content: JuneSnapshot["messages"][number]["message"]["content"],
-): string {
+export function messageText(content: Message["content"]): string {
   if (typeof content === "string") return content;
-  return content?.map((part) => part.text ?? "").join("") ?? "";
+  return content.map((part) => (part.type === "text" ? part.text : "")).join("");
 }

@@ -6,22 +6,13 @@
  * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/docs/harness.md
  */
 import { randomUUID } from "node:crypto";
-import type { ResponseItem } from "@june/schema";
-import type { TurnUsage } from "../../types.ts";
+import type { JsonValue, Message, Usage } from "@june/schema";
 
-export type { TurnUsage };
+export type { JsonValue } from "@june/schema";
 
 export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().slice(0, 8)}`;
 }
-
-export type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | { [key: string]: JsonValue };
 
 /** Clone a runtime value only if live execution and durable JSON replay are equivalent. */
 export function toJsonValue(value: unknown): JsonValue {
@@ -103,7 +94,7 @@ export interface EntryBase {
 
 export interface MessageEntry extends EntryBase {
   type: "message";
-  message: ResponseItem;
+  message: Message;
 }
 
 export interface ModelChangeEntry extends EntryBase {
@@ -140,7 +131,7 @@ export interface OperationStartedRecord extends RecordBase {
   sourceLeafId: string | null;
   intent: {
     kind: "run";
-    originalPrompt: ResponseItem[];
+    originalPrompt: Message[];
     /** nextRun items come first, then the prompt. */
     initialMessages: ProvisionedEntry<MessageEntry>[];
   };
@@ -196,7 +187,7 @@ export interface UsageRecord extends RecordBase {
   type: "usage";
   runId: string;
   cause: "assistant" | "tool";
-  usage: TurnUsage;
+  usage: Usage;
 }
 
 export type LaneRecord =

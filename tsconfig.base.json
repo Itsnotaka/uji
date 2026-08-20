@@ -8,6 +8,7 @@
     "strict": true,
     "target": "es2025",
     "types": ["node"],
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
   }
 }

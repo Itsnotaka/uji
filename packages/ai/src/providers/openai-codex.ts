@@ -1,24 +1,22 @@
-import { openaiCodexOAuth } from "../auth/oauth/openai-codex.ts";
-import type { Provider } from "../provider.ts";
+import { openAICodexResponsesApi } from "../api/openai-codex-responses.lazy.ts";
+import { lazyOAuth } from "../auth/helpers.ts";
+import { loadOpenAICodexOAuth } from "../auth/oauth/load.ts";
+import { createProvider, type Provider } from "../models.ts";
+import { OPENAI_CODEX_MODELS } from "./openai-codex.models.ts";
 
-/**
- * OpenAI via ChatGPT subscription (codex backend). OAuth-only; model list
- * mirrors what the backend serves signed-in codex clients.
- */
-export function openaiCodexProvider(): Provider {
-  return {
+export function openaiCodexProvider(): Provider<"openai-codex-responses"> {
+  return createProvider({
     id: "openai-codex",
     name: "OpenAI Codex",
-    api: "codex-responses",
     baseUrl: "https://chatgpt.com/backend-api",
-    auth: { oauth: openaiCodexOAuth },
-    models: [
-      { id: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
-      { id: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
-      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
-      { id: "gpt-5.5", name: "GPT-5.5" },
-    ],
-    defaultModel: "gpt-5.6-luna",
-    defaultEffort: "medium",
-  };
+    auth: {
+      oauth: lazyOAuth({
+        name: "OpenAI (ChatGPT Plus/Pro)",
+        isSubscription: true,
+        load: loadOpenAICodexOAuth,
+      }),
+    },
+    models: Object.values(OPENAI_CODEX_MODELS),
+    api: openAICodexResponsesApi(),
+  });
 }

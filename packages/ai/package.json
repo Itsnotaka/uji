@@ -6,13 +6,21 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts && vitest --run",
+    "test:upstream": "vitest --run"
   },
   "dependencies": {
-    "@june/schema": "workspace:*"
+    "@anthropic-ai/sdk": "0.91.1",
+    "@june/schema": "workspace:*",
+    "@june/telemetry": "workspace:*",
+    "openai": "6.40.0",
+    "partial-json": "0.1.7",
+    "typebox": "1.3.7"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   }
 }

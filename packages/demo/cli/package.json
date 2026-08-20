@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "june": "tsx --experimental-ffi src/index.ts",
+    "test": "node --experimental-ffi --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

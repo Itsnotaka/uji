@@ -8,6 +8,7 @@
  * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/tools/read.ts
  */
 import { readFile as fsReadFile } from "node:fs/promises";
+import { Unsafe } from "typebox";
 import type { AgentTool, AgentToolResult } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
 import { detectSupportedImageMimeType } from "./support/image.ts";
@@ -51,7 +52,7 @@ export interface ReadToolOptions {
   imageProcessor?: ReadImageProcessor;
 }
 
-const readParameters: Record<string, unknown> = {
+const readParameters = Unsafe<ReadToolInput>({
   type: "object",
   properties: {
     path: {
@@ -68,7 +69,7 @@ const readParameters: Record<string, unknown> = {
     },
   },
   required: ["path"],
-};
+});
 
 function parseReadParams(params: unknown): ReadToolInput {
   if (typeof params !== "object" || params === null) {
@@ -90,7 +91,7 @@ function parseReadParams(params: unknown): ReadToolInput {
 export function createReadTool(
   cwd: string,
   options?: ReadToolOptions,
-): AgentTool<ReadToolInput, ReadToolDetails | undefined> {
+): AgentTool<typeof readParameters, ReadToolDetails | undefined> {
   return {
     name: "read",
     label: "read",

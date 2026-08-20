@@ -15,17 +15,24 @@
  * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/agent-harness.ts
  * and https://github.com/earendil-works/pi/blob/main/packages/agent/docs/harness.md
  */
-import type { ResponseItem, ToolResultPart } from "@june/schema";
+import type {
+  Api,
+  AssistantMessage,
+  ImageContent,
+  Message,
+  Model,
+  TextContent,
+  Usage,
+} from "@june/schema";
 import { runAgentLoopContinue } from "../agent-loop.ts";
 import type {
   AgentEvent,
-  AnyAgentTool,
-  AssistantTurn,
+  AgentMessage,
+  AgentTool,
   QueueMode,
   StreamFn,
   ThinkingLevel,
   ToolExecutionMode,
-  TurnUsage,
 } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
 import { Result, TaggedError, type Result as ResultValue } from "./result.ts";
@@ -70,18 +77,18 @@ export interface SuspendedOperation {
   lane: string;
   id: string;
   startedAt: number;
-  prompt: ResponseItem[];
+  prompt: Message[];
 }
 
 /** A loop tool plus its crash-replay policy (pi HarnessTool). */
-export type HarnessTool = AnyAgentTool & { replay?: "never" | "safe" };
+export type HarnessTool = AgentTool<any, any> & { replay?: "never" | "safe" };
 
 export interface AgentHarnessOptions {
   session: SessionStorage;
   streamFn: StreamFn;
   systemPrompt: string;
   tools?: HarnessTool[];
-  model?: string;
+  model: Model<Api>;
   thinkingLevel?: ThinkingLevel;
   steeringMode?: QueueMode;
   followUpMode?: QueueMode;
@@ -91,7 +98,7 @@ export interface AgentHarnessOptions {
 export interface HarnessState {
   readonly isStreaming: boolean;
   readonly streamingText?: string;
-  readonly model?: string;
+  readonly model: Model<Api>;
   readonly thinkingLevel?: ThinkingLevel;
   readonly errorMessage?: string;
 }
@@ -162,7 +169,7 @@ export class AgentHarness {
   }
 
   /** Start a run: durably record intent + prompt entries, then drive the loop. */
-  prompt(input: string | ResponseItem | ResponseItem[]): Promise<RunResult> {
+  prompt(input: string | Message | Message[]): Promise<RunResult> {
     if (this.closed) {
       return Promise.resolve(Result.err(new Closed({ message: "harness is closed" })));
     }
@@ -184,7 +191,7 @@ export class AgentHarness {
     return pending;
   }
 
-  private async acceptPrompt(prompt: ResponseItem[]): Promise<RunResult> {
+  private async acceptPrompt(prompt: Message[]): Promise<RunResult> {
     const nextRun = await this.drainQueue("nextRun", undefined, "all");
     const initialMessages: ProvisionedEntry<MessageEntry>[] = [
       ...nextRun.map((item) => item.target),
@@ -207,17 +214,17 @@ export class AgentHarness {
   }
 
   /** Queue a message after the current turn (requires an active run). */
-  async steer(input: string | ResponseItem): Promise<QueueResult> {
+  async steer(input: string | Message): Promise<QueueResult> {
     return this.enqueue("steer", input, true);
   }
 
   /** Queue a message for after the agent would otherwise stop (requires an active run). */
-  async followUp(input: string | ResponseItem): Promise<QueueResult> {
+  async followUp(input: string | Message): Promise<QueueResult> {
     return this.enqueue("followUp", input, true);
   }
 
   /** Queue a message for the start of the next run (always allowed). */
-  async nextRun(input: string | ResponseItem): Promise<QueueResult> {
+  async nextRun(input: string | Message): Promise<QueueResult> {
     return this.enqueue("nextRun", input, false);
   }
 
@@ -274,8 +281,9 @@ export class AgentHarness {
     for (const intent of toolIntents) {
       if ((await this.session.getEntry(intent.resultEntryId)) !== undefined) continue;
       const tool = this.options.tools?.find((t) => t.name === intent.toolName);
-      let output: ToolResultPart[];
-      let usage: TurnUsage | undefined;
+      let output: (TextContent | ImageContent)[];
+      let usage: Usage | undefined;
+      let isError: boolean;
       if (intent.replay === "safe" && tool !== undefined) {
         try {
           const result = await tool.execute(
@@ -285,16 +293,19 @@ export class AgentHarness {
           );
           output = result.content;
           usage = result.usage;
+          isError = false;
         } catch (error) {
           output = toolResultContent(
             `Error: ${error instanceof Error ? error.message : String(error)}`,
           );
+          isError = true;
         }
       } else {
         output = toolResultContent(
           `Error: tool call "${intent.toolName}" was interrupted before completing and was not ` +
             "replayed. Re-issue it if the work is still needed.",
         );
+        isError = true;
       }
       if (usage !== undefined) {
         await this.session.appendRecord({
@@ -310,7 +321,14 @@ export class AgentHarness {
         {
           type: "message",
           id: intent.resultEntryId,
-          message: { type: "function_call_output", call_id: intent.toolCallId, output },
+          message: {
+            role: "toolResult",
+            toolCallId: intent.toolCallId,
+            toolName: intent.toolName,
+            content: output,
+            isError,
+            timestamp: Date.now(),
+          },
         },
         LANE,
       );
@@ -321,7 +339,7 @@ export class AgentHarness {
     const lastMessage = last?.type === "message" ? last.message : undefined;
     const continuable =
       lastMessage !== undefined &&
-      (lastMessage.role === "user" || lastMessage.type === "function_call_output");
+      (lastMessage.role === "user" || lastMessage.role === "toolResult");
     if (!continuable) {
       const leafId = await this.session.getLeafId(LANE);
       const outcome: RunOutcome = { kind: "completed", leafId };
@@ -331,15 +349,15 @@ export class AgentHarness {
     return this.executeRun(op.id, controller);
   }
 
-  private normalize(input: string | ResponseItem | ResponseItem[]): ResponseItem[] {
+  private normalize(input: string | Message | Message[]): Message[] {
     if (Array.isArray(input)) return input;
     if (typeof input !== "string") return [input];
-    return [{ role: "user", content: input }];
+    return [{ role: "user", content: input, timestamp: Date.now() }];
   }
 
   private async enqueue(
     queue: QueueEnqueuedRecord["queue"],
-    input: string | ResponseItem,
+    input: string | Message,
     requiresRun: boolean,
   ): Promise<QueueResult> {
     if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
@@ -349,8 +367,8 @@ export class AgentHarness {
         new NoActiveRun({ lane: LANE, message: `${queue} requires an active run — use nextRun()` }),
       );
     }
-    const message: ResponseItem =
-      typeof input === "string" ? { role: "user", content: input } : input;
+    const message: Message =
+      typeof input === "string" ? { role: "user", content: input, timestamp: Date.now() } : input;
     const target: ProvisionedEntry<MessageEntry> = { type: "message", id: newId("e"), message };
     await this.session.appendRecord({
       type: "queue_enqueued",
@@ -394,12 +412,12 @@ export class AgentHarness {
         this.streamingText = undefined;
         break;
       case "message_update":
-        if (event.delta.kind === "text") {
-          this.streamingText = (this.streamingText ?? "") + event.delta.text;
+        if (event.assistantMessageEvent.type === "text_delta") {
+          this.streamingText = (this.streamingText ?? "") + event.assistantMessageEvent.delta;
         }
         break;
       case "turn_end":
-        if (event.message.errorMessage !== undefined)
+        if (event.message.role === "assistant" && event.message.errorMessage !== undefined)
           this.errorMessage = event.message.errorMessage;
         break;
       case "agent_end":
@@ -427,15 +445,12 @@ export class AgentHarness {
   }
 
   private async executeRun(runId: string, controller: AbortController): Promise<RunResult> {
-    const pendingProvisioned = new Map<ResponseItem, string>();
+    const pendingProvisioned = new Map<AgentMessage, string>();
     const toolResultIds = new Map<string, string>();
     let attempt = 0;
-    let lastTurn: AssistantTurn | undefined;
+    let lastTurn: AssistantMessage | undefined;
 
-    const drainInto = async (
-      queue: "steer" | "followUp",
-      mode: QueueMode,
-    ): Promise<ResponseItem[]> => {
+    const drainInto = async (queue: "steer" | "followUp", mode: QueueMode): Promise<Message[]> => {
       const records = await this.drainQueue(queue, runId, mode);
       return records.map((record) => {
         const target = record.target;
@@ -458,7 +473,9 @@ export class AgentHarness {
         },
         {
           model: this.options.model,
-          thinkingLevel: this.options.thinkingLevel,
+          convertToLlm: (candidateMessages) =>
+            candidateMessages.filter((message): message is Message => isProviderMessage(message)),
+          reasoning: this.options.thinkingLevel === "off" ? undefined : this.options.thinkingLevel,
           toolExecution: this.options.toolExecution,
           getSteeringMessages: () =>
             drainInto("steer", this.options.steeringMode ?? "one-at-a-time"),
@@ -494,17 +511,18 @@ export class AgentHarness {
               attempt,
             });
           } else if (event.type === "turn_end") {
-            lastTurn = event.message;
-            if (event.message.usage !== undefined) {
-              await this.session.appendRecord({
-                type: "usage",
-                id: newId("r"),
-                lane: LANE,
-                runId,
-                cause: "assistant",
-                usage: event.message.usage,
-              });
+            if (event.message.role !== "assistant") {
+              throw new Error("turn_end must carry an assistant message");
             }
+            lastTurn = event.message;
+            await this.session.appendRecord({
+              type: "usage",
+              id: newId("r"),
+              lane: LANE,
+              runId,
+              cause: "assistant",
+              usage: event.message.usage,
+            });
           } else if (event.type === "tool_execution_end" && event.result.usage !== undefined) {
             await this.session.appendRecord({
               type: "usage",
@@ -519,8 +537,8 @@ export class AgentHarness {
             pendingProvisioned.delete(event.message);
             const id =
               provisionedId ??
-              (event.message.type === "function_call_output" && event.message.call_id !== undefined
-                ? toolResultIds.get(event.message.call_id)
+              (event.message.role === "toolResult"
+                ? toolResultIds.get(event.message.toolCallId)
                 : undefined) ??
               newId("e");
             await this.session.appendEntry({ type: "message", id, message: event.message }, LANE);
@@ -571,4 +589,8 @@ export class AgentHarness {
       ...(outcome.kind === "failed" && { error: outcome.error }),
     });
   }
+}
+
+function isProviderMessage(message: AgentMessage): message is Message {
+  return message.role === "user" || message.role === "assistant" || message.role === "toolResult";
 }

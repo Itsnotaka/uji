@@ -8,6 +8,7 @@
  */
 
 import { readFile as fsReadFile, stat as fsStat, writeFile as fsWriteFile } from "node:fs/promises";
+import { Unsafe } from "typebox";
 import type { AgentTool, AgentToolResult } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
 import {
@@ -24,7 +25,7 @@ export type { Edit } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./support/file-mutation-queue.ts";
 import { resolveToCwd } from "./support/path-utils.ts";
 
-const editParametersSchema: Record<string, unknown> = {
+const editParametersSchema = Unsafe<EditToolInput>({
   type: "object",
   properties: {
     path: {
@@ -53,7 +54,7 @@ const editParametersSchema: Record<string, unknown> = {
     },
   },
   required: ["path", "edits"],
-};
+});
 
 export interface EditToolInput {
   path: string;
@@ -123,7 +124,9 @@ function parseEditInput(input: unknown): EditToolInput {
   };
 }
 
-export function createEditTool(cwd: string): AgentTool<EditToolInput, EditToolDetails> {
+export function createEditTool(
+  cwd: string,
+): AgentTool<typeof editParametersSchema, EditToolDetails> {
   return {
     name: "edit",
     label: "edit",

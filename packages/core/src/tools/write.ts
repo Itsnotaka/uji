@@ -7,6 +7,7 @@
  */
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { Unsafe } from "typebox";
 import type { AgentTool } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
 import { withFileMutationQueue } from "./support/file-mutation-queue.ts";
@@ -19,7 +20,7 @@ export interface WriteToolInput {
   content: string;
 }
 
-const writeParameters: Record<string, unknown> = {
+const writeParameters = Unsafe<WriteToolInput>({
   type: "object",
   properties: {
     path: {
@@ -32,7 +33,7 @@ const writeParameters: Record<string, unknown> = {
     },
   },
   required: ["path", "content"],
-};
+});
 
 function parseWriteParams(params: unknown): WriteToolInput {
   if (typeof params !== "object" || params === null) {
@@ -48,7 +49,7 @@ function parseWriteParams(params: unknown): WriteToolInput {
   return { path, content };
 }
 
-export function createWriteTool(cwd: string): AgentTool<WriteToolInput, undefined> {
+export function createWriteTool(cwd: string): AgentTool<typeof writeParameters, undefined> {
   return {
     name: "write",
     label: "write",

@@ -1,14 +1,15 @@
 import { join } from "node:path";
 import process from "node:process";
-import { defaultProviders, FileCredentialStore, getProvider, resolveProviderAuth } from "@june/ai";
-import type { AuthResult, Provider } from "@june/ai";
+import { clampThinkingLevel } from "@june/ai";
+import type { AuthResult, Models, Provider } from "@june/ai";
+import { AgentHarness, createAllTools, SqliteSessionRepo } from "@june/core";
+import type { HarnessTool, SessionStorage, SuspendedOperation, ThinkingLevel } from "@june/core";
 import {
-  AgentHarness,
-  createAllTools,
-  createProviderStreamFn,
-  SqliteSessionRepo,
-} from "@june/core";
-import type { HarnessTool, SuspendedOperation, ThinkingLevel } from "@june/core";
+  createCliModels,
+  DEFAULT_THINKING_LEVEL,
+  requireModel,
+  requireProvider,
+} from "./catalog.ts";
 
 export const SYSTEM_PROMPT =
   "You are june, a minimal coding agent. Work inside the current working directory. " +
@@ -39,22 +40,20 @@ export function parseFlags(args: string[]): RunFlags {
 }
 
 export interface ResolvedRuntime {
+  models: Models;
   provider: Provider;
   auth: AuthResult;
-  store: FileCredentialStore;
 }
 
 export async function resolveRuntime(flags: RunFlags): Promise<ResolvedRuntime | undefined> {
-  const providers = defaultProviders();
-  const store = new FileCredentialStore();
-  if (flags.provider !== undefined) {
-    const provider = getProvider(providers, flags.provider);
-    const auth = await resolveProviderAuth(provider, store);
-    return auth === undefined ? undefined : { provider, auth, store };
-  }
+  const models = createCliModels();
+  const providers =
+    flags.provider === undefined
+      ? models.getProviders()
+      : [requireProvider(models, flags.provider)];
   for (const provider of providers) {
-    const auth = await resolveProviderAuth(provider, store);
-    if (auth !== undefined) return { provider, auth, store };
+    const auth = await models.getAuth(provider.id);
+    if (auth !== undefined) return { models, provider, auth };
   }
   return undefined;
 }
@@ -74,32 +73,74 @@ export interface OpenedHarness {
   repo: SqliteSessionRepo;
 }
 
+export interface HarnessRuntimeOptions {
+  model?: string;
+  effort?: ThinkingLevel;
+  cwd: string;
+}
+
+const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] satisfies readonly ThinkingLevel[];
+
+function parseThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
+  if (value === undefined) return undefined;
+  const level = THINKING_LEVELS.find((candidate) => candidate === value);
+  if (level === undefined) {
+    throw new Error(`Unknown effort: ${value}. Use ${THINKING_LEVELS.join(", ")}`);
+  }
+  return level;
+}
+
+export async function createHarness(
+  runtime: ResolvedRuntime,
+  session: SessionStorage,
+  sessionId: string,
+  options: HarnessRuntimeOptions,
+): Promise<{ harness: AgentHarness; suspended: SuspendedOperation[] }> {
+  const model = requireModel(runtime.models, runtime.provider.id, options.model);
+  const thinkingLevel = clampThinkingLevel(model, options.effort ?? DEFAULT_THINKING_LEVEL);
+  return AgentHarness.create({
+    session,
+    streamFn: (requestedModel, context, streamOptions) =>
+      runtime.models.streamSimple(requestedModel, context, { ...streamOptions, sessionId }),
+    systemPrompt: SYSTEM_PROMPT,
+    tools: harnessTools(options.cwd),
+    model,
+    thinkingLevel,
+  });
+}
+
 export async function openHarness(
   runtime: ResolvedRuntime,
   flags: RunFlags,
 ): Promise<OpenedHarness> {
   const repo = new SqliteSessionRepo(join(process.cwd(), ".june", "sessions.db"));
-  let session;
-  if (flags.resume) {
-    const latest = (await repo.list()).at(-1);
-    session = latest === undefined ? await repo.create() : await repo.open(latest.id);
-  } else {
-    session = await repo.create();
+  try {
+    let session;
+    if (flags.resume) {
+      const latest = (await repo.list()).at(-1);
+      session = latest === undefined ? await repo.create() : await repo.open(latest.id);
+    } else {
+      session = await repo.create();
+    }
+    const sessionId = (await session.getMetadata()).id;
+    const model = flags.model ?? process.env["JUNE_MODEL"];
+    const effort = parseThinkingLevel(flags.effort ?? process.env["JUNE_EFFORT"]);
+    const { harness, suspended } = await createHarness(runtime, session, sessionId, {
+      model,
+      effort,
+      cwd: process.cwd(),
+    });
+    return { harness, suspended, sessionId, repo };
+  } catch (error) {
+    await repo.close().catch(() => undefined);
+    throw error;
   }
-  const sessionId = (await session.getMetadata()).id;
-  const model = flags.model ?? process.env["JUNE_MODEL"];
-  const effort = (flags.effort ?? process.env["JUNE_EFFORT"]) as ThinkingLevel | undefined;
-  const { harness, suspended } = await AgentHarness.create({
-    session,
-    streamFn: createProviderStreamFn({
-      provider: runtime.provider,
-      auth: { store: runtime.store },
-      sessionId,
-    }),
-    systemPrompt: SYSTEM_PROMPT,
-    tools: harnessTools(process.cwd()),
-    model,
-    thinkingLevel: effort ?? runtime.provider.defaultEffort,
-  });
-  return { harness, suspended, sessionId, repo };
 }

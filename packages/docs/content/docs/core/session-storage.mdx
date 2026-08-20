@@ -20,12 +20,12 @@ One per-session `seq` counter orders all four, so the whole session collapses to
 
 An entry is a node in the session tree. `EntryBase` supplies `type`, `id`, `seq`, `parentId`, and `timestamp`; each variant adds its own payload.
 
-| `type`                  | Extra fields                           | Meaning                                                                                    |
-| ----------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `message`               | `message: ResponseItem`                | One item of conversation: a user message, an assistant message, a tool call, a tool result |
-| `model_change`          | `modelId: string`                      | The model in effect from this point down the branch                                        |
-| `thinking_level_change` | `thinkingLevel: string`                | The thinking level in effect from this point down the branch                               |
-| `custom`                | `customType: string`, `data?: unknown` | An application-defined node the harness does not interpret                                 |
+| `type`                  | Extra fields                           | Meaning                                                      |
+| ----------------------- | -------------------------------------- | ------------------------------------------------------------ |
+| `message`               | `message: Message`                     | One neutral user, assistant, or tool-result message          |
+| `model_change`          | `modelId: string`                      | The model in effect from this point down the branch          |
+| `thinking_level_change` | `thinkingLevel: string`                | The thinking level in effect from this point down the branch |
+| `custom`                | `customType: string`, `data?: unknown` | An application-defined node the harness does not interpret   |
 
 Callers do not supply `parentId`, `seq`, or `timestamp`: the backend assigns them at append. What callers do supply is the `id`, which is why the provisioned shape exists:
 
@@ -50,7 +50,7 @@ A record is a lane-scoped ledger row. Every variant carries `RecordBase` (`id`, 
 | `operation_started`  | `sourceLeafId`, `intent: { kind: "run", originalPrompt, initialMessages }`                       | `prompt()`, before the prompt entries are appended. The record's own `id` is the run id           |
 | `step_attempt`       | `runId`, `step: "assistant"`, `attempt`                                                          | Every `turn_start` event. `attempt` counts turns in the run, not retries                          |
 | `tool_started`       | `runId`, `toolCallId`, `toolName`, `effectiveArgs`, `resultEntryId`, `replay: "never" \| "safe"` | `beforeToolCall`, before the tool executes                                                        |
-| `usage`              | `runId`, `cause: "assistant" \| "tool"`, `usage: TurnUsage`                                      | A `turn_end` with assistant usage or `tool_execution_end` with tool usage                         |
+| `usage`              | `runId`, `cause: "assistant" \| "tool"`, `usage: Usage`                                          | A `turn_end` with assistant usage or `tool_execution_end` with tool usage                         |
 | `queue_enqueued`     | `queue: "steer" \| "followUp" \| "nextRun"`, `runId?`, `target: ProvisionedEntry<MessageEntry>`  | `steer()`, `followUp()`, `nextRun()`                                                              |
 | `abort_requested`    | `runId`                                                                                          | `abort()`, committed before the `AbortController` is signalled                                    |
 | `operation_finished` | `runId`, `outcome: "completed" \| "aborted" \| "failed"`, `error?`                               | The end of a run, whatever the outcome                                                            |

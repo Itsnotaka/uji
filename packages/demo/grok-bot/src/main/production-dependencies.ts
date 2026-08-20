@@ -1,29 +1,33 @@
-import { FileCredentialStore, defaultProviders, getProvider, resolveProviderAuth } from "@june/ai";
-import { createProviderStreamFn } from "@june/core";
+import {
+  createModels,
+  defaultProviderAuthContext,
+  FileCredentialStore,
+  openaiCodexProvider,
+} from "@june/ai";
 import type { JuneDesktopEvent } from "../desktop-api.ts";
 import type { JuneHostDependencies } from "./june-host.ts";
 
 export function createProductionDependencies(
   openExternal: (url: string) => Promise<unknown>,
 ): JuneHostDependencies {
-  const provider = getProvider(defaultProviders(), "openai-codex");
   const credentials = new FileCredentialStore();
+  const models = createModels({ credentials, authContext: defaultProviderAuthContext() });
+  const provider = openaiCodexProvider();
+  models.setProvider(provider);
+  const model = models.getModel(provider.id, "gpt-5.6-luna");
+  if (model === undefined) throw new Error("OpenAI Codex does not expose gpt-5.6-luna");
 
   return {
-    model: provider.defaultModel,
-    thinkingLevel: provider.defaultEffort,
-    createStreamFn: (sessionId) =>
-      createProviderStreamFn({
-        provider,
-        auth: { store: credentials },
-        sessionId,
-      }),
+    model,
+    thinkingLevel: "medium",
+    createStreamFn: (sessionId) => (requestedModel, context, options) =>
+      models.streamSimple(requestedModel, context, { ...options, sessionId }),
     async authStatus() {
       try {
-        const auth = await resolveProviderAuth(provider, credentials);
+        const auth = await models.getAuth(provider.id);
         return auth === undefined
           ? { signedIn: false, label: "ChatGPT not connected" }
-          : { signedIn: true, label: `ChatGPT connected · ${auth.source}` };
+          : { signedIn: true, label: `ChatGPT connected · ${auth.source ?? "OAuth"}` };
       } catch {
         return { signedIn: false, label: "ChatGPT login expired" };
       }
@@ -34,7 +38,7 @@ export function createProductionDependencies(
 
       const controller = new AbortController();
       emit({ type: "status", message: "Opening ChatGPT login…" });
-      const credential = await oauth.login({
+      await models.login(provider.id, "oauth", {
         signal: controller.signal,
         prompt: (prompt) => {
           if (prompt.type === "select") return Promise.resolve("browser");
@@ -54,7 +58,6 @@ export function createProductionDependencies(
           }
         },
       });
-      await credentials.modify(provider.id, () => Promise.resolve(credential));
     },
   };
 }

@@ -32,6 +32,7 @@ const harness = read("packages/core/src/harness/agent-harness.ts");
 const sessionTypes = read("packages/core/src/harness/session/types.ts");
 const sqlite = read("packages/core/src/harness/session/sqlite.ts");
 const schema = read("packages/schema/src/index.ts");
+const messageSchema = read("packages/schema/src/message.ts");
 const shell = read("packages/core/src/tools/support/shell.ts");
 const desktopHost = read("packages/demo/grok-bot/src/main/june-host.ts");
 const productionDependencies = read("packages/demo/grok-bot/src/main/production-dependencies.ts");
@@ -53,7 +54,7 @@ const expectedStatuses = {
   "GAP-C05": "Partial",
   "GAP-C06": "Not started",
   "GAP-C07": "Partial",
-  "GAP-C08": "Partial",
+  "GAP-C08": "Exists",
   "GAP-C09": "Partial",
   "GAP-C10": "Partial",
   "GAP-D01": "Partial",
@@ -105,13 +106,13 @@ for (const [pattern, description] of [
   expect(!pattern.test(allDocs), `Docs still contain ${description}.`);
 }
 
-const promptStart = harness.indexOf("async prompt(");
+const promptStart = harness.indexOf("prompt(input:");
 const promptEnd = harness.indexOf("async steer(", promptStart);
 const promptBody = harness.slice(promptStart, promptEnd);
 expect(promptStart >= 0 && promptEnd > promptStart, "Could not locate AgentHarness.prompt().");
 expect(
-  !promptBody.includes("this.activeRun ="),
-  "GAP-C01 source changed: prompt now assigns activeRun; re-audit admission and update the roadmap.",
+  promptBody.includes("this.pendingPrompt = pending"),
+  "GAP-C01 source changed: re-audit prompt admission and update the roadmap.",
 );
 expect(
   harness.includes('const LANE = "main"'),
@@ -130,12 +131,13 @@ expect(
   "GAP-C07 source changed: durable ID generation changed; re-audit and update the roadmap.",
 );
 expect(
-  schema.includes("output?: string | ToolResultPart[]"),
-  "GAP-C08 source changed: the legacy string output union changed; re-audit parts and update the roadmap.",
+  !/ResponseItem|ToolResultPart|ContentPart/.test(schema) &&
+    messageSchema.includes("content: (TextContent | ImageContent)[];"),
+  "GAP-C08 source changed: re-audit the canonical Message and tool-result part contract.",
 );
 expect(
   /private readonly active = new Set<SqliteSessionStorage>\(\)/.test(sqlite) &&
-    !sqlite.includes("this.active.delete("),
+    sqlite.includes("this.active.delete("),
   "GAP-C09 source changed: re-audit repository storage tracking and update the roadmap.",
 );
 expect(
@@ -143,7 +145,7 @@ expect(
   "GAP-C10 source changed: re-audit the FTS projection and update the roadmap.",
 );
 expect(
-  shell.includes("trackDetachedChildPid(_pid: number): void {}"),
+  shell.includes("detached-child pid registry is not ported"),
   "GAP-C09 source changed: re-audit process cleanup and update the roadmap.",
 );
 
@@ -163,7 +165,8 @@ for (const packageName of ["protocol", "server", "client", "plugin"]) {
 }
 
 expect(
-  productionDependencies.includes('getProvider(defaultProviders(), "openai-codex")'),
+  productionDependencies.includes("createModels(") &&
+    productionDependencies.includes("openaiCodexProvider()"),
   "Desktop provider composition changed; update host-sdk.mdx and GAP-H04.",
 );
 expect(
