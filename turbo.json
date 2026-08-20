@@ -7,6 +7,14 @@
     },
     "typecheck": {
       "dependsOn": ["^typecheck"]
+    },
+    "//#lint": {},
+    "//#lint:fix": {
+      "cache": false
+    },
+    "//#format": {},
+    "//#format:fix": {
+      "cache": false
     }
   }
 }

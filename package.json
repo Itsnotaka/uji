@@ -3,8 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "format": "oxfmt",
-    "lint": "oxlint --fix",
+    "format": "oxfmt --check",
+    "format:fix": "oxfmt .",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {

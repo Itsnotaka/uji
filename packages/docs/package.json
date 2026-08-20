@@ -8,8 +8,7 @@
     "colors:audit": "node scripts/audit-grok-colors.mjs",
     "dev": "next dev",
     "start": "next start",
-    "types:check": "next typegen && tsc --noEmit",
-    "lint": "oxlint"
+    "types:check": "next typegen && tsc --noEmit"
   },
   "dependencies": {
     "central-icons": "npm:@central-icons-react/round-outlined-radius-1-stroke-1.5@^1.1.306",
