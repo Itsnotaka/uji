@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A focused desktop chat built on Uji." />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://chatgpt.com https://auth.openai.com"
+    />
+    <title>Uji</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        background: #fbfbfa;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          background: #101110;
+        }
+      }
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+      }
+      #boot {
+        display: grid;
+        height: 100%;
+        place-items: center;
+        color: light-dark(#6f6f69, #aaa9a2);
+        font:
+          600 14px ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+    </style>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="root"><div id="boot" role="status">Uji</div></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "@june/ui/platform-tokens.css";
+@import "@uji-ai/ui/platform-tokens.css";
 
 @theme {
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;

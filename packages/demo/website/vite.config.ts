@@ -19,11 +19,11 @@ export default defineConfig({
       },
     }),
     tanstackStart({ srcDirectory: "src" }),
-    react(),
+    react({ compiler: true }),
     tailwindcss(),
     nitro(),
   ],
-  optimizeDeps: { exclude: ["@june/ui"] },
+  optimizeDeps: { exclude: ["@uji-ai/ui"] },
   resolve: { dedupe: ["react", "react-dom"] },
   server: {
     port: 5174,

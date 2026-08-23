@@ -1,9 +1,10 @@
 {
-  "name": "@june/demo-website",
+  "name": "@uji-ai/demo-website",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "clean": "rm -rf node_modules .turbo dist .output",
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
     "preview": "vite preview --host 127.0.0.1",
@@ -11,9 +12,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@june/ui": "workspace:*",
     "@tanstack/react-router": "1.170.27",
     "@tanstack/react-start": "1.168.44",
+    "@uji-ai/ui": "workspace:*",
     "central-icons": "npm:@central-icons-react/round-outlined-radius-1-stroke-1.5@^1.1.306",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
@@ -23,8 +24,9 @@
     "@tailwindcss/vite": "4.3.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "@vitejs/plugin-react": "^6.0.5",
+    "@vitejs/plugin-react": "^6.1.0",
     "nitro": "^3.0.260610-beta",
+    "oxc-transform-react": "^0.144.0",
     "tailwindcss": "4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.2.1"

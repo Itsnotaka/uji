@@ -1,21 +1,24 @@
 {
-  "name": "@june/demo",
+  "name": "@uji-ai/cli",
+  "version": "0.0.0",
   "private": true,
+  "description": "Coding agent CLI",
   "type": "module",
   "scripts": {
-    "june": "tsx --experimental-ffi src/index.ts",
+    "start": "node --experimental-ffi --disable-warning=ExperimentalWarning src/index.ts",
     "test": "node --experimental-ffi --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@june/ai": "workspace:*",
-    "@june/core": "workspace:*",
-    "@june/schema": "workspace:*",
-    "@opentui/core": "^0.5.1",
-    "tsx": "^4.23.12"
+    "@opentui/core": "^0.5.6",
+    "@uji-ai/ai": "workspace:*",
+    "@uji-ai/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=26"
   }
 }

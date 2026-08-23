@@ -1,0 +1,32 @@
+{
+  "name": "@uji-ai/demo-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "clean": "rm -rf node_modules .turbo dist out",
+    "build": "electron-vite build",
+    "dev": "node scripts/ensure-electron.mjs && electron-vite dev",
+    "package": "pnpm build && electron-builder --dir --config electron-builder.config.ts",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@uji-ai/ai": "workspace:*",
+    "@uji-ai/core": "workspace:*",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "5.2.0",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "electron": "42.3.3",
+    "electron-builder": "26.15.2",
+    "electron-vite": "^5.0.0",
+    "typescript": "^7.0.2",
+    "vite": "7.1.4"
+  }
+}

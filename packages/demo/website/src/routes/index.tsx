@@ -32,7 +32,7 @@ const showcases = [
     scenario: "search",
     number: "02",
     title: "Search",
-    body: "A measured scrim, elevated palette, and selected result using Grok Bot’s exact alpha fills.",
+    body: "A measured scrim, elevated palette, and selected result using Uji’s semantic surface tokens.",
   },
   {
     scenario: "details",
@@ -53,7 +53,7 @@ function HomePage() {
 
       <section className="mx-auto flex min-h-[720px] max-w-[1440px] flex-col justify-center px-5 pt-16 pb-24 md:px-10 md:pt-24">
         <p className="mb-6 font-mono text-[10px] tracking-[0.16em] text-ink-foreground/45 uppercase">
-          June / Agent interface core
+          Uji / Agent interface core
         </p>
         <h1 className="max-w-6xl text-[clamp(4.25rem,11vw,10rem)] leading-[0.84] font-medium tracking-[-0.075em]">
           Agent software,
@@ -62,7 +62,7 @@ function HomePage() {
         </h1>
         <div className="mt-12 flex max-w-3xl flex-col gap-8 border-t border-ink-foreground/20 pt-6 md:flex-row md:items-start md:justify-between">
           <p className="max-w-xl text-[clamp(1rem,2vw,1.35rem)] leading-relaxed text-ink-foreground/60">
-            June is the small, durable core behind real agent apps. The first product demo is a
+            Uji is the small, durable core behind real agent apps. The first product demo is a
             native desktop conversation that signs in with ChatGPT and works without a project
             folder.
           </p>
@@ -150,17 +150,17 @@ function HomePage() {
           </h2>
           <a
             className="inline-flex h-11 shrink-0 items-center justify-center rounded-lg bg-ink-foreground px-5 text-sm font-medium text-ink hover:bg-ink-foreground/85"
-            href="https://github.com/Itsnotaka/june"
+            href="https://github.com/Itsnotaka/uji"
             rel="noreferrer"
             target="_blank"
           >
-            Explore June on GitHub ↗
+            Explore Uji on GitHub ↗
           </a>
         </div>
       </section>
 
       <footer className="mx-auto flex max-w-[1440px] items-center justify-between border-t border-ink-foreground/15 px-5 py-7 text-[11px] text-ink-foreground/35 md:px-10">
-        <span>June</span>
+        <span>Uji</span>
         <span>Core for agent interfaces</span>
       </footer>
     </main>
