@@ -1,97 +1,216 @@
-# June
+# Uji
 
-June is an independent, handwritten core for building cross-platform agentic UI: a durable
-agent harness, a standalone agent loop, provider auth blocks, and the clients that attach to them.
+Uji is a handwritten core for agentic UI. Durable sessions, an agent loop, provider auth, and the
+clients that attach to them.
 
-Docs live in [`packages/docs`](./packages/docs) (fumadocs; from that directory, `pnpm dev`). Intent and dated
-design decisions live in [blueprint.md](./blueprint.md); source references live in
-[references.md](./references.md).
+Docs live in [`packages/docs`](./packages/docs). From that directory, `pnpm dev`. The design record
+is the docs [design page](./packages/docs/content/docs/design.mdx). When a page and the source
+disagree, the source wins.
+
+## Install
+
+macOS (Apple silicon) builds are on [GitHub Releases](https://github.com/Itsnotaka/uji/releases).
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Itsnotaka/uji/main/install.sh | sh
+```
+
+The script downloads the newest release tarball, verifies the sha256, and puts `uji` in
+`~/.local/bin`. Set `UJI_INSTALL_DIR` to install somewhere else. Then `uji login` and run.
 
 ## What it is
 
-`@june/core` ships two entry points over one primitive. `runAgentLoop` is a standalone loop that
-imports nothing but wire types from `@june/schema`: you inject a `StreamFn`, an `AgentTool[]`, and
-an event sink. `AgentHarness` composes that same loop over a `SessionStorage`, bracketing each run
-with durable records so a crash can be resumed. Clients (the CLI, the Electron app) are peers
-that drive a harness; none of them is the product, and none of another project's harness is
-imported or wrapped as the implementation.
+`runAgentLoop` takes a `StreamFn`, an `AgentTool[]`, and an event sink. It imports wire types from
+`@uji-ai/schema` and nothing else. `AgentHarness` runs that same loop against `SessionStorage` and
+writes records before each effect, so a crash can be resumed. Plugins, skills, compaction, and
+hooks attach to the harness.
+
+The CLI and the Electron app both drive a harness. Neither is the product. This repo does not
+import another project's harness and wrap it.
 
 ## Packages
 
-Every package is `private` and unpublished. "Shipped" means the source exists in this workspace and
-runs, not that it is on npm.
+Library and app packages stay private. `uji-ai` on npm is a `0.0.1` placeholder that reserves the
+`uji` bin. "Shipped" means the source is in this workspace and runs.
 
 | Package | What it is | Status |
 | --- | --- | --- |
-| `@june/schema` (`packages/schema`) | Neutral `Message`, `Model`, `Tool`, and request-context contracts | Shipped |
-| `@june/ai` (`packages/ai`) | `Models`, provider adapters, credential storage, OAuth, and provider event streams | Shipped |
-| `@june/core` (`packages/core`) | The `Message` loop and types, `AgentHarness`, `SqliteSessionRepo`, and seven tools (read, bash, edit, write, grep, find, ls) | Shipped |
-| `@june/ui` (`packages/ui`) | Shared Base UI primitives styled with StyleX: avatar, button, dialog, dropdown menu, input, input group, textarea | Shipped |
-| `@june/demo` (`packages/demo/cli`) | The `june` CLI: OpenTUI full-screen app, `-p` print mode, readline login funnel | Shipped |
-| `@june/demo-grok-bot` (`packages/demo/grok-bot`) | Electron desktop chat; the main process hosts the harness, the renderer sees a preload API | Demo |
-| `@june/demo-website` (`packages/demo/website`) | TanStack Start marketing site; it does not run a harness | Demo |
-| `docs` (`packages/docs`) | The fumadocs documentation site | Shipped |
-| `@june/protocol`, `@june/server`, `@june/client`, `@june/util`, `@june/plugin` | Names locked by the blueprint's package map | Reserved, not built |
+| `@uji-ai/schema` | Neutral `Message`, `Model`, `Tool`, and `Skill` contracts | Shipped |
+| `@uji-ai/ai` | `Models`, provider adapters, credentials, OAuth, event streams | Shipped |
+| `@uji-ai/core` | Loop, `AgentHarness`, SQLite sessions, plugins, skills, compaction, hooks, workspace trust, and the seven tools: read, bash, edit, write, grep, find, ls | Shipped |
+| `@uji-ai/plugin` | `definePlugin` and the types a plugin file imports. The host lives in core | Shipped |
+| `@uji-ai/telemetry` | `TelemetryContext` on `Context`. `NOOP_TELEMETRY_CONTEXT` records nothing | Shipped |
+| `@uji-ai/ui` | Shared Base UI components in StyleX | Shipped |
+| `@uji-ai/tui` | The `uji` CLI: OpenTUI app, print mode, login, macOS Bun binary | Shipped |
+| `uji-ai` | Public npm package for the `uji` bin | Placeholder published |
+| `@uji-ai/demo-desktop` | Electron chat. Main process hosts the harness, renderer uses a preload API | Demo |
+| `@uji-ai/cli` | Print and chat CLI in `packages/demo/cli`. Not the product client | Demo |
+| `@uji-ai/demo-website` | TanStack Start marketing site. Does not run a harness | Demo |
+| `docs` | Fumadocs site in `packages/docs` | Shipped |
+| `@uji-ai/protocol`, `@uji-ai/server`, `@uji-ai/client`, `@uji-ai/util` | Names locked by the package map | Reserved, not built |
 
-Not built yet: the multi-client wire (`protocol`/`server`/`client`), a remote tool host, context
-compaction, hooks, and telemetry spans. `packages/docs/content/docs/roadmap.mdx` measures each gap
-against the specification the harness is ported from.
+Still unbuilt: the wire packages, a remote tool host, and a telemetry exporter. Compaction, hooks,
+plugins, and skills are in core. [Roadmap](./packages/docs/content/docs/roadmap.mdx) tracks the
+gaps.
 
 ## Setup
 
-`mise.toml` pins Node 26, pnpm 11.21.0, and bun 1.3.14. The `grep` and `find` tools shell out to
-`rg` (ripgrep) on `PATH`.
+pnpm only. `pnpm-lock.yaml` and the root `packageManager` field are the pin. Do not generate
+`package-lock.json`. `mise.toml` pins Node 26 and Bun 1.3.14. `package.json` pins pnpm 11.22.0.
+`grep` and `find` shell out to `rg` on `PATH`.
 
 ```sh
 mise install
 pnpm install
-pnpm check
+pnpm format
+pnpm lint
+pnpm typecheck
 ```
 
-## Demos
+## Terminal client
 
-The CLI lives in `packages/demo/cli`. It has no bin and no root script. From that directory,
-`pnpm start` runs the TypeScript source. Log in first; it has no `--help`, and usage prints only
-on the two failure paths.
+The product CLI is `packages/tui`. Log in, then run. `pnpm start --help` prints usage and exits 0.
 
 ```sh
-cd packages/demo/cli
+cd packages/tui
 pnpm start login
 pnpm start status
 pnpm start
+pnpm start --resume
+pnpm start --resume <session-id>
 pnpm start -p "summarize the files in packages/core/src"
 pnpm start -p --resume "now list what changed"
+echo "list the TypeScript files here" | pnpm start -p
 pnpm start logout
 ```
 
-| Flag | Alias | Effect |
-| --- | --- | --- |
-| `--print` | `-p` | Non-interactive run: stream deltas to stdout and exit |
-| `--resume` | `-c` | Open the newest existing session instead of creating one |
-| `--provider <id>` | none | Force a provider instead of auto-selecting |
-| `--model <id>` | none | Model passed to the harness; falls back to `JUNE_MODEL` |
-| `--effort <level>` | none | Thinking level passed to the harness; falls back to `JUNE_EFFORT` |
-
-Provider auto-selection walks the CLI's explicitly registered providers (`openai-codex`, then `openai`)
-and takes the first whose auth resolves. Both default to `gpt-5.6-luna`; the CLI defaults to `medium`
-effort. Credentials are
-written to `$JUNE_HOME/auth.json` (default `~/.june/auth.json`, mode `0600`). Sessions go to
-`<cwd>/.june/sessions.db`, one SQLite file holding every session started from that directory.
-
-`grok-bot` is a real composition, not a mock: `src/main/june-host.ts` opens a `SqliteSessionRepo`,
-creates an `AgentHarness`, and drives the ChatGPT OAuth flow, while the sandboxed renderer talks to
-it only through the preload API in `src/desktop-api.ts`. The shipped surface is five IPC methods
-(sign in, stream text, stop, new chat, local history), and the session needs no workspace folder.
-It registers no tools: `AgentHarness.create` is called without `tools`. Only the `june`
-agent in the sidebar is live; the other three entries in `src/demo-data.ts` are static previews
-that do not run.
-
-`website` is a marketing site about the desktop app. It renders a static preview component; it does
-not import `@june/core` or simulate a harness.
+On macOS, `pnpm build:cli` from the repo root writes `bin/uji` with the TUI package version.
 
 ```sh
-cd packages/demo/grok-bot
+pnpm build:cli
+./bin/uji --version
+./bin/uji
+```
+
+`start` and `dev` run under Bun. Tests run under Node with `--experimental-ffi`.
+
+```sh
+cd packages/tui
+pnpm test
+node --experimental-ffi --test test/render.test.ts
+```
+
+`pnpm dev` writes a JSONL render log to `$UJI_HOME/logs`, default `~/.uji/logs`. A clean exit ends
+with `renderer_destroyed` and `render_log_closed`. Set `UJI_TUI_RENDER_LOG=/tmp/uji-tui.jsonl` to
+log a `pnpm start` run. The TUI checks GitHub Releases for a newer version in the
+background. `UJI_SKIP_VERSION_CHECK=1` or `UJI_OFFLINE=1` skips that request.
+
+### Commands
+
+| Command | Effect |
+| --- | --- |
+| `uji` | Open the full-screen TUI |
+| `uji login [provider]` | Log in, default provider `openai-codex` |
+| `uji logout [provider]` | Delete the stored credential |
+| `uji status` | Print `providerId: type` per credential, or `no stored credentials` |
+| `uji --version` | Print the package version |
+
+Registered providers: `openai-codex`, `openai`, `anthropic`, `opencode`, `opencode-go`.
+
+### Flags
+
+| Flag | Alias | Effect |
+| --- | --- | --- |
+| `--print` | `-p` | Stream one run to stdout and exit |
+| `--json` | | Emit JSONL on stdout |
+| `--quiet` | `-q` | Hide tool-start lines |
+| `--resume [<session-id>]` | `-c` | Open the newest session, or a session id in the TUI |
+| `--provider <id>` | | Override the saved provider |
+| `--model <id>` | | Override the saved model |
+| `--effort <level>` | | Set thinking level |
+
+`--effort` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Anything else fails
+before the harness opens: `Unknown effort: <value>. Use off, minimal, low, medium, high, xhigh, max`.
+
+`--json` and `--quiet` select print mode even without `-p`. A missing print prompt is read from
+stdin. Empty stdin prints usage and exits 1. Non-TTY stdout with a prompt, or piped stdin, also
+prints. In print mode, leftover argv after flags is the prompt, including after bare `--resume`.
+
+### Print mode
+
+Trust the workspace in the TUI first. Print mode does not prompt. An untrusted cwd fails with
+`Workspace is not trusted: <cwd>. Run \`uji\` interactively to trust it first.` No stored
+credential fails with `Couldn't find a stored credential. Run \`uji login\`.`
+
+Human output: text deltas on stdout, tool titles on stdout unless `--quiet`, errors on stderr as
+`error: <message>`. A finished run prints `session <id> · <provider> · <kind>` on stderr, then
+`resume with: uji -p --resume`.
+
+`--json` writes one JSON object per line on stdout and keeps diagnostics off that stream:
+
+```json
+{"type":"text","text":"…"}
+{"type":"tool","name":"bash","title":"…"}
+{"type":"result","session":"<id>","provider":"openai-codex","kind":"finished"}
+{"type":"error","message":"…"}
+```
+
+Ctrl-C exits 130. SIGTERM exits 143.
+
+### Trust, skills, plugins
+
+The TUI asks for workspace trust before it opens project plugins, skills, sessions, or tools. That
+is the only permission gate. After trust, tools run with the host process's access. No per-tool
+prompts.
+
+Skills are `SKILL.md` folders under project and user `.uji/skills`, `.agents/skills`, and
+`.claude/skills`. Type `/` in the composer, or `ctrl+k` for commands and `ctrl+s` for skills. Run
+`/<skill-name> [instructions]` to invoke one. `/reload` rebuilds both catalogs from disk.
+
+`/fast` comes from a host plugin the TUI preinstalls. The command appears only when the model
+advertises fast inference. The choice is stored per session and per provider. The `question` tool
+in `packages/plugin/examples` is opt-in. It is not part of the client and does not gate filesystem
+or shell tools.
+
+### Settings and keys
+
+| Key | Effect |
+| --- | --- |
+| `ctrl+p` | Cycle models |
+| `shift+tab` | Cycle thinking |
+| `ctrl+g` | Edit the draft in `externalEditor`, `$VISUAL`, or `$EDITOR` |
+| `/settings` | Edit model, thinking, auto-compaction, and transport under the transcript |
+
+Global settings: `$UJI_HOME/settings.json`, default `~/.uji/settings.json`. Trusted project
+overrides: `<cwd>/.uji/settings.json`. Project fields win. Nested `compaction` fields merge field
+by field.
+
+Resolution order for provider: `--provider`, project settings, global settings, then the first
+registered provider whose auth resolves. Cold start is `openai-codex`. Model: `--model`,
+`UJI_MODEL`, settings, then the provider default. OpenAI providers use `gpt-5.6-luna`. Thinking:
+`--effort`, `UJI_EFFORT`, settings, then `medium`.
+
+Credentials: `$UJI_HOME/auth.json`, default `~/.uji/auth.json`, mode `0600`. Sessions:
+`<cwd>/.uji/sessions.db`.
+
+## Demos
+
+Desktop lives in `packages/demo/desktop`. `src/main/uji-host.ts` opens `SqliteSessionRepo` and an
+`AgentHarness` per conversation, and runs ChatGPT OAuth. The renderer talks through
+`src/desktop-api.ts`. Uji, Draft, and Scout all run. No coding tools: `AgentHarness.create` gets a
+system-prompt plugin, not `createAllTools`. The preload API is this demo's IPC, not
+`@uji-ai/protocol`.
+
+`packages/demo/cli` is a second print and chat CLI on the same core. Use `packages/tui`.
+
+`packages/demo/website` is a marketing site. It does not import `@uji-ai/core`.
+
+```sh
+cd packages/demo/desktop
 pnpm dev                 # electron-vite; opens a desktop window, not a URL
+
+cd packages/demo/cli
+pnpm start
 
 cd packages/demo/website
 pnpm dev                 # http://127.0.0.1:5174
@@ -100,18 +219,19 @@ pnpm dev                 # http://127.0.0.1:5174
 ## Development
 
 ```sh
-pnpm check        # format:check, then lint, then turbo run typecheck
-pnpm format       # oxfmt . (writes)
+pnpm format       # check formatting
+pnpm format:fix   # write formatting fixes
 pnpm lint         # oxlint, type-aware via oxlint-tsgolint
-pnpm typecheck    # turbo run typecheck (TypeScript 7 native tsc per package)
+pnpm lint:fix     # write safe lint fixes
+pnpm typecheck    # turbo run typecheck
 ```
 
-From `packages/core`: `pnpm test` runs June's `node:test` files and the loop conformance suite under Vitest.
+`packages/core`: `pnpm test` runs `node:test` files, then the loop suite under Vitest.
 
-There is no build step for the library packages. `@june/schema`, `@june/ai`, `@june/core`, and
-`@june/ui` each point `exports` at their TypeScript sources, and Node 26 strips types at load time.
-`pnpm check` compiles nothing and emits nothing. The demo apps and the docs site have their own
-`build` scripts because Vite, Electron, and Next need them.
+No build step for the libraries. `@uji-ai/schema`, `@uji-ai/ai`, `@uji-ai/core`, `@uji-ai/plugin`,
+`@uji-ai/telemetry`, and `@uji-ai/ui` export TypeScript sources. Node 26 strips types at load.
+`pnpm typecheck` emits nothing. Demo apps and docs have `build` scripts because Vite, Electron, and
+Next need them.
 
 ## Docs
 
@@ -121,7 +241,6 @@ pnpm dev          # next dev, http://localhost:3000
 pnpm build        # next build
 ```
 
-Pages are MDX under `packages/docs/content/docs`: `index`, `quickstart`, `architecture`,
-`principles`, `host-sdk`, `roadmap`, and a `core` section holding `core/index`, `agent-loop`,
-`harness`, `session-storage`, `tools`, `stream-fn`, and `recipes`. Sidebar order is set by the two `meta.json`
-files. When a page and the source disagree, the source wins and the page is wrong.
+MDX lives under `packages/docs/content/docs`. Sidebar order is the two `meta.json` files: getting
+started, package pages, host-sdk, design, roadmap. The `core` section is `index`, `agent-loop`,
+`harness`, `session-storage`, `tools`, `stream-fn`, `recipes`.

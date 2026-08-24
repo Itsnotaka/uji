@@ -1,0 +1,55 @@
+---
+title: "@uji-ai/plugin"
+description: The author API for Uji plugins. The runtime lives in @uji-ai/core
+icon: IconPlugin1
+---
+
+`@uji-ai/plugin` is what a plugin file imports: `definePlugin` and the types a plugin sees. The host, registries, and loaders live in `@uji-ai/core`. One process should not hold two copies of the plugin types; the loader maps this package onto the host's core.
+
+```ts title="packages/plugin/examples/fast-mode.ts"
+import { definePlugin } from "@uji-ai/plugin";
+
+export function fastModePlugin(model) {
+  return definePlugin({
+    id: "fast-mode",
+    async session(api) {
+      // commands, facts, request patches
+    },
+  });
+}
+```
+
+## Split
+
+| Package          | Role                                                                           |
+| ---------------- | ------------------------------------------------------------------------------ |
+| `@uji-ai/plugin` | Author surface: `definePlugin`, `Plugin`, `SessionApi`, hook and command types |
+| `@uji-ai/core`   | `PluginHost`, `resolvePlugins`, builtin factories, storage                     |
+
+Built-in factories are exported from `@uji-ai/core`. A user plugin with the same id replaces the builtin:
+
+| Factory              | Job                                                    |
+| -------------------- | ------------------------------------------------------ |
+| `systemPromptPlugin` | Assembles the system prompt                            |
+| `contextFilesPlugin` | Loads project context files                            |
+| `skillsPlugin`       | Catalogs `SKILL.md` folders and loads bodies on demand |
+| `toolsFsPlugin`      | Filesystem-backed tool contributions                   |
+
+Worked examples live in `packages/plugin/examples/` (`fast-mode`, `question`).
+
+## Related
+
+<Cards>
+  <DocCard
+    icon="IconPackage"
+    title="@uji-ai/core"
+    href="/docs/core"
+    description="PluginHost and the builtin factories"
+  />
+  <DocCard
+    icon="IconHammer"
+    title="Tools"
+    href="/docs/core/tools"
+    description="The AgentTool contract plugins contribute to"
+  />
+</Cards>

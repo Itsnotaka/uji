@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8" />
+<style>
+  body {
+    margin: 0;
+    background: #888;
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+  }
+  div {
+    width: 1200px;
+    background: #fff;
+  }
+</style>
+<div id="a"></div>
+<script>
+  fetch("/diagrams/blog-header.svg")
+    .then((r) => r.text())
+    .then((t) => (a.innerHTML = t));
+</script>

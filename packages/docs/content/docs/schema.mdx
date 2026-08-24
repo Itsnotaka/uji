@@ -1,0 +1,49 @@
+---
+title: "@uji-ai/schema"
+description: Neutral Message, Model, Tool, and Skill contracts shared by every package
+icon: IconCodeBrackets
+---
+
+`@uji-ai/schema` is the wire. Core, providers, plugins, and clients share one message model. Provider adapters translate at the request boundary and write back into these types. Sessions store them unchanged.
+
+```ts title="packages/schema/src/index.ts"
+export * from "./message.ts";
+export * from "./model.ts";
+export * from "./tool.ts";
+```
+
+## What it owns
+
+| File         | Contract                                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------------- |
+| `message.ts` | `UserMessage`, `AssistantMessage`, `ToolResultMessage`, text / thinking / tool-call / image parts |
+| `model.ts`   | `Model`, `Api`, `ProviderId`, and the fields a catalog entry must carry                           |
+| `tool.ts`    | `Tool`, `ToolKind`, and request-context types                                                     |
+| `index.ts`   | `Skill` and `PromptTemplate` for catalogs that live on the wire                                   |
+
+Provider-specific replay data (an Anthropic thinking signature, an OpenAI reasoning item) rides in opaque `*Signature` fields. Only the same provider and model should see them again.
+
+## Install
+
+The package is private. Depend on `"@uji-ai/schema": "workspace:*"` and import from the package name. The `exports` map points at `./src/index.ts`. There is no build step.
+
+```ts title="import.ts"
+import type { Message, Model, Skill, Tool } from "@uji-ai/schema";
+```
+
+## Related
+
+<Cards>
+  <DocCard
+    icon="IconSparkle"
+    title="@uji-ai/ai"
+    href="/docs/ai"
+    description="Adapters that encode these types at request time"
+  />
+  <DocCard
+    icon="IconPackage"
+    title="@uji-ai/core"
+    href="/docs/core"
+    description="The loop and harness that store and emit them"
+  />
+</Cards>

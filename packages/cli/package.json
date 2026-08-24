@@ -1,0 +1,31 @@
+{
+  "name": "uji-ai",
+  "version": "0.0.1",
+  "description": "Headless agent runner and terminal client for Uji",
+  "keywords": [
+    "agent",
+    "ai",
+    "cli",
+    "coding-agent",
+    "headless"
+  ],
+  "license": "UNLICENSED",
+  "bin": {
+    "uji": "bin/uji.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf node_modules .turbo",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=26"
+  }
+}

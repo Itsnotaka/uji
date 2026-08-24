@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8" />
+<style>
+  body {
+    background: #eeeeee;
+    color: #262626;
+    margin: 0;
+    padding: 24px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    --color-cog-accent: #2f64d2;
+    --color-cog-green: #378e23;
+    --color-cog-amber: #c3691e;
+    --color-cog-violet: #7d4bc6;
+    --color-cog-cyan: #0082aa;
+    --color-cog-gold: #a27612;
+    --ease-uji: cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  figure {
+    margin: 0;
+    background: #26262608;
+  }
+  figcaption {
+    font:
+      11px ui-monospace,
+      monospace;
+    padding: 4px 6px;
+    opacity: 0.6;
+  }
+</style>
+<div id="out"></div>
+<script>
+  const names = new URLSearchParams(location.search).get("n").split(",");
+  document.body.innerHTML = names
+    .map((n) => `<figure><div class=art data-n="${n}"></div><figcaption>${n}</figcaption></figure>`)
+    .join("");
+  for (const el of document.querySelectorAll(".art")) {
+    fetch("/diagrams/" + el.dataset.n + ".svg")
+      .then((r) => r.text())
+      .then((t) => (el.innerHTML = t));
+  }
+</script>

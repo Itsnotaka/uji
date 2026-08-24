@@ -1,0 +1,34 @@
+---
+title: "@uji-ai/ui"
+description: Shared Base UI primitives. No agent runtime
+icon: IconComponents
+---
+
+`@uji-ai/ui` is the component kit product shells compose. It ships raw TypeScript and StyleX. It does not run a harness, open a session, or call a provider.
+
+The desktop demo imports these primitives. The docs site does not. Docs chrome is Fumadocs.
+
+```ts title="import.ts"
+import { Button, Dialog, Input } from "@uji-ai/ui";
+```
+
+Exports include buttons, dialogs, menus, inputs, avatars, and the platform token sheets (`platform-tokens.css`, `tokens.stylex`). Central Icons is the glyph set, same as this site.
+
+A host that needs chat chrome builds it from these pieces. It does not import `@uji-ai/core` through this package.
+
+## Related
+
+<Cards>
+  <DocCard
+    icon="IconBridge"
+    title="Host and client"
+    href="/docs/host-sdk"
+    description="Where UI sits relative to the missing host contract"
+  />
+  <DocCard
+    icon="IconLayersThree"
+    title="Architecture"
+    href="/docs/architecture"
+    description="UI packages never execute tools"
+  />
+</Cards>
