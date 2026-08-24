@@ -1,9 +1,16 @@
 node_modules/
 dist/
-.june/
+/bin/
+.uji/
 .turbo/
+.otui-probe/
+
+packages/tui/addons.html
 
 .DS_Store
 .vercel
 .env*
 .claude-scratch/
+
+__pycache__/
+*.pyc
