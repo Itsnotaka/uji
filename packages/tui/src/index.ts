@@ -1,6 +1,19 @@
 import process from "node:process";
-import { parseFlags, readStdin, resolveTuiResume, USAGE, wantsPrint } from "./flags.ts";
+import { parseFlags, readStdin, resolveTuiResume, wantsPrint } from "./flags.ts";
 import { VERSION } from "./version.ts";
+import { GLYPHS } from "./constants.ts";
+import {
+  dim,
+  fieldRow,
+  green,
+  isPercentLine,
+  red,
+  renderHelp,
+  statusGlyph,
+  columnWidth,
+  ansiEnabled,
+  bold,
+} from "./cli-style.ts";
 
 async function login(id: string | undefined): Promise<void> {
   const { createCliModels, DEFAULT_PROVIDER_ID, loadProviderCatalog, requireProvider } =
@@ -29,7 +42,8 @@ async function login(id: string | undefined): Promise<void> {
   }
   await models.login(provider.id, mode, interaction);
   await loadProviderCatalog(models, provider.id);
-  console.log(`Logged in to ${provider.name}.`);
+  console.log(`${green(GLYPHS.check)} Logged in to ${provider.name}.`);
+  console.log(`  ${dim("run `uji` to start")}`);
 }
 
 async function logout(id: string | undefined): Promise<void> {
@@ -37,12 +51,13 @@ async function logout(id: string | undefined): Promise<void> {
   const models = createCliModels();
   const provider = requireProvider(models, id ?? DEFAULT_PROVIDER_ID);
   await models.logout(provider.id);
-  console.log(`Logged out of ${provider.name}.`);
+  console.log(`${green(GLYPHS.check)} Logged out of ${provider.name}.`);
 }
 
 async function update(args: readonly string[]): Promise<void> {
   const { checkForUpdate } = await import("./version.ts");
   const { describeUpdateOutcome, selfUpdate } = await import("./update.ts");
+  const tty = ansiEnabled();
   if (args.includes("--check")) {
     const notice = await checkForUpdate();
     console.log(
@@ -53,20 +68,60 @@ async function update(args: readonly string[]): Promise<void> {
     return;
   }
   const version = args.find((arg) => !arg.startsWith("-"));
-  console.log(`Installed  ${VERSION}`);
+  console.log(`${bold("uji")} ${dim(`${VERSION} → ${version ?? "latest"}`)}`);
+
+  // Percent lines collapse into one rewritten row on a terminal; elsewhere
+  // they stay discrete lines a log can read.
+  let progressOpen = false;
+  const report = (line: string): void => {
+    if (isPercentLine(line)) {
+      const percent = line.trim();
+      if (tty) {
+        process.stdout.write(`\r\x1b[K  ${percent}`);
+        progressOpen = true;
+      } else {
+        console.log(`  ${percent}`);
+      }
+      return;
+    }
+    if (progressOpen && tty) {
+      process.stdout.write("\n");
+      progressOpen = false;
+    }
+    if (/^Checksum ok\.?$/u.test(line)) {
+      console.log(`${statusGlyph("ok", tty)} ${dim(line)}`);
+      return;
+    }
+    console.log(tty ? dim(line) : line);
+  };
   const outcome = await selfUpdate({
     ...(version === undefined ? {} : { version }),
-    report: (line) => console.log(line),
+    report,
   });
-  console.log(describeUpdateOutcome(outcome));
+  if (progressOpen && tty) process.stdout.write("\n");
+
+  const message = describeUpdateOutcome(outcome);
+  const glyph =
+    outcome.kind === "updated" || outcome.kind === "current"
+      ? statusGlyph("ok", tty)
+      : outcome.kind === "unsupported"
+        ? statusGlyph("warn", tty)
+        : statusGlyph("fail", tty);
+  console.log(`${glyph} ${message}`);
   if (outcome.kind === "failed" || outcome.kind === "unsupported") process.exitCode = 1;
 }
 
 async function status(): Promise<void> {
   const { FileCredentialStore } = await import("@uji-ai/ai");
   const stored = await new FileCredentialStore().list();
-  if (stored.length === 0) console.log("no stored credentials");
-  for (const info of stored) console.log(`${info.providerId}: ${info.type}`);
+  if (stored.length === 0) {
+    console.log(dim("no stored credentials"));
+    return;
+  }
+  const width = columnWidth(stored.map((info) => info.providerId));
+  for (const info of stored) {
+    console.log(fieldRow(info.providerId, info.type, width, ansiEnabled()));
+  }
 }
 
 async function main(): Promise<void> {
@@ -77,7 +132,7 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "--help" || command === "-h" || command === "help") {
-    console.log(USAGE);
+    console.log(renderHelp());
     return;
   }
   if (command === "login") {
@@ -102,7 +157,7 @@ async function main(): Promise<void> {
     if (flags.rest.length === 0) {
       const stdin = await readStdin();
       if (stdin === "") {
-        console.error(USAGE);
+        console.error(renderHelp(false));
         process.exitCode = 1;
         return;
       }
@@ -113,7 +168,7 @@ async function main(): Promise<void> {
     return;
   }
   if (!process.stdout.isTTY) {
-    console.error(USAGE);
+    console.error(renderHelp(false));
     process.exitCode = 1;
     return;
   }
@@ -125,6 +180,7 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(ansiEnabled() ? `${red(GLYPHS.cross)} ${message}` : message);
   process.exitCode = 1;
 }

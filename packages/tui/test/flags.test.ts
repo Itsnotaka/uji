@@ -106,21 +106,25 @@ void describe("version", () => {
   void test("checks the latest GitHub release", async () => {
     const previousSkip = process.env.UJI_SKIP_VERSION_CHECK;
     delete process.env.UJI_SKIP_VERSION_CHECK;
+    // One patch above the compiled version, so the test stays valid after
+    // every release instead of pinning a tag that catches up.
+    const [major = "0", minor = "0", patch = "0"] = VERSION.split(".");
+    const newer = `v${major}.${minor}.${Number(patch) + 1}`;
     let userAgent: string | null = null;
     try {
       const update = await checkForUpdate(async (_input, init) => {
         userAgent = new Headers(init?.headers).get("User-Agent");
         return Response.json({
-          tag_name: "v0.0.2",
-          html_url: "https://github.com/Itsnotaka/uji/releases/tag/v0.0.2",
+          tag_name: newer,
+          html_url: `https://github.com/Itsnotaka/uji/releases/tag/${newer}`,
         });
       });
       assert.deepEqual(update, {
-        version: "0.0.2",
-        url: "https://github.com/Itsnotaka/uji/releases/tag/v0.0.2",
+        version: newer.replace(/^v/u, ""),
+        url: `https://github.com/Itsnotaka/uji/releases/tag/${newer}`,
       });
       assert.equal(userAgent, `uji/${VERSION}`);
-      assert.equal(isNewerVersion("0.0.2", VERSION), true);
+      assert.equal(isNewerVersion(newer, VERSION), true);
       assert.equal(isNewerVersion(VERSION, VERSION), false);
       assert.equal(isNewerVersion("invalid", VERSION), false);
     } finally {

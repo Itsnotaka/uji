@@ -1,6 +1,7 @@
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import type { AuthInteraction, AuthPrompt } from "@uji-ai/ai";
+import { bold, cyan, dim } from "./cli-style.ts";
 
 async function ask(message: string, signal: AbortSignal): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -23,7 +24,7 @@ export function cliInteraction(signal: AbortSignal): AuthInteraction {
         prompt.signal === undefined ? signal : AbortSignal.any([signal, prompt.signal]);
       if (prompt.type === "select") {
         for (const [index, option] of prompt.options.entries()) {
-          console.log(`  ${String(index + 1)}. ${option.label}`);
+          console.log(`  ${dim(`${String(index + 1)}.`)} ${option.label}`);
         }
         const answer = await ask(`${prompt.message} [1] `, promptSignal);
         const choice = prompt.options[Number(answer.trim() || "1") - 1];
@@ -37,11 +38,11 @@ export function cliInteraction(signal: AbortSignal): AuthInteraction {
       switch (event.type) {
         case "auth_url":
           console.log(
-            `\n${event.instructions ?? "Open this URL to continue:"}\n\n  ${event.url}\n`,
+            `\n${event.instructions ?? "Open this URL to continue:"}\n\n  ${cyan(event.url)}\n`,
           );
           break;
         case "device_code":
-          console.log(`\nVisit ${event.verificationUri} and enter code: ${event.userCode}\n`);
+          console.log(`\nVisit ${event.verificationUri} and enter code: ${bold(event.userCode)}\n`);
           break;
         case "info":
         case "progress":

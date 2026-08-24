@@ -1,253 +1,94 @@
+<p align="center">
+  <img alt="uji" src="https://raw.githubusercontent.com/Itsnotaka/uji/main/packages/docs/public/brand/uji-icon.svg" width="128">
+</p>
+<p align="center">
+  <a href="https://github.com/Itsnotaka/uji/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/Itsnotaka/uji?style=flat-square"></a>
+  <a href="https://github.com/Itsnotaka/uji/releases/latest"><img alt="macOS Apple silicon" src="https://img.shields.io/badge/macOS-Apple_silicon-black?style=flat-square"></a>
+</p>
+
 # Uji
 
-Uji is a handwritten core for agentic UI. Durable sessions, an agent loop, provider auth, and the
+Uji is an agent harness with a terminal client. Durable sessions that survive a
+crash and resume, an agent loop with tool calling, provider auth, and the
 clients that attach to them.
 
-Docs live in [`packages/docs`](./packages/docs). From that directory, `pnpm dev`. The design record
-is the docs [design page](./packages/docs/content/docs/design.mdx). When a page and the source
-disagree, the source wins.
+* **[@uji-ai/core](packages/core)**: agent loop, harness, SQLite sessions, plugins, skills,
+  compaction, hooks, and the tools: read, bash, edit, write, grep, find, ls
+* **[@uji-ai/ai](packages/ai)**: unified multi-provider API. OpenAI, Anthropic, Google,
+  OpenCode. Credentials, OAuth, event streams
+* **[@uji-ai/schema](packages/schema)**: neutral `Message`, `Model`, `Tool`, and `Skill` contracts
+* **[@uji-ai/plugin](packages/plugin)**: `definePlugin` and the types a plugin file imports
+* **[@uji-ai/tui](packages/tui)**: the `uji` CLI. An OpenTUI app with print mode
+
+To learn more, read the [design record](packages/docs/content/docs/design.mdx): the chosen
+path, the reasoning, the contracts, and the build order.
 
 ## Install
-
-macOS (Apple silicon) builds are on [GitHub Releases](https://github.com/Itsnotaka/uji/releases).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Itsnotaka/uji/main/install.sh | sh
 ```
 
-The script downloads the newest release tarball, verifies the sha256, puts `uji` in
-`~/.local/bin`, and adds that directory to `PATH` in your shell's rc file (`.zshrc`, `.bashrc`,
-`config.fish`) when it is not already there. It appends one line, once; it never rewrites the
-file. Pass `--no-modify-path` (or set `UJI_NO_MODIFY_PATH=1`) to skip that, `--version 0.2.0` to
-pin a release, and `UJI_INSTALL_DIR` to install somewhere else. Then `uji login` and run.
+macOS (Apple silicon) binaries are on
+[GitHub Releases](https://github.com/Itsnotaka/uji/releases). The script verifies the sha256
+and installs to `~/.local/bin`. Then log in and run:
 
-Later, `uji update` (or `/update` inside the TUI) replaces the binary with the newest release after
-verifying its checksum; `uji update --check` only reports. Turn on Auto-update in `/settings` to
-install at startup instead of being told.
+```sh
+uji login
+uji
+```
 
-## What it is
+Installed copies update themselves with `uji update`. One prompt without the full screen:
 
-`runAgentLoop` takes a `StreamFn`, an `AgentTool[]`, and an event sink. It imports wire types from
-`@uji-ai/schema` and nothing else. `AgentHarness` runs that same loop against `SessionStorage` and
-writes records before each effect, so a crash can be resumed. Plugins, skills, compaction, and
-hooks attach to the harness.
+```sh
+uji -p "summarize the files in packages/core/src"
+```
 
-The CLI and the Electron app both drive a harness. Neither is the product. This repo does not
-import another project's harness and wrap it.
+## Trust and permissions
 
-## Packages
+Uji asks once per directory whether you trust it. That is the only permission gate. A trusted
+workspace lets the tools read files, run shell commands, and edit code with your process's
+access. There are no per-tool prompts. If you need stronger boundaries, containerize or
+sandbox the process; nothing in the harness assumes the host is safe.
 
-Library and app packages stay private. `uji-ai` on npm is a `0.0.1` placeholder that reserves the
-`uji` bin. "Shipped" means the source is in this workspace and runs.
+## All packages
 
-| Package | What it is | Status |
-| --- | --- | --- |
-| `@uji-ai/schema` | Neutral `Message`, `Model`, `Tool`, and `Skill` contracts | Shipped |
-| `@uji-ai/ai` | `Models`, provider adapters, credentials, OAuth, event streams | Shipped |
-| `@uji-ai/core` | Loop, `AgentHarness`, SQLite sessions, plugins, skills, compaction, hooks, workspace trust, and the seven tools: read, bash, edit, write, grep, find, ls | Shipped |
-| `@uji-ai/plugin` | `definePlugin` and the types a plugin file imports. The host lives in core | Shipped |
-| `@uji-ai/telemetry` | `TelemetryContext` on `Context`. `NOOP_TELEMETRY_CONTEXT` records nothing | Shipped |
-| `@uji-ai/ui` | Shared Base UI components in StyleX | Shipped |
-| `@uji-ai/tui` | The `uji` CLI: OpenTUI app, print mode, login, macOS Bun binary | Shipped |
-| `uji-ai` | Public npm package for the `uji` bin | Placeholder published |
-| `@uji-ai/demo-desktop` | Electron chat. Main process hosts the harness, renderer uses a preload API | Demo |
-| `@uji-ai/cli` | Print and chat CLI in `packages/demo/cli`. Not the product client | Demo |
-| `@uji-ai/demo-website` | TanStack Start marketing site. Does not run a harness | Demo |
-| `docs` | Fumadocs site in `packages/docs` | Shipped |
-| `@uji-ai/protocol`, `@uji-ai/server`, `@uji-ai/client`, `@uji-ai/util` | Names locked by the package map | Reserved, not built |
+Library and app packages are private to this workspace. `uji-ai` on npm reserves the `uji`
+bin. "Shipped" means the source is here and runs.
 
-Still unbuilt: the wire packages, a remote tool host, and a telemetry exporter. Compaction, hooks,
-plugins, and skills are in core. [Roadmap](./packages/docs/content/docs/roadmap.mdx) tracks the
-gaps.
+| Package | Description |
+| --- | --- |
+| **[@uji-ai/schema](packages/schema)** | Wire contracts: `Message`, `Model`, `Tool`, `Skill` |
+| **[@uji-ai/ai](packages/ai)** | Provider adapters, credentials, OAuth, model catalogs |
+| **[@uji-ai/core](packages/core)** | Loop, harness, session storage, plugins, skills, tools |
+| **[@uji-ai/plugin](packages/plugin)** | Plugin authoring surface; the host lives in core |
+| **[@uji-ai/telemetry](packages/telemetry)** | `TelemetryContext`; the default records nothing |
+| **[@uji-ai/ui](packages/ui)** | Shared Base UI components in StyleX |
+| **[@uji-ai/tui](packages/tui)** | The terminal client |
+| **[uji-ai](packages/cli)** | npm placeholder reserving the `uji` bin |
 
-## Setup
+## Development
 
-pnpm only. `pnpm-lock.yaml` and the root `packageManager` field are the pin. Do not generate
-`package-lock.json`. `mise.toml` pins Node 26 and Bun 1.3.14. `package.json` pins pnpm 11.22.0.
-`grep` and `find` shell out to `rg` on `PATH`.
+pnpm only. `mise.toml` pins Node 26 and Bun 1.3.14. `grep` and `find` shell out to `rg`.
 
 ```sh
 mise install
 pnpm install
-pnpm format
-pnpm lint
-pnpm typecheck
+pnpm format && pnpm lint && pnpm typecheck
+pnpm --dir packages/tui test
 ```
 
-## Terminal client
-
-The product CLI is `packages/tui`. Log in, then run. `pnpm start --help` prints usage and exits 0.
+Run from source:
 
 ```sh
-cd packages/tui
-pnpm start login
-pnpm start status
-pnpm start
-pnpm start --resume
-pnpm start --resume <session-id>
-pnpm start -p "summarize the files in packages/core/src"
-pnpm start -p --resume "now list what changed"
-echo "list the TypeScript files here" | pnpm start -p
-pnpm start logout
+pnpm --dir packages/tui start login
+pnpm --dir packages/tui start
 ```
 
-On macOS, `pnpm build:cli` from the repo root writes `bin/uji` with the TUI package version.
+The docs site lives in [packages/docs](packages/docs):
 
 ```sh
-pnpm build:cli
-./bin/uji --version
-./bin/uji
+cd packages/docs && pnpm dev    # http://localhost:3000
 ```
 
-`start` and `dev` run under Bun. Tests run under Node with `--experimental-ffi`.
-
-```sh
-cd packages/tui
-pnpm test
-node --experimental-ffi --test test/render.test.ts
-```
-
-`pnpm dev` writes a JSONL render log to `$UJI_HOME/logs`, default `~/.uji/logs`. A clean exit ends
-with `renderer_destroyed` and `render_log_closed`. Set `UJI_TUI_RENDER_LOG=/tmp/uji-tui.jsonl` to
-log a `pnpm start` run. The TUI checks GitHub Releases for a newer version in the
-background. `UJI_SKIP_VERSION_CHECK=1` or `UJI_OFFLINE=1` skips that request.
-
-### Commands
-
-| Command | Effect |
-| --- | --- |
-| `uji` | Open the full-screen TUI |
-| `uji login [provider]` | Log in, default provider `openai-codex` |
-| `uji logout [provider]` | Delete the stored credential |
-| `uji status` | Print `providerId: type` per credential, or `no stored credentials` |
-| `uji --version` | Print the package version |
-
-Registered providers: `openai-codex`, `openai`, `anthropic`, `opencode`, `opencode-go`.
-
-### Flags
-
-| Flag | Alias | Effect |
-| --- | --- | --- |
-| `--print` | `-p` | Stream one run to stdout and exit |
-| `--json` | | Emit JSONL on stdout |
-| `--quiet` | `-q` | Hide tool-start lines |
-| `--resume [<session-id>]` | `-c` | Open the newest session, or a session id in the TUI |
-| `--provider <id>` | | Override the saved provider |
-| `--model <id>` | | Override the saved model |
-| `--effort <level>` | | Set thinking level |
-
-`--effort` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Anything else fails
-before the harness opens: `Unknown effort: <value>. Use off, minimal, low, medium, high, xhigh, max`.
-
-`--json` and `--quiet` select print mode even without `-p`. A missing print prompt is read from
-stdin. Empty stdin prints usage and exits 1. Non-TTY stdout with a prompt, or piped stdin, also
-prints. In print mode, leftover argv after flags is the prompt, including after bare `--resume`.
-
-### Print mode
-
-Trust the workspace in the TUI first. Print mode does not prompt. An untrusted cwd fails with
-`Workspace is not trusted: <cwd>. Run \`uji\` interactively to trust it first.` No stored
-credential fails with `Couldn't find a stored credential. Run \`uji login\`.`
-
-Human output: text deltas on stdout, tool titles on stdout unless `--quiet`, errors on stderr as
-`error: <message>`. A finished run prints `session <id> · <provider> · <kind>` on stderr, then
-`resume with: uji -p --resume`.
-
-`--json` writes one JSON object per line on stdout and keeps diagnostics off that stream:
-
-```json
-{"type":"text","text":"…"}
-{"type":"tool","name":"bash","title":"…"}
-{"type":"result","session":"<id>","provider":"openai-codex","kind":"finished"}
-{"type":"error","message":"…"}
-```
-
-Ctrl-C exits 130. SIGTERM exits 143.
-
-### Trust, skills, plugins
-
-The TUI asks for workspace trust before it opens project plugins, skills, sessions, or tools. That
-is the only permission gate. After trust, tools run with the host process's access. No per-tool
-prompts.
-
-Skills are `SKILL.md` folders under project and user `.uji/skills`, `.agents/skills`, and
-`.claude/skills`. Type `/` in the composer, or `ctrl+k` for commands and `ctrl+s` for skills. Run
-`/<skill-name> [instructions]` to invoke one. `/reload` rebuilds both catalogs from disk.
-
-`/fast` comes from a host plugin the TUI preinstalls. The command appears only when the model
-advertises fast inference. The choice is stored per session and per provider. The `question` tool
-in `packages/plugin/examples` is opt-in. It is not part of the client and does not gate filesystem
-or shell tools.
-
-### Settings and keys
-
-| Key | Effect |
-| --- | --- |
-| `ctrl+p` | Cycle models |
-| `shift+tab` | Cycle thinking |
-| `ctrl+g` | Edit the draft in `externalEditor`, `$VISUAL`, or `$EDITOR` |
-| `/settings` | Edit model, thinking, auto-compaction, and transport under the transcript |
-
-Global settings: `$UJI_HOME/settings.json`, default `~/.uji/settings.json`. Trusted project
-overrides: `<cwd>/.uji/settings.json`. Project fields win. Nested `compaction` fields merge field
-by field.
-
-Resolution order for provider: `--provider`, project settings, global settings, then the first
-registered provider whose auth resolves. Cold start is `openai-codex`. Model: `--model`,
-`UJI_MODEL`, settings, then the provider default. OpenAI providers use `gpt-5.6-luna`. Thinking:
-`--effort`, `UJI_EFFORT`, settings, then `medium`.
-
-Credentials: `$UJI_HOME/auth.json`, default `~/.uji/auth.json`, mode `0600`. Sessions:
-`<cwd>/.uji/sessions.db`.
-
-## Demos
-
-Desktop lives in `packages/demo/desktop`. `src/main/uji-host.ts` opens `SqliteSessionRepo` and an
-`AgentHarness` per conversation, and runs ChatGPT OAuth. The renderer talks through
-`src/desktop-api.ts`. Uji, Draft, and Scout all run. No coding tools: `AgentHarness.create` gets a
-system-prompt plugin, not `createAllTools`. The preload API is this demo's IPC, not
-`@uji-ai/protocol`.
-
-`packages/demo/cli` is a second print and chat CLI on the same core. Use `packages/tui`.
-
-`packages/demo/website` is a marketing site. It does not import `@uji-ai/core`.
-
-```sh
-cd packages/demo/desktop
-pnpm dev                 # electron-vite; opens a desktop window, not a URL
-
-cd packages/demo/cli
-pnpm start
-
-cd packages/demo/website
-pnpm dev                 # http://127.0.0.1:5174
-```
-
-## Development
-
-```sh
-pnpm format       # check formatting
-pnpm format:fix   # write formatting fixes
-pnpm lint         # oxlint, type-aware via oxlint-tsgolint
-pnpm lint:fix     # write safe lint fixes
-pnpm typecheck    # turbo run typecheck
-```
-
-`packages/core`: `pnpm test` runs `node:test` files, then the loop suite under Vitest.
-
-No build step for the libraries. `@uji-ai/schema`, `@uji-ai/ai`, `@uji-ai/core`, `@uji-ai/plugin`,
-`@uji-ai/telemetry`, and `@uji-ai/ui` export TypeScript sources. Node 26 strips types at load.
-`pnpm typecheck` emits nothing. Demo apps and docs have `build` scripts because Vite, Electron, and
-Next need them.
-
-## Docs
-
-```sh
-cd packages/docs
-pnpm dev          # next dev, http://localhost:3000
-pnpm build        # next build
-```
-
-MDX lives under `packages/docs/content/docs`. Sidebar order is the two `meta.json` files: getting
-started, package pages, host-sdk, design, roadmap. The `core` section is `index`, `agent-loop`,
-`harness`, `session-storage`, `tools`, `stream-fn`, `recipes`.
+When a page and the source disagree, the source wins.

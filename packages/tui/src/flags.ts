@@ -1,17 +1,9 @@
 import process from "node:process";
 import { parseArgs } from "node:util";
+import { renderHelp } from "./cli-style.ts";
 
-export const USAGE = `usage:
-  uji                          open the full-screen TUI
-  uji --resume [<session-id>]  resume the latest or specified session
-  uji login [provider]         sign in (default: openai-codex)
-  uji logout [provider]        remove the stored credential
-  uji status                   list stored credentials
-  uji update [version|--check] install the latest release, a given one, or only check
-  uji --version                print the installed version
-  uji -p [--json] [--quiet] [--resume] [prompt]
-  A missing prompt is read from stdin.
-  flags: --provider <id> · --model <id> · --effort <level>`;
+/** The plain-text form of `--help`, also used for stderr usage messages. */
+export const USAGE = renderHelp(false);
 
 export type ResumeTarget = { kind: "new" } | { kind: "latest" } | { kind: "session"; id: string };
 
