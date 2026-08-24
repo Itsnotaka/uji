@@ -99,6 +99,7 @@ import {
 import type { SlashCommand } from "./slash.ts";
 import { appendAuthUrl, appendNote, ConversationTurnBlock, entryNote } from "./transcript.ts";
 import { THEME } from "./theme.ts";
+import { type Severity, updateSeverity } from "./cli-style.ts";
 import { describeUpdateOutcome, selfUpdate } from "./update.ts";
 import { checkForUpdate } from "./version.ts";
 import {
@@ -1199,15 +1200,19 @@ export async function runCommand(
   if (command === "update") {
     const outcome = await selfUpdate({
       ...(argument === "" ? {} : { version: argument }),
-      report: (line) => note(ui, line),
+      // A transcript note cannot rewrite itself, so percent events are dropped
+      // rather than stacking ten rows under one download.
+      report: (event) => {
+        if (event.kind === "downloading") note(ui, `Downloading ${event.asset}…`);
+        else if (event.kind === "verified") note(ui, "Checksum verified.");
+      },
     });
-    const color =
-      outcome.kind === "failed"
-        ? ui.transcript.theme.error
-        : outcome.kind === "unsupported"
-          ? ui.transcript.theme.warning
-          : undefined;
-    note(ui, describeUpdateOutcome(outcome), color);
+    const noteColor: Record<Severity, string | undefined> = {
+      ok: undefined,
+      warn: ui.transcript.theme.warning,
+      fail: ui.transcript.theme.error,
+    };
+    note(ui, describeUpdateOutcome(outcome), noteColor[updateSeverity(outcome)]);
     return;
   }
 

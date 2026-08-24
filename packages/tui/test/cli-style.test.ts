@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { columnWidth, fieldRow, isPercentLine, renderHelp, statusGlyph } from "../src/cli-style.ts";
+import { alignedRows, renderHelp, statusGlyph, updateSeverity } from "../src/cli-style.ts";
 import { USAGE } from "../src/flags.ts";
 
 void describe("cli-style", () => {
@@ -24,42 +24,41 @@ void describe("cli-style", () => {
     assert.equal(USAGE, renderHelp(false));
   });
 
-  void test("every help row aligns descriptions to one column", () => {
+  void test("commands and flags share one detail column", () => {
     const help = renderHelp(false);
     const probes = [
       "open the full-screen TUI",
-      "sign in (default: openai-codex)",
       "list stored credentials",
       "print the installed version",
+      "override the saved provider",
+      "set thinking level",
     ];
     const columns = new Set(
-      probes.map((description) => {
-        const at = help.indexOf(description);
-        assert.ok(at > 0, `${description} missing from help`);
+      probes.map((detail) => {
+        const at = help.indexOf(detail);
+        assert.ok(at > 0, `${detail} missing from help`);
         return at - (help.lastIndexOf("\n", at) + 1);
       }),
     );
     assert.equal(columns.size, 1);
   });
 
-  void test("fieldRow pads the label column and prefixes the glyph", () => {
-    assert.equal(fieldRow("ab", "x", 4, false), "  ab    x");
-    assert.equal(fieldRow("ab", "x", 4, false, "✓"), "✓ ab    x");
-    assert.equal(fieldRow("abcd", "x", 2, false), "  abcd  x");
+  void test("aligned rows hug the longest label by default", () => {
+    assert.deepEqual(
+      alignedRows(
+        [
+          { label: "ab", detail: "x" },
+          { label: "abcd", detail: "y" },
+        ],
+        false,
+      ),
+      ["  ab    x", "  abcd  y"],
+    );
   });
 
-  void test("columnWidth takes the longest label", () => {
-    assert.equal(columnWidth(["a", "abc", "ab"]), 3);
-    assert.equal(columnWidth([]), 0);
-  });
-
-  void test("percent progress lines are recognized exactly", () => {
-    assert.equal(isPercentLine("45%"), true);
-    assert.equal(isPercentLine("  0%"), true);
-    assert.equal(isPercentLine("100%"), true);
-    assert.equal(isPercentLine("45"), false);
-    assert.equal(isPercentLine("45% done"), false);
-    assert.equal(isPercentLine("Downloading x.tar.gz …"), false);
+  void test("an explicit width pins the column and a detail-less row is just its label", () => {
+    assert.deepEqual(alignedRows([{ label: "ab", detail: "x" }], false, 6), ["  ab      x"]);
+    assert.deepEqual(alignedRows([{ label: "uji -p", detail: "" }], false), ["  uji -p"]);
   });
 
   void test("status glyphs carry the semantic color", () => {
@@ -67,5 +66,12 @@ void describe("cli-style", () => {
     assert.equal(statusGlyph("warn", false), "●");
     assert.equal(statusGlyph("fail", false), "✗");
     assert.equal(statusGlyph("ok", true), `${esc}[32m✓${esc}[0m`);
+  });
+
+  void test("every update outcome has a severity", () => {
+    assert.equal(updateSeverity({ kind: "updated", from: "0.0.1", to: "0.0.2", path: "/x" }), "ok");
+    assert.equal(updateSeverity({ kind: "current", version: "0.0.2" }), "ok");
+    assert.equal(updateSeverity({ kind: "unsupported", reason: "from source" }), "warn");
+    assert.equal(updateSeverity({ kind: "failed", message: "boom" }), "fail");
   });
 });

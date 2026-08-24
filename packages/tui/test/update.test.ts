@@ -13,6 +13,7 @@ import {
   releaseAssetName,
   resolveUpdateTarget,
   selfUpdate,
+  type UpdateProgress,
 } from "../src/update.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -143,17 +144,22 @@ void describe("selfUpdate", () => {
         return serve === undefined ? new Response("", { status: 404 }) : serve();
       };
 
-      const lines: string[] = [];
+      const events: UpdateProgress[] = [];
       const outcome = await selfUpdate({
         version: "9.9.9",
         binaryPath: binary,
         fetchFn,
-        report: (line) => lines.push(line),
+        report: (event) => events.push(event),
       });
       assert.deepEqual(outcome, { kind: "updated", from: VERSION, to: "9.9.9", path: binary });
       assert.equal(await readFile(binary, "utf8"), "#!/bin/sh\necho new\n");
-      assert.equal(lines[0], `Downloading ${String(asset)}.tar.gz …`);
-      assert.equal(lines.at(-1), "Checksum ok.");
+      assert.deepEqual(events[0], { kind: "downloading", asset: `${String(asset)}.tar.gz` });
+      assert.deepEqual(events.at(-1), { kind: "verified" });
+      // Percent events carry numbers, so no client parses a progress string.
+      for (const event of events.slice(1, -1)) {
+        assert.equal(event.kind, "percent");
+        assert.equal(typeof (event.kind === "percent" ? event.percent : undefined), "number");
+      }
 
       served.set(`${String(asset)}.tar.gz.sha256`, () => new Response(`${"0".repeat(64)}  x\n`));
       await writeFile(binary, "#!/bin/sh\necho kept\n", { mode: 0o755 });

@@ -29,11 +29,21 @@ export type UpdateOutcome =
   | { kind: "unsupported"; reason: string }
   | { kind: "failed"; message: string };
 
+/**
+ * What the update is doing, as data. Clients word it: the CLI paints a
+ * rewritten percent row, the TUI keeps one transcript note. Reporting prose
+ * from here forced both to parse strings back into intent.
+ */
+export type UpdateProgress =
+  | { kind: "downloading"; asset: string }
+  | { kind: "percent"; percent: number }
+  | { kind: "verified" };
+
 export interface UpdateOptions {
   /** Install this release instead of the newest one. A leading `v` is fine. */
   version?: string;
-  /** Progress lines, one at a time, in the order they happen. */
-  report?: (line: string) => void;
+  /** Progress events, one at a time, in the order they happen. */
+  report?: (event: UpdateProgress) => void;
   fetchFn?: typeof globalThis.fetch;
   /** The binary to replace. Defaults to the running compiled binary. */
   binaryPath?: string;
@@ -159,7 +169,7 @@ export async function selfUpdate(options: UpdateOptions = {}): Promise<UpdateOut
   const workDir = await mkdtemp(join(tmpdir(), "uji-update-"));
   const staged = join(dirname(binaryPath), `.uji-update-${String(process.pid)}`);
   try {
-    report(`Downloading ${asset}.tar.gz …`);
+    report({ kind: "downloading", asset: `${asset}.tar.gz` });
     const expected = parseSha256(await fetchText(fetchFn, `${base}/${asset}.tar.gz.sha256`));
     if (expected === undefined) {
       return { kind: "failed", message: `The checksum file for ${asset} is malformed.` };
@@ -171,7 +181,7 @@ export async function selfUpdate(options: UpdateOptions = {}): Promise<UpdateOut
       const percent = Math.floor((got / total) * 10) * 10;
       if (percent > lastPercent && percent < 100) {
         lastPercent = percent;
-        report(`  ${String(percent)}%`);
+        report({ kind: "percent", percent });
       }
     });
     if (actual !== expected) {
@@ -180,7 +190,7 @@ export async function selfUpdate(options: UpdateOptions = {}): Promise<UpdateOut
         message: `Checksum mismatch for ${asset}.tar.gz: expected ${expected}, got ${actual}.`,
       };
     }
-    report("Checksum ok.");
+    report({ kind: "verified" });
 
     await execFileAsync("tar", ["-xzf", archive, "-C", workDir]);
     const extracted = join(workDir, "uji");

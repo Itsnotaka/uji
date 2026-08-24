@@ -1,143 +1,143 @@
 /**
  * Styling for the command surface outside the TUI: help, login, logout,
- * status, update, errors. Every builder takes an explicit `color` flag so
- * tests assert against plain strings; the exported wrappers read the real
- * terminal state lazily. Piped or redirected output stays unstyled, so
- * scripts keep parsing bare text.
+ * status, update, errors. Builders take an explicit `color` flag so tests
+ * assert plain strings; the thin wrappers read the terminal lazily. Piped or
+ * redirected output stays unstyled, so scripts keep parsing bare text.
  */
 import process from "node:process";
 import { GLYPHS } from "./constants.ts";
+import type { UpdateOutcome } from "./update.ts";
 import { VERSION } from "./version.ts";
 
 /** True only for an interactive terminal that has not opted out of color. */
-export function ansiEnabled(stream: { isTTY?: boolean } = process.stdout): boolean {
-  if (stream.isTTY !== true) return false;
+export function ansiEnabled(): boolean {
+  if (process.stdout.isTTY !== true) return false;
   const noColor = process.env["NO_COLOR"];
   if (noColor !== undefined && noColor !== "") return false;
   return process.env["CI"] !== "true";
 }
 
-const RESET = "\x1b[0m";
+const SGR = { bold: "1", dim: "2", red: "31", green: "32", yellow: "33", cyan: "36" } as const;
+type SgrCode = (typeof SGR)[keyof typeof SGR];
 
-function paint(enabled: boolean, code: string, text: string): string {
-  return enabled ? `\x1b[${code}m${text}${RESET}` : text;
+function paint(enabled: boolean, code: SgrCode, text: string): string {
+  return enabled ? `\x1b[${code}m${text}\x1b[0m` : text;
 }
 
 export function bold(text: string): string {
-  return paint(ansiEnabled(), "1", text);
+  return paint(ansiEnabled(), SGR.bold, text);
 }
 
 export function dim(text: string): string {
-  return paint(ansiEnabled(), "2", text);
-}
-
-export function green(text: string): string {
-  return paint(ansiEnabled(), "32", text);
-}
-
-export function yellow(text: string): string {
-  return paint(ansiEnabled(), "33", text);
-}
-
-export function red(text: string): string {
-  return paint(ansiEnabled(), "31", text);
+  return paint(ansiEnabled(), SGR.dim, text);
 }
 
 export function cyan(text: string): string {
-  return paint(ansiEnabled(), "36", text);
+  return paint(ansiEnabled(), SGR.cyan, text);
+}
+
+/** How a finished step reads. One vocabulary for glyphs, colors, and exit codes. */
+export type Severity = "ok" | "warn" | "fail";
+
+const SEVERITY_STYLE: Readonly<Record<Severity, { glyph: string; code: SgrCode }>> = {
+  ok: { glyph: GLYPHS.check, code: SGR.green },
+  warn: { glyph: GLYPHS.bullet, code: SGR.yellow },
+  fail: { glyph: GLYPHS.cross, code: SGR.red },
+};
+
+/** The gutter glyph for a finished step: ✓ done, ● needs attention, ✗ failed. */
+export function statusGlyph(severity: Severity, color: boolean): string {
+  const { glyph, code } = SEVERITY_STYLE[severity];
+  return paint(color, code, glyph);
 }
 
 /**
- * One help row: the command column is padded to a fixed width so every
- * description starts on the same column, whatever the terminal.
+ * How an update outcome reads. The switch is exhaustive, so a new
+ * `UpdateOutcome` variant fails the build here instead of silently
+ * rendering as a failure.
  */
-export interface HelpRow {
-  command: string;
-  description: string;
+export function updateSeverity(outcome: UpdateOutcome): Severity {
+  switch (outcome.kind) {
+    case "updated":
+    case "current":
+      return "ok";
+    case "unsupported":
+      return "warn";
+    case "failed":
+      return "fail";
+    default: {
+      const exhaustive: never = outcome;
+      return exhaustive;
+    }
+  }
 }
 
-const HELP_COMMAND_WIDTH = 31;
-
-function helpRowSpecs(): readonly HelpRow[] {
-  return [
-    { command: "uji", description: "open the full-screen TUI" },
-    {
-      command: "uji --resume [<session-id>]",
-      description: "resume the latest or specified session",
-    },
-    { command: "uji login [provider]", description: "sign in (default: openai-codex)" },
-    { command: "uji logout [provider]", description: "remove the stored credential" },
-    { command: "uji status", description: "list stored credentials" },
-    {
-      command: "uji update [version|--check]",
-      description: "install the latest release, a given one, or only check",
-    },
-    { command: "uji --version", description: "print the installed version" },
-    { command: "uji -p [--json] [--quiet] [--resume] [prompt]", description: "" },
-  ];
+export interface AlignedRow {
+  label: string;
+  detail: string;
 }
 
-function renderHelpRow(row: HelpRow, color: boolean): string {
-  const spaces = " ".repeat(Math.max(0, HELP_COMMAND_WIDTH - row.command.length));
-  const styled = paint(color, "1", row.command) + spaces;
-  if (row.description === "") return `  ${styled}`;
-  return `  ${styled}${paint(color, "2", row.description)}`;
+/** Two spaces between the label column and the detail column. */
+const COLUMN_GAP = 2;
+
+/**
+ * `label  detail` rows sharing one detail column. `width` pins that column
+ * across sections that must line up with each other; by default it hugs the
+ * longest label. A row with no detail is just its label.
+ */
+export function alignedRows(
+  rows: readonly AlignedRow[],
+  color: boolean,
+  width = rows.reduce((max, row) => Math.max(max, row.label.length), 0),
+): string[] {
+  return rows.map(({ label, detail }) => {
+    const styled = paint(color, SGR.bold, label);
+    if (detail === "") return `  ${styled}`;
+    const pad = " ".repeat(Math.max(0, width - label.length) + COLUMN_GAP);
+    return `  ${styled}${pad}${paint(color, SGR.dim, detail)}`;
+  });
 }
+
+/** Widest command label in the help screen, so both sections share a column. */
+const HELP_LABEL_WIDTH = 29;
+
+const HELP_COMMANDS: readonly AlignedRow[] = [
+  { label: "uji", detail: "open the full-screen TUI" },
+  { label: "uji --resume [<session-id>]", detail: "resume the latest or specified session" },
+  { label: "uji login [provider]", detail: "sign in (default: openai-codex)" },
+  { label: "uji logout [provider]", detail: "remove the stored credential" },
+  { label: "uji status", detail: "list stored credentials" },
+  {
+    label: "uji update [version|--check]",
+    detail: "install the latest release, a given one, or only check",
+  },
+  { label: "uji --version", detail: "print the installed version" },
+  { label: "uji -p [--json] [--quiet] [--resume] [prompt]", detail: "" },
+];
+
+const HELP_FLAGS: readonly AlignedRow[] = [
+  { label: "--provider <id>", detail: "override the saved provider" },
+  { label: "--model <id>", detail: "override the saved model" },
+  { label: "--effort <level>", detail: "set thinking level" },
+];
 
 /**
  * The `--help` screen. Colored on a TTY, plain otherwise; the plain form is
- * what lands in stderr usage messages, so it must read fine without color.
+ * what `USAGE` sends to stderr, so it must read fine without color.
  */
 export function renderHelp(color: boolean = ansiEnabled()): string {
-  const head = `${paint(color, "1", "uji")} ${paint(color, "2", `v${VERSION} · durable agent sessions in your terminal`)}`;
-  const lines = [
-    head,
+  return [
+    `${paint(color, SGR.bold, "uji")} ${paint(color, SGR.dim, `v${VERSION} · durable agent sessions in your terminal`)}`,
     "",
-    `  ${paint(color, "2", "usage:")}`,
-    `  ${paint(color, "1", "uji")} ${paint(color, "2", "[command] [flags]")}`,
+    `  ${paint(color, SGR.dim, "usage:")}`,
+    `  ${paint(color, SGR.bold, "uji")} ${paint(color, SGR.dim, "[command] [flags]")}`,
     "",
-    `  ${paint(color, "2", "commands:")}`,
-    ...helpRowSpecs().map((row) => renderHelpRow(row, color)),
+    `  ${paint(color, SGR.dim, "commands:")}`,
+    ...alignedRows(HELP_COMMANDS, color, HELP_LABEL_WIDTH),
     "",
-    `  ${paint(color, "2", "flags:")}`,
-    renderHelpRow(
-      { command: "--provider <id>", description: "override the saved provider" },
-      color,
-    ),
-    renderHelpRow({ command: "--model <id>", description: "override the saved model" }, color),
-    renderHelpRow({ command: "--effort <level>", description: "set thinking level" }, color),
+    `  ${paint(color, SGR.dim, "flags:")}`,
+    ...alignedRows(HELP_FLAGS, color, HELP_LABEL_WIDTH),
     "",
-    `  ${paint(color, "2", "a missing -p prompt is read from stdin")}`,
-  ];
-  return lines.join("\n");
-}
-
-/** Width of the widest label, so detail columns start on one column. */
-export function columnWidth(labels: readonly string[]): number {
-  return labels.reduce((max, label) => Math.max(max, label.length), 0);
-}
-
-/** One aligned `label  detail` row; `glyph` prefixes the line when given. */
-export function fieldRow(
-  label: string,
-  detail: string,
-  width: number,
-  color: boolean,
-  glyph = "",
-): string {
-  const pad = " ".repeat(Math.max(0, width - label.length));
-  const lead = glyph === "" ? "  " : `${glyph} `;
-  return `${lead}${paint(color, "1", label)}${pad}  ${paint(color, "2", detail)}`;
-}
-
-/** `45%` progress lines collapse into one rewritten TTY row instead of a stack. */
-export function isPercentLine(line: string): boolean {
-  return /^\d{1,3}%$/u.test(line.trim());
-}
-
-/** A finished step in the gutter-glyph vocabulary: ✓ done, ! warning, ✗ failure. */
-export function statusGlyph(kind: "ok" | "warn" | "fail", color: boolean): string {
-  if (kind === "ok") return paint(color, "32", GLYPHS.check);
-  if (kind === "warn") return paint(color, "33", GLYPHS.bullet);
-  return paint(color, "31", GLYPHS.cross);
+    `  ${paint(color, SGR.dim, "a missing -p prompt is read from stdin")}`,
+  ].join("\n");
 }
