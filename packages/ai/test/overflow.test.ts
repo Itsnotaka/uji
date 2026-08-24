@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { AssistantMessage } from "@june/schema";
+import type { AssistantMessage } from "@uji-ai/schema";
 import { isContextOverflow, isRecoverableLength } from "../src/utils/overflow.ts";
 
 function createErrorMessage(errorMessage: string): AssistantMessage {

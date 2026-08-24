@@ -75,6 +75,7 @@ export class SlashAutocomplete {
   private readonly completeDirectories: SlashAutocompleteOptions["completeDirectories"];
   private commandSignature = commandsSignature(SLASH_COMMANDS);
   private files: readonly MentionFile[] = [];
+  private cwd: string | undefined;
   private suggestions: readonly AutocompleteSuggestion[] = [];
   private mentionStart = 0;
   private hasMatches = false;
@@ -132,12 +133,21 @@ export class SlashAutocomplete {
     value: string,
     commands: readonly SlashCommand[] = SLASH_COMMANDS,
     files: readonly MentionFile[] = EMPTY_MENTION_FILES,
+    cwd?: string,
   ): void {
     const signature = commandsSignature(commands);
-    if (value === this.value && signature === this.commandSignature && files === this.files) return;
+    if (
+      value === this.value &&
+      signature === this.commandSignature &&
+      files === this.files &&
+      cwd === this.cwd
+    ) {
+      return;
+    }
     this.value = value;
     this.commandSignature = signature;
     this.files = files;
+    this.cwd = cwd;
     const generation = ++this.directoryGeneration;
 
     const slash = slashSuggestions(value, commands);
@@ -157,7 +167,7 @@ export class SlashAutocomplete {
       return;
     }
 
-    const mention = fileMentionSuggestions(value, files);
+    const mention = fileMentionSuggestions(value, files, cwd);
     if (mention === undefined) {
       this.close();
       return;
@@ -165,7 +175,7 @@ export class SlashAutocomplete {
     if (this.dismissed) return;
     this.mentionStart = mention.query.start;
     this.suggestions = mention.files.map((file) => ({ kind: "file", file }));
-    this.renderSuggestions("no matching files");
+    this.renderSuggestions("no matching files or folders");
   }
 
   handleKey(key: KeyEvent): boolean {

@@ -2,12 +2,12 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/test/context-estimate.test.ts
  * Synced with pi 7ebf9087e.
  *
- * June divergence: the `buildBaseOptions(model, context).maxTokens` assertion is
+ * Uji divergence: the `buildBaseOptions(model, context).maxTokens` assertion is
  * omitted; `api/simple-options.ts` is ported with the adapters, not the utils.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { AssistantMessage, Context, Usage } from "@june/schema";
+import type { AssistantMessage, Context, Usage } from "@uji-ai/schema";
 import { estimateContextTokens } from "../src/utils/estimate.ts";
 
 function createUsage(totalTokens: number): Usage {

@@ -2,7 +2,7 @@ import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu
 import * as stylex from "@stylexjs/stylex";
 import type * as React from "react";
 
-import { mergeStyleProps, type XStyle } from "@june/ui/style";
+import { mergeStyleProps, type XStyle } from "@uji-ai/ui/style";
 import { menuStyles } from "./dropdown-menu.tsx";
 
 type StyledProps<Props> = Omit<Props, "className" | "style"> & {

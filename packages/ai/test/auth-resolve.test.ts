@@ -2,7 +2,7 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/test/models-runtime.test.ts
  * Synced with pi 7ebf9087e.
  * The auth-resolution cases of pi's Models runtime suite, run against
- * resolveProviderAuth directly (June has no Models collection yet).
+ * resolveProviderAuth directly (Uji has no Models collection yet).
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";

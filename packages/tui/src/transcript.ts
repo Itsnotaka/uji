@@ -23,6 +23,7 @@ import type {
   ImageContent,
   UserMessage,
 } from "@uji-ai/schema";
+import type { CustomEntry, ProvisionedEntry, Turn, TurnPart } from "@uji-ai/core";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -45,9 +46,6 @@ import {
   spinnerFrame,
   type OutputDiff,
   type ToolCallSummary,
-  type TranscriptItem,
-  type TranscriptTurnPart,
-  type TranscriptUserPart,
 } from "./format.ts";
 import {
   ACTIVITY_FAILED_LABEL,
@@ -173,15 +171,8 @@ export interface Transcript {
   /** Working directory of the harness whose entries are being rendered. */
   cwd?: string;
   nextId: (prefix?: string) => string;
-  onUserMessage?: (message: TranscriptUserMessage) => void;
   openPath?: (path: string) => void;
 }
-
-export type TranscriptUserMessage = TranscriptUserPart;
-
-export type UserBlockSource =
-  | { kind: "live"; content: UserMessage["content"] }
-  | { kind: "stored"; message: TranscriptUserMessage };
 
 function section(
   transcript: Transcript,
@@ -274,158 +265,140 @@ function userText(theme: CliTheme, text: string): StyledText {
   return new StyledText([fg(theme.user)(`${GLYPHS.prompt} `), fg(theme.foreground)(text)]);
 }
 
-/** A user turn with clickable file tags, expandable image previews, and message actions. */
-export class UserBlock {
-  private readonly transcript: Transcript;
-  private readonly box: BoxRenderable;
-  private message: TranscriptUserMessage | undefined;
-  private pressedAt: { x: number; y: number } | undefined;
+/**
+ * A pasted wall of text is a fact about the turn, not the turn itself, so
+ * anything past the composer's paste threshold arrives folded to a preview
+ * with a tag that toggles the rest. Same click, same tag chrome as an image.
+ */
+function addUserText(transcript: Transcript, block: BoxRenderable, text: string): void {
+  const lines = text.split("\n");
+  const folded = lines.length > PASTE_COLLAPSE_LINES;
+  const preview = lines.slice(0, PASTE_PREVIEW_LINES).join("\n");
+  const body = new TextRenderable(transcript.renderer, {
+    id: transcript.nextId("user-text"),
+    content: userText(transcript.theme, folded ? preview : text),
+    wrapMode: "word",
+    selectionBg: transcript.theme.selectionBackground,
+    selectionFg: transcript.theme.selectionForeground,
+  });
+  block.add(body);
+  if (!folded) return;
 
-  constructor(transcript: Transcript, source: UserBlockSource, parent?: Renderable) {
-    this.transcript = transcript;
-    this.message = source.kind === "stored" ? source.message : undefined;
-    const content = source.kind === "stored" ? source.message.content : source.content;
-    const presentation = userPresentation(content);
-    this.box = section(
-      transcript,
-      "user",
-      {
-        backgroundColor: transcript.theme.userBackground,
-        marginTop: parent === undefined ? SPACING.block : 0,
-        paddingTop: 1,
-        paddingBottom: 1,
-      },
-      parent,
-    );
-    this.box.onMouseDown = (event) => {
-      if (event.button === 0) this.pressedAt = { x: event.x, y: event.y };
-    };
-    this.box.onMouseUp = (event) => {
-      const clicked =
-        event.button === 0 && this.pressedAt?.x === event.x && this.pressedAt.y === event.y;
-      this.pressedAt = undefined;
-      if (!clicked || this.message === undefined || transcript.onUserMessage === undefined) return;
-      event.preventDefault();
-      event.stopPropagation();
-      transcript.renderer.clearSelection();
-      transcript.onUserMessage(this.message);
-    };
-
-    if (presentation.text !== "") this.addText(presentation.text);
-
-    const tags = new BoxRenderable(transcript.renderer, {
-      id: transcript.nextId("user-attachments"),
-      flexDirection: "row",
-      flexWrap: "wrap",
-      gap: 1,
-      visible: presentation.files.length + presentation.images.length > 0,
-      marginTop: presentation.text === "" ? 0 : 1,
-    });
-    this.box.add(tags);
-    for (const file of presentation.files) this.addFileTag(tags, file);
-    for (const [index, image] of presentation.images.entries()) {
-      this.addImageTag(tags, image, index + 1);
-    }
-  }
-
-  setMessage(message: TranscriptUserMessage): void {
-    this.message = message;
-  }
-
-  /**
-   * A pasted wall of text is a fact about the turn, not the turn itself, so
-   * anything past the composer's paste threshold arrives folded to a preview
-   * with a tag that toggles the rest. Same click, same tag chrome as an image.
-   */
-  private addText(text: string): void {
-    const { transcript } = this;
-    const lines = text.split("\n");
-    const folded = lines.length > PASTE_COLLAPSE_LINES;
-    const preview = lines.slice(0, PASTE_PREVIEW_LINES).join("\n");
-    const body = new TextRenderable(transcript.renderer, {
-      id: transcript.nextId("user-text"),
-      content: userText(transcript.theme, folded ? preview : text),
-      wrapMode: "word",
-      selectionBg: transcript.theme.selectionBackground,
-      selectionFg: transcript.theme.selectionForeground,
-    });
-    this.box.add(body);
-    if (!folded) return;
-
-    const hidden = lines.length - PASTE_PREVIEW_LINES;
-    let expanded = false;
-    collapsedTag(this.transcript, this.box, {
-      id: "user-paste-toggle",
-      marginTop: 1,
-      label: () => (expanded ? " fewer lines " : ` +${String(hidden)} lines `),
-      onToggle: () => {
-        expanded = !expanded;
-        body.content = userText(transcript.theme, expanded ? text : preview);
-      },
-    });
-  }
-
-  /**
-   * A file the turn carried. When the composer inlined the body, the tag opens
-   * it in place, the same gesture as an image or a fold; without a body there
-   * is nothing to show, so the click falls back to opening the real file.
-   */
-  private addFileTag(tags: BoxRenderable, file: PresentedFile): void {
-    const { path, text } = file;
-    if (text === undefined) {
-      collapsedTag(this.transcript, tags, {
-        id: "file-tag",
-        url: pathToFileURL(path).href,
-        label: () => ` File ${basename(path)} `,
-        onToggle: () => this.transcript.openPath?.(path),
-      });
-      return;
-    }
-    const body = new CodeRenderable(this.transcript.renderer, {
-      id: this.transcript.nextId("file-body"),
-      content: text,
-      filetype: pathToFiletype(path) ?? undefined,
-      syntaxStyle: this.transcript.syntaxStyle,
-      onChunks: shikiChunks(this.transcript.theme),
-      visible: false,
-      marginTop: 1,
-      selectionBg: this.transcript.theme.selectionBackground,
-      selectionFg: this.transcript.theme.selectionForeground,
-    });
-    let open = false;
-    collapsedTag(this.transcript, tags, {
-      id: "file-tag",
-      url: pathToFileURL(path).href,
-      label: () =>
-        ` File ${basename(path)}${open ? "" : ` +${String(pasteLineCount(text))} lines`} `,
-      onToggle: () => {
-        open = !open;
-        body.visible = open;
-      },
-    });
-    this.box.add(body);
-  }
-
-  private addImageTag(tags: BoxRenderable, image: ImageContent, index: number): void {
-    const preview = collapsedImagePreview(this.transcript, image);
-    collapsedTag(this.transcript, tags, {
-      id: "image-tag",
-      label: () => ` Image ${String(index)} `,
-      onToggle: () => {
-        preview.visible = !preview.visible;
-        if (preview.visible) preview.onSizeChange?.();
-      },
-    });
-    this.box.add(preview);
-  }
+  const hidden = lines.length - PASTE_PREVIEW_LINES;
+  let expanded = false;
+  collapsedTag(transcript, block, {
+    id: "user-paste-toggle",
+    marginTop: 1,
+    label: () => (expanded ? " fewer lines " : ` +${String(hidden)} lines `),
+    onToggle: () => {
+      expanded = !expanded;
+      body.content = userText(transcript.theme, expanded ? text : preview);
+    },
+  });
 }
 
+/**
+ * A file the turn carried. When the composer inlined the body, the tag opens
+ * it in place, the same gesture as an image or a fold; without a body there
+ * is nothing to show, so the click falls back to opening the real file.
+ */
+function addFileTag(
+  transcript: Transcript,
+  block: BoxRenderable,
+  tags: BoxRenderable,
+  file: PresentedFile,
+): void {
+  const { path, text } = file;
+  if (text === undefined) {
+    collapsedTag(transcript, tags, {
+      id: "file-tag",
+      url: pathToFileURL(path).href,
+      label: () => ` File ${basename(path)} `,
+      onToggle: () => transcript.openPath?.(path),
+    });
+    return;
+  }
+  const body = new CodeRenderable(transcript.renderer, {
+    id: transcript.nextId("file-body"),
+    content: text,
+    filetype: pathToFiletype(path) ?? undefined,
+    syntaxStyle: transcript.syntaxStyle,
+    onChunks: shikiChunks(transcript.theme),
+    visible: false,
+    marginTop: 1,
+    selectionBg: transcript.theme.selectionBackground,
+    selectionFg: transcript.theme.selectionForeground,
+  });
+  let open = false;
+  collapsedTag(transcript, tags, {
+    id: "file-tag",
+    url: pathToFileURL(path).href,
+    label: () => ` File ${basename(path)}${open ? "" : ` +${String(pasteLineCount(text))} lines`} `,
+    onToggle: () => {
+      open = !open;
+      body.visible = open;
+    },
+  });
+  block.add(body);
+}
+
+function addImageTag(
+  transcript: Transcript,
+  block: BoxRenderable,
+  tags: BoxRenderable,
+  image: ImageContent,
+  index: number,
+): void {
+  const preview = collapsedImagePreview(transcript, image);
+  collapsedTag(transcript, tags, {
+    id: "image-tag",
+    label: () => ` Image ${String(index)} `,
+    onToggle: () => {
+      preview.visible = !preview.visible;
+      if (preview.visible) preview.onSizeChange?.();
+    },
+  });
+  block.add(preview);
+}
+
+/**
+ * A user turn: what was typed, then a row of tags for what it carried. Those
+ * tags are the only mouse targets. The message itself does nothing on a click,
+ * because taking a turn back is `esc esc` and moving the head is `/tree`, and a
+ * pointer that happens to rest on a message is neither request.
+ */
 export function appendUser(
   transcript: Transcript,
-  source: UserBlockSource,
+  content: UserMessage["content"],
   parent?: Renderable,
-): UserBlock {
-  return new UserBlock(transcript, source, parent);
+): void {
+  const presentation = userPresentation(content);
+  const block = section(
+    transcript,
+    "user",
+    {
+      backgroundColor: transcript.theme.userBackground,
+      marginTop: parent === undefined ? SPACING.block : 0,
+      paddingTop: 1,
+      paddingBottom: 1,
+    },
+    parent,
+  );
+  if (presentation.text !== "") addUserText(transcript, block, presentation.text);
+
+  const tags = new BoxRenderable(transcript.renderer, {
+    id: transcript.nextId("user-attachments"),
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 1,
+    visible: presentation.files.length + presentation.images.length > 0,
+    marginTop: presentation.text === "" ? 0 : 1,
+  });
+  block.add(tags);
+  for (const file of presentation.files) addFileTag(transcript, block, tags, file);
+  for (const [index, image] of presentation.images.entries()) {
+    addImageTag(transcript, block, tags, image, index + 1);
+  }
 }
 
 /** A short one-line note: session info, command output, errors. */
@@ -435,7 +408,7 @@ export function appendNote(
   color?: string,
   parent?: Renderable,
   before?: Renderable,
-): void {
+): BoxRenderable {
   const box = section(transcript, "note", {}, parent, before);
   box.add(
     new TextRenderable(transcript.renderer, {
@@ -445,6 +418,49 @@ export function appendNote(
       wrapMode: "word",
     }),
   );
+  return box;
+}
+
+/** Temporary queue feedback which disappears once core consumes or cancels the steer. */
+export class PendingSteeringStatus {
+  private readonly transcript: Transcript;
+  private pending = new Set<string>();
+  private readonly notes = new Map<string, BoxRenderable>();
+
+  constructor(transcript: Transcript) {
+    this.transcript = transcript;
+  }
+
+  sync(entryIds: readonly string[]): void {
+    this.pending = new Set(entryIds);
+    for (const entryId of this.notes.keys()) {
+      if (!this.pending.has(entryId)) this.remove(entryId);
+    }
+  }
+
+  show(entryId: string, text: string): void {
+    if (!this.pending.has(entryId)) return;
+    this.remove(entryId);
+    this.notes.set(entryId, appendNote(this.transcript, `Steering: ${text}`));
+  }
+
+  resolve(entryId: string): void {
+    this.pending.delete(entryId);
+    this.remove(entryId);
+  }
+
+  clear(): void {
+    this.pending.clear();
+    for (const entryId of this.notes.keys()) this.remove(entryId);
+  }
+
+  private remove(entryId: string): void {
+    const note = this.notes.get(entryId);
+    if (note === undefined) return;
+    this.notes.delete(entryId);
+    note.parent?.remove(note);
+    if (!note.isDestroyed) note.destroyRecursively();
+  }
 }
 
 /** A restored compaction checkpoint, kept dim so old context reads as history. */
@@ -456,6 +472,9 @@ export function appendCompaction(
   before?: Renderable,
 ): void {
   const { theme } = transcript;
+  const preview = previewLines(summary, 40);
+  const visibleSummary =
+    preview.omitted === 0 ? preview.text : `${preview.text}\n${omittedLabel(preview.omitted)}`;
   const card = new BoxRenderable(transcript.renderer, {
     id: transcript.nextId("compaction"),
     flexDirection: "column",
@@ -476,11 +495,11 @@ export function appendCompaction(
       wrapMode: "word",
     }),
   );
-  if (summary !== "") {
+  if (visibleSummary !== "") {
     card.add(
       new TextRenderable(transcript.renderer, {
         id: transcript.nextId("compaction-summary"),
-        content: summary,
+        content: visibleSummary,
         fg: theme.dim,
         wrapMode: "word",
       }),
@@ -574,6 +593,7 @@ class TurnSection extends BoxRenderable {
 
 /** Streamed assistant markdown owned by one conversation turn. */
 class AssistantPartBlock {
+  private readonly box: BoxRenderable;
   private readonly markdown: MarkdownRenderable;
   private readonly renderer: CliRenderer;
   private buffer = "";
@@ -587,7 +607,7 @@ class AssistantPartBlock {
     streaming = true,
     before?: Renderable,
   ) {
-    const box = section(transcript, "assistant", {}, parent, before);
+    this.box = section(transcript, "assistant", {}, parent, before);
     this.buffer = initial;
     this.renderer = transcript.renderer;
     this.markdown = new MarkdownRenderable(transcript.renderer, {
@@ -600,16 +620,19 @@ class AssistantPartBlock {
     this.markdown.onSizeChange = () => {
       if (this.settled) this.renderDiagram();
     };
-    box.add(this.markdown);
+    this.box.add(this.markdown);
+    this.showWhenFilled();
   }
 
   append(delta: string): void {
     this.buffer += delta;
+    this.showWhenFilled();
     if (!hasIncompleteHeadingPrefix(this.buffer)) this.markdown.content = this.buffer;
   }
 
   set(text: string): void {
     this.buffer = text;
+    this.showWhenFilled();
     this.renderDiagram(true);
   }
 
@@ -619,8 +642,18 @@ class AssistantPartBlock {
    */
   finish(): void {
     this.settled = true;
+    this.showWhenFilled();
     this.renderDiagram(true);
     this.markdown.streaming = false;
+  }
+
+  /**
+   * A part that carries only whitespace draws nothing but would still claim
+   * its block margin, which breaks the one-blank-row rhythm between blocks.
+   * Hidden boxes leave the flex layout, so the gap stays even.
+   */
+  private showWhenFilled(): void {
+    this.box.visible = this.buffer.trim() !== "";
   }
 
   private renderDiagram(force = false): void {
@@ -706,13 +739,15 @@ class ActivityBlock {
 
 /** Streamed reasoning content that settles to a static Thought block. */
 class ReasoningBlock {
+  private readonly box: BoxRenderable;
   private readonly heading: TextRenderable;
   private readonly markdown: MarkdownRenderable;
   private buffer = "";
   private finished = false;
 
   constructor(transcript: Transcript, parent: TurnSection, before: Renderable) {
-    const box = section(transcript, "thinking", {}, parent, before);
+    this.box = section(transcript, "thinking", {}, parent, before);
+    this.box.visible = false;
     this.heading = new TextRenderable(transcript.renderer, {
       id: transcript.nextId("thinking-heading"),
       content: "",
@@ -727,30 +762,38 @@ class ReasoningBlock {
       internalBlockMode: "top-level",
       fg: transcript.theme.dim,
     });
-    box.add(this.heading);
-    box.add(this.markdown);
+    this.box.add(this.heading);
+    this.box.add(this.markdown);
   }
 
   append(delta: string): void {
     this.buffer += delta;
+    this.showWhenFilled();
     const content = this.preview();
     if (!hasIncompleteHeadingPrefix(content)) this.markdown.content = content;
   }
 
   set(text: string): void {
     this.buffer = text;
+    this.showWhenFilled();
     this.markdown.content = this.preview();
   }
 
+  /** A blank thought earns neither a heading nor the row its block would take. */
   finish(theme: CliTheme): void {
     if (this.finished) return;
     this.finished = true;
+    this.showWhenFilled();
     this.heading.content = new StyledText([
       fg(theme.thinking)(`${GLYPHS.diamond}${ACTIVITY_THOUGHT_LABEL}`),
     ]);
-    this.heading.visible = true;
+    this.heading.visible = this.box.visible;
     this.markdown.content = this.preview();
     this.markdown.streaming = false;
+  }
+
+  private showWhenFilled(): void {
+    this.box.visible = this.buffer.trim() !== "";
   }
 
   private preview(): string {
@@ -1024,7 +1067,6 @@ export class ConversationTurnBlock {
   private readonly assistants = new Map<string, AssistantPartBlock>();
   private readonly tools = new Map<string, ToolCard>();
   private activity: ActivityBlock | undefined;
-  private user: UserBlock | undefined;
   private step = 0;
   private outcome: "completed" | "aborted" | "failed" = "completed";
 
@@ -1038,14 +1080,9 @@ export class ConversationTurnBlock {
     this.step += 1;
   }
 
-  addUser(source: UserBlockSource): UserBlock {
-    this.user = appendUser(this.transcript, source, this.root);
+  addUser(content: UserMessage["content"]): void {
+    appendUser(this.transcript, content, this.root);
     this.ensureWorking();
-    return this.user;
-  }
-
-  setUserMessage(message: TranscriptUserMessage): void {
-    this.user?.setMessage(message);
   }
 
   updateAssistant(event: AssistantMessageEvent): void {
@@ -1161,10 +1198,10 @@ export class ConversationTurnBlock {
     card.complete(text, options);
   }
 
-  addStoredPart(part: TranscriptTurnPart): void {
+  addStoredPart(part: TurnPart): void {
     switch (part.kind) {
       case "user":
-        this.addUser({ kind: "stored", message: part });
+        this.addUser(part.content);
         break;
       case "thinking": {
         const block = new ReasoningBlock(this.transcript, this.root, this.contentAnchor());
@@ -1190,10 +1227,10 @@ export class ConversationTurnBlock {
           this.contentAnchor(),
         );
         this.tools.set(part.callId, card);
-        if (part.output !== undefined) {
-          card.complete(part.output, {
-            isError: part.isError,
-            details: part.details,
+        if (part.result !== undefined) {
+          card.complete(part.result.output, {
+            isError: part.result.isError,
+            details: part.result.details,
           });
         }
         break;
@@ -1201,15 +1238,10 @@ export class ConversationTurnBlock {
       case "note":
         appendNote(this.transcript, part.text, undefined, this.root, this.contentAnchor());
         break;
-      case "compaction":
-        appendCompaction(
-          this.transcript,
-          part.summary,
-          part.tokensBefore,
-          this.root,
-          this.contentAnchor(),
-        );
-        break;
+      default: {
+        const _exhaustive: never = part;
+        return _exhaustive;
+      }
     }
   }
 
@@ -1269,7 +1301,7 @@ export class ConversationTurnBlock {
 /** Render restored turns with the same owner the live path uses. */
 export function renderItems(
   transcript: Transcript,
-  items: readonly TranscriptItem[],
+  items: readonly Turn[],
   options: { openLastTurn?: boolean } = {},
 ): ConversationTurnBlock | undefined {
   let lastTurnIndex = -1;
@@ -1291,13 +1323,46 @@ export function renderItems(
         else turn.settle(item.outcome);
         break;
       }
-      case "note":
-        appendNote(transcript, item.text);
-        break;
       case "compaction":
-        appendCompaction(transcript, item.summary, item.tokensBefore);
+        appendCompaction(transcript, item.entry.summary, item.entry.tokensBefore);
         break;
+      case "model_change":
+      case "custom": {
+        const text = entryNote(item.entry);
+        if (text !== undefined) appendNote(transcript, text);
+        break;
+      }
+      default: {
+        const _exhaustive: never = item;
+        return _exhaustive;
+      }
     }
   }
   return openTurn;
+}
+
+/**
+ * The line an entry draws on its own. A client that claims an entry before it
+ * reaches the session draws the same text a reload would have produced.
+ */
+export function entryNote(entry: ProvisionedEntry): string | undefined {
+  if (entry.type === "model_change") return `Model → ${entry.modelId}`;
+  if (entry.type === "custom") return customEntryNote(entry);
+  return undefined;
+}
+
+function customEntryNote(entry: ProvisionedEntry<CustomEntry>): string | undefined {
+  const { data } = entry;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+  if (
+    entry.customType === "provider_change" &&
+    "providerId" in data &&
+    typeof data.providerId === "string"
+  ) {
+    return `Provider → ${data.providerId}`;
+  }
+  if (entry.customType === "cwd_change" && "cwd" in data && typeof data.cwd === "string") {
+    return `Directory → ${data.cwd}`;
+  }
+  return undefined;
 }

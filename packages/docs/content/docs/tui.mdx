@@ -4,7 +4,7 @@ description: The uji terminal client. Print mode, login, and the full-screen TUI
 icon: IconConsole
 ---
 
-`@uji-ai/tui` is the in-repo terminal client. It runs from source. `packages/tui/src/index.ts` is the entry: `login`, `logout`, `status`, `-p` print mode, and the interactive TUI.
+`@uji-ai/tui` is the in-repo terminal client. It runs from source. `packages/tui/src/index.ts` is the entry: `login`, `logout`, `status`, `update`, `-p` print mode, and the interactive TUI. `update` (and `/update` in the TUI) self-replaces a compiled binary from GitHub Releases after verifying the sha256; from a source checkout it says so and does nothing.
 
 ```bash title="packages/tui"
 pnpm --dir packages/tui start

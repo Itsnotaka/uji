@@ -2,13 +2,13 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/test/deferred-tools.test.ts
  * Synced with pi 7ebf9087e.
  *
- * June divergence: only the estimate test is here. The payload-capture tests go
+ * Uji divergence: only the estimate test is here. The payload-capture tests go
  * through the adapters (`streamSimple`, `convertMessages`) and belong with them.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { Type } from "typebox";
-import type { AssistantMessage, Tool, ToolResultMessage, UserMessage } from "@june/schema";
+import type { AssistantMessage, Tool, ToolResultMessage, UserMessage } from "@uji-ai/schema";
 import { estimateContextTokens } from "../src/utils/estimate.ts";
 
 function makeTool(name: string): Tool {

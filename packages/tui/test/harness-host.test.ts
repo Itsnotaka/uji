@@ -13,14 +13,13 @@ function unused(member: string): () => never {
   };
 }
 
-/** Fill in the write-once fields the storage owns, so a double can honour `appendEntry`. */
+/** Fill in the write-once fields the storage owns, so a double can honour `appendEntries`. */
 function storedEntry(entry: ProvisionedEntry, seq: number): Entry {
   return { ...entry, seq, parentId: null, timestamp: 0 };
 }
 
 function fakeSession(overrides: Partial<FakeSession> = {}): FakeSession {
   return {
-    appendEntry: unused("appendEntry"),
     appendEntries: unused("appendEntries"),
     close: () => Promise.resolve(),
     ...overrides,
@@ -30,10 +29,6 @@ function fakeSession(overrides: Partial<FakeSession> = {}): FakeSession {
 /** Record every entry the host writes and hand back what the storage would have stored. */
 function recordingSession(entries: ProvisionedEntry[], onClose?: () => void): FakeSession {
   return fakeSession({
-    appendEntry: (entry) => {
-      entries.push(entry);
-      return Promise.resolve(storedEntry(entry, entries.length));
-    },
     appendEntries: (batch) => {
       const stored = batch.map((entry) => {
         entries.push(entry);
@@ -257,6 +252,77 @@ void describe("HarnessHost", () => {
       id: entries[0]?.id,
       thinkingLevel: "high",
     });
+  });
+
+  void test("keeps a binding whose key survives the replacement", async () => {
+    const entries: ProvisionedEntry[] = [];
+    const session = recordingSession(entries);
+    const oldHarness = fakeHarness({ session });
+    // The replacement reads the same session, so a session-keyed binding holds.
+    const nextHarness = fakeHarness({ session, thinkingLevel: "high" });
+    const makeHarness: FakeCreateHarness = () =>
+      Promise.resolve({ harness: nextHarness, suspended: [] });
+    const host = new HarnessHost<HostedHarness, HostedRuntime>({
+      harness: oldHarness,
+      runtime: fakeRuntime("provider"),
+      sessionId: "session-1",
+      cwd: "/repo",
+      createHarness: makeHarness,
+    });
+    let bound = 0;
+    let unbound = 0;
+    let rebound = 0;
+    const stopSessionBinding = host.bind(
+      () => {
+        bound += 1;
+        return () => {
+          unbound += 1;
+        };
+      },
+      { dependsOn: (harness) => harness.session },
+    );
+    const stopHarnessBinding = host.bind(() => {
+      rebound += 1;
+      return () => undefined;
+    });
+
+    assert.equal(await host.changeThinkingLevel("high"), true);
+    assert.equal(bound, 1);
+    assert.equal(unbound, 0);
+    assert.equal(rebound, 2);
+
+    stopSessionBinding();
+    stopHarnessBinding();
+    assert.equal(unbound, 1);
+  });
+
+  void test("offers transition entries for claiming before they reach the session", async () => {
+    const entries: ProvisionedEntry[] = [];
+    const claimed: string[] = [];
+    const session = recordingSession(entries);
+    const oldHarness = fakeHarness({ session });
+    const nextHarness = fakeHarness({ session, model: "next-model" });
+    const makeHarness: FakeCreateHarness = () =>
+      Promise.resolve({ harness: nextHarness, suspended: [] });
+    const host = new HarnessHost<HostedHarness, HostedRuntime>({
+      harness: oldHarness,
+      runtime: fakeRuntime("provider"),
+      sessionId: "session-1",
+      cwd: "/repo",
+      createHarness: makeHarness,
+      beforeAppend: (batch) => {
+        for (const entry of batch) claimed.push(entry.type);
+        // Nothing is written yet: the client always gets the first look.
+        assert.equal(entries.length, 0);
+      },
+    });
+
+    assert.equal(await host.switchRuntime(fakeRuntime("other"), "next-model"), true);
+    assert.deepEqual(claimed, ["custom", "model_change"]);
+    assert.deepEqual(
+      entries.map((entry) => entry.type),
+      ["custom", "model_change"],
+    );
   });
 
   void test("serializes replacement transitions in invocation order", async () => {

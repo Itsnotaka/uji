@@ -1,11 +1,12 @@
 ---
 title: Stream function
-description: Bind the provider-neutral agent loop to an @june/ai Models runtime
+description: Bind the provider-neutral agent loop to an @uji-ai/ai Models runtime
+icon: IconStreaming
 ---
 
-`StreamFn` is the only model boundary in `@june/core`:
+`StreamFn` is the only model boundary in `@uji-ai/core`:
 
-```ts
+```ts title="StreamFn"
 type StreamFn = (
   model: Model<Api>,
   context: Context,
@@ -14,16 +15,16 @@ type StreamFn = (
 ```
 
 The loop owns turn and tool sequencing. The stream function owns one provider request. It receives the
-selected model, the neutral conversation context, and request options, then returns the canonical assistant
-event stream. Provider-specific request and response shapes stay inside `@june/ai`.
+selected model, the neutral conversation context, and request options, then returns the assistant
+event stream. Provider-specific request and response shapes stay inside `@uji-ai/ai`.
 
 ## Bind `Models.streamSimple`
 
 `Models.streamSimple` already satisfies the contract and applies provider auth before dispatch. A host registers
 the providers it supports, selects a concrete `Model<Api>`, and injects a small closure:
 
-```ts
-import { createModels, FileCredentialStore, openaiCodexProvider } from "@june/ai";
+```ts title="bind.ts"
+import { createModels, FileCredentialStore, openaiCodexProvider } from "@uji-ai/ai";
 
 const models = createModels({ credentials: new FileCredentialStore() });
 models.setProvider(openaiCodexProvider());
@@ -50,18 +51,10 @@ A stream reports request failures through its terminal event and final `Assistan
 `Models.streamSimple` and the bundled provider adapters implement this contract. A custom stream function must
 do the same.
 
-## Default stream function
+## Explicit stream function
 
-Low-level callers may install a process-wide fallback:
-
-```ts
-import { setDefaultStreamFn } from "@june/core";
-
-setDefaultStreamFn(streamFn);
-```
-
-Application hosts should normally inject `streamFn` explicitly so model runtime ownership is visible at the
-composition root.
+Pass `streamFn` to `runAgentLoop`, `runAgentLoopContinue`, or `AgentHarness.create`. Core keeps no global
+stream registry, so the host that owns the model runtime is visible at the composition root.
 
 ## Session-scoped options
 

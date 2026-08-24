@@ -1,10 +1,10 @@
 import { loader } from "fumadocs-core/source";
 import type { LoaderPlugin } from "fumadocs-core/source";
-import * as centralIcons from "central-icons";
 import { createElement } from "react";
 import { docsContentRoute, docsImageRoute, docsRoute } from "./shared";
 import { defineDocs } from "fumadocs-mdx/macro";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
+import { isDocsIconName, docsIcons } from "./docs-icons";
 
 const docs = defineDocs({
   dir: "content/docs",
@@ -28,24 +28,22 @@ const docs = defineDocs({
  * Names are the package's own, e.g. `IconPackage`, `IconConsole`.
  */
 function centralIconsPlugin(): LoaderPlugin {
-  const icons = centralIcons as unknown as Record<string, React.ComponentType>;
-
   function replaceIcon<T extends { icon?: unknown }>(node: T): T {
     if (typeof node.icon !== "string") return node;
 
-    const Icon = icons[node.icon];
-    if (!Icon) {
+    if (!isDocsIconName(node.icon)) {
       console.warn(`[central-icons-plugin] Unknown icon: ${node.icon}`);
       node.icon = undefined;
       return node;
     }
 
-    node.icon = createElement(Icon);
+    const Icon = docsIcons[node.icon];
+    node.icon = createElement(Icon, { size: 16 });
     return node;
   }
 
   return {
-    name: "june:central-icons",
+    name: "uji:central-icons",
     transformPageTree: {
       file: replaceIcon,
       folder: replaceIcon,

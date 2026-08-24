@@ -1,116 +1,87 @@
 @import "tailwindcss";
-/* Declares the full --color-fd-* surface, including the diff/callout statics
-   the preset's utilities depend on. */
-@import "fumadocs-ui/css/lib/default-colors.css";
+@import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 
 /*
- * June.
+ * Native Fumadocs 16 theme for /docs. Surfaces, borders, and primary come from
+ * fumadocs-ui/css/neutral.css — do not remap --color-fd-* here.
  *
- * This file re-points the Fumadocs colour tokens and the two font stacks, and
- * stops there. The layouts, sidebar, TOC, and page chrome are stock Fumadocs
- * on purpose: overriding them means re-fixing them on every upgrade.
- *
- * The colour roles are taken directly from Grok Bot's compiled StyleX theme:
- * base/subtle/elevated surfaces, alpha borders and fills, primary/secondary
- * text, and separate text/fill accents. `pnpm colors:audit` checks every hex
- * against the installed app.asar instead of relying on an eyeballed match.
- *
- * Two faces. Inter sets prose. Berkeley Mono sets anything a machine produced
- * or a person will copy — code, data columns, diagrams — plus labels.
- *
- * The values below mirror src/lib/brand.ts, which is what /branding renders.
+ * Landing (/) keeps its own palette and page system below. Those tokens never
+ * override Fumadocs chrome.
  */
 
 @theme {
-  --color-june-paper: #fcfcfc;
-  --color-june-surface: #f7f7f7;
-  --color-june-elevated: #fcfcfc;
-  --color-june-fill: #77777717;
-  --color-june-selection: #7777772b;
-  --color-june-rule: #14141426;
-  --color-june-faint: #14141466;
-  --color-june-muted: #14141499;
-  --color-june-ink: #141414;
-  --color-june-signal: #0c64c1;
-  --color-june-signal-fill: #1084fe;
-  --color-june-shadow-control: #0000001f;
-  --color-june-shadow-ambient: #00000014;
-  --color-june-shadow-key: #0000000f;
-  --color-june-shadow-ring: #e4e4e40a;
-
-  --color-fd-background: var(--color-june-paper);
-  --color-fd-foreground: var(--color-june-ink);
-  --color-fd-muted: var(--color-june-surface);
-  --color-fd-muted-foreground: var(--color-june-muted);
-  --color-fd-popover: var(--color-june-elevated);
-  --color-fd-popover-foreground: var(--color-june-ink);
-  --color-fd-card: var(--color-june-elevated);
-  --color-fd-card-foreground: var(--color-june-ink);
-  --color-fd-border: var(--color-june-rule);
-  --color-fd-primary: var(--color-june-signal);
-  --color-fd-primary-foreground: var(--color-june-paper);
-  --color-fd-secondary: var(--color-june-fill);
-  --color-fd-secondary-foreground: var(--color-june-ink);
-  --color-fd-accent: var(--color-june-selection);
-  --color-fd-accent-foreground: var(--color-june-ink);
-  --color-fd-ring: var(--color-june-signal-fill);
-
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-berkeley-mono), ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
 
-  --june-page: 1200px;
-  --june-gutter: clamp(1.25rem, 5vw, 4.5rem);
-  --radius-june-control: 8px;
-  --radius-june-panel: 10px;
-  --ease-june: cubic-bezier(0.22, 1, 0.36, 1);
+  --color-uji-paper: #fcfcfc;
+  --color-uji-surface: #f7f7f7;
+  --color-uji-elevated: #fcfcfc;
+  --color-uji-fill: #77777717;
+  --color-uji-selection: #7777772b;
+  --color-uji-rule: #14141426;
+  --color-uji-faint: #14141466;
+  --color-uji-muted: #14141499;
+  --color-uji-ink: #141414;
+  --color-uji-signal: #0c64c1;
+  --color-uji-signal-fill: #1084fe;
+
+  --color-cog-bg: #eeeeee;
+  --color-cog-menu: #dedede;
+  --color-cog-hover: #d0d0d0;
+  --color-cog-ink: #262626;
+  --color-cog-dim: #767676;
+  --color-cog-rule: #a5a5a533;
+  --color-cog-rule-tick: #a5a5a5;
+  --color-cog-accent: #2f64d2;
+  --color-cog-wash: #26262608;
+  --color-cog-mark: #26262614;
+  --color-cog-green: #378e23;
+  --color-cog-amber: #c3691e;
+  --color-cog-violet: #7d4bc6;
+  --color-cog-cyan: #0082aa;
+  --color-cog-gold: #a27612;
+
+  --cog-page: 1440px;
+  --cog-gutter: 20px;
+  --cog-section: 96px;
 }
 
-/* `default-colors.css` re-declares every --color-fd-* under .dark, so the whole
-   mapping is restated here rather than inherited from the @theme block. */
 .dark {
-  --color-june-paper: #070707;
-  --color-june-surface: #111111;
-  --color-june-elevated: #181818;
-  --color-june-fill: #7777772c;
-  --color-june-selection: #77777752;
-  --color-june-rule: #fcfcfc26;
-  --color-june-faint: #fcfcfc66;
-  --color-june-muted: #fcfcfc99;
-  --color-june-ink: #fcfcfc;
-  --color-june-signal: #80befe;
-  --color-june-signal-fill: #1084fe;
-  --color-june-shadow-control: #00000000;
-  --color-june-shadow-ambient: #00000000;
-  --color-june-shadow-key: #00000000;
-  --color-june-shadow-ring: #e4e4e400;
+  --color-uji-paper: #070707;
+  --color-uji-surface: #111111;
+  --color-uji-elevated: #181818;
+  --color-uji-fill: #7777772c;
+  --color-uji-selection: #77777752;
+  --color-uji-rule: #fcfcfc26;
+  --color-uji-faint: #fcfcfc66;
+  --color-uji-muted: #fcfcfc99;
+  --color-uji-ink: #fcfcfc;
+  --color-uji-signal: #80befe;
+  --color-uji-signal-fill: #1084fe;
 
-  --color-fd-background: var(--color-june-paper);
-  --color-fd-foreground: var(--color-june-ink);
-  --color-fd-muted: var(--color-june-surface);
-  --color-fd-muted-foreground: var(--color-june-muted);
-  --color-fd-popover: var(--color-june-elevated);
-  --color-fd-popover-foreground: var(--color-june-ink);
-  --color-fd-card: var(--color-june-elevated);
-  --color-fd-card-foreground: var(--color-june-ink);
-  --color-fd-border: var(--color-june-rule);
-  --color-fd-primary: var(--color-june-signal);
-  --color-fd-primary-foreground: var(--color-june-paper);
-  --color-fd-secondary: var(--color-june-fill);
-  --color-fd-secondary-foreground: var(--color-june-ink);
-  --color-fd-accent: var(--color-june-selection);
-  --color-fd-accent-foreground: var(--color-june-ink);
-  --color-fd-ring: var(--color-june-signal-fill);
+  --color-cog-bg: #141414;
+  --color-cog-menu: #242424;
+  --color-cog-hover: #2c2c2c;
+  --color-cog-ink: #e1e1e1;
+  --color-cog-dim: #6c6c6c;
+  --color-cog-rule: #58585899;
+  --color-cog-rule-tick: #585858;
+  --color-cog-accent: #7aa2f7;
+  --color-cog-wash: #e1e1e10a;
+  --color-cog-mark: #e1e1e114;
+  --color-cog-green: #9ece6a;
+  --color-cog-amber: #ff9e64;
+  --color-cog-violet: #bb9af7;
+  --color-cog-cyan: #7dcfff;
+  --color-cog-gold: #e0af68;
 }
-
-/* ---------------------------------------------------------------- base --- */
 
 html {
   scrollbar-gutter: stable;
 }
 
 body {
-  /* Grayscale antialiasing: thinner, crisper light text on macOS. */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -120,140 +91,261 @@ html > body[data-scroll-locked] {
   --removed-body-scroll-bar-size: 0px !important;
 }
 
-/* Code blocks: no ligatures, narrow tabs. */
 .shiki {
   font-variant-ligatures: none;
   tab-size: 2;
 }
 
-/* Tailwind preflight routes code/kbd/pre through --font-mono, but the
-   typography plugin restyles inline code; pin the stack so both match. */
 .prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
   font-family: var(--font-mono);
 }
 
-/* -------------------------------------------------------------- mermaid --- */
+.uji-mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
 
-.june-mermaid svg {
+.fd-mermaid svg {
   margin-inline: auto;
   height: auto;
   max-width: 100%;
 }
 
-/* Mermaid draws square corners; match the radius of the surrounding surfaces. */
-.june-mermaid .node rect,
-.june-mermaid .node polygon {
-  rx: 6px;
-  ry: 6px;
-}
-
-.june-mermaid .cluster rect {
-  rx: 10px;
-  ry: 10px;
-}
-
-/* ------------------------------------------------ marketing pages only --- */
-
 /*
- * Used by / and /branding, which are hand-built pages rather than Fumadocs
- * layouts. Nothing here touches the docs chrome.
+ * Docs type is a step smaller than stock Fumadocs. Landing is outside
+ * #nd-docs-layout and is not affected.
  */
-
-.june-display {
-  font-size: clamp(2.5rem, 6vw, 4.25rem);
-  line-height: 1.03;
-  font-weight: 600;
-  letter-spacing: -0.035em;
-  text-wrap: balance;
+#nd-docs-layout .prose {
+  font-size: 0.9375rem;
+  line-height: 1.65;
 }
 
-.june-section {
-  font-size: 1.5rem;
-  line-height: 1.22;
-  font-weight: 600;
-  letter-spacing: -0.022em;
-  text-wrap: balance;
+#nd-docs-layout .prose :where(h2) {
+  font-size: 1.125rem;
 }
 
-.june-subsection {
-  font-size: 1.1875rem;
-  line-height: 1.35;
-  font-weight: 600;
-  letter-spacing: -0.014em;
+#nd-docs-layout .prose :where(h3) {
+  font-size: 1.05rem;
 }
 
-/* Labels are the mono face, not a second sans weight: uppercase, tracked out. */
-.june-label {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  line-height: 1;
+#nd-docs-layout .prose :where(h4) {
+  font-size: 1rem;
+}
+
+#nd-sidebar a,
+#nd-sidebar button {
+  font-size: 0.8125rem;
+}
+
+/* ------------------------------------------------------- landing page --- */
+
+.cog-page {
+  background-color: var(--color-cog-bg);
+  color: var(--color-cog-ink);
+  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+}
+
+@media (min-width: 768px) {
+  .cog-page {
+    --cog-gutter: 64px;
+    --cog-section: 180px;
+  }
+}
+
+.cog-container {
+  margin-inline: auto;
+  width: 100%;
+  max-width: var(--cog-page);
+  padding-inline: var(--cog-gutter);
+}
+
+.cog-grid {
+  display: grid;
+  grid-template-columns: repeat(15, minmax(0, 1fr));
+  gap: 0;
+}
+
+.cog-line {
+  position: relative;
+  border-left: 1px solid var(--color-cog-rule);
+}
+
+.cog-line-end {
+  border-right: 1px solid var(--color-cog-rule);
+}
+
+.cog-line::before,
+.cog-line-end::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 14px;
+  background-color: var(--color-cog-rule-tick);
+}
+
+.cog-line::before {
+  left: -1px;
+}
+
+.cog-line-end::after {
+  right: -1px;
+}
+
+.cog-subgrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 0;
+}
+
+@media (max-width: 767px) {
+  .cog-line:not(.cog-line-edge) {
+    border-left-color: transparent;
+  }
+
+  .cog-line:not(.cog-line-edge)::before {
+    display: none;
+  }
+}
+
+.cog-display {
+  font-size: clamp(1.75rem, 1.1rem + 2.2vw, 2.25rem);
+  line-height: 1.1;
   font-weight: 400;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
 }
 
-.june-mono {
+.cog-heading {
+  font-size: 1.25rem;
+  line-height: 1.3;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.cog-ui {
+  font-size: 0.9375rem;
+  line-height: 1.3;
+  font-weight: 400;
+}
+
+.cog-prose {
+  font-family: var(--font-newsreader), Georgia, serif;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+.cog-copy > p + p {
+  margin-top: 1.5rem;
+}
+
+.cog-num {
   font-family: var(--font-mono);
+  font-size: 0.625rem;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  color: var(--color-cog-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.cog-mono {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
   font-variant-ligatures: none;
 }
 
-/*
- * Grok's inline elevation: two shadow layers and a hairline ring in light
- * mode, all explicitly transparent in dark mode.
- */
-.june-raised {
-  box-shadow:
-    0 4px 12px -1px var(--color-june-shadow-ambient),
-    0 2px 4px -2px var(--color-june-shadow-key),
-    0 0 0 1px var(--color-june-shadow-ring);
+.cog-cite {
+  background-color: var(--color-cog-mark);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  box-decoration-break: clone;
+  transition: color 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-@media (hover: hover) {
-  .june-raised-interactive:hover {
-    background-color: var(--color-june-selection);
-  }
+.cog-cite:hover {
+  color: var(--color-cog-accent);
+}
 
-  .june-ghost:hover {
-    background-color: var(--color-june-fill);
+.cog-btn {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid currentColor;
+  padding: 0.25rem 0.5rem 0.3125rem;
+  user-select: none;
+  transition:
+    background-color 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.cog-btn:hover {
+  background-color: var(--color-cog-ink);
+  color: var(--color-cog-bg);
+}
+
+.cog-btn-solid {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-cog-ink);
+  background-color: var(--color-cog-ink);
+  color: var(--color-cog-bg);
+  padding: 0.25rem 0.625rem 0.3125rem;
+  transition:
+    background-color 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.cog-btn-solid:hover {
+  background-color: transparent;
+  color: var(--color-cog-ink);
+}
+
+.cog-page :focus-visible {
+  outline: 2px solid var(--color-cog-accent);
+  outline-offset: 2px;
+}
+
+@media (min-width: 768px) {
+  .cog-bleed-left {
+    margin-left: -25%;
+    width: 125%;
   }
 }
 
-.june-outlined {
-  outline: 1px solid var(--color-june-rule);
-  outline-offset: -1px;
+.cog-rail {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  scroll-behavior: smooth;
 }
 
-@keyframes june-rise {
-  from {
-    opacity: 0;
-    transform: translateY(0.5rem);
-    filter: blur(3px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-    filter: blur(0);
-  }
+.cog-rail::-webkit-scrollbar {
+  display: none;
 }
 
-/* Each element carries --stagger; the delay is derived from it, so the hero
-   arrives in sequence rather than as one block. Runs once, on load. */
-.june-rise {
-  animation: june-rise 620ms var(--ease-june) both;
-  animation-delay: calc(var(--stagger, 0) * 70ms);
+.cog-rail-card {
+  flex: 0 0 83.333%;
+  scroll-snap-align: start;
+  margin-right: 0.5rem;
+}
+
+@media (min-width: 768px) {
+  .cog-rail-card {
+    flex: 0 0 calc(4 / 15 * 100%);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .june-rise {
-    animation: none;
+  .cog-rail {
+    scroll-behavior: auto;
   }
 
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+  .cog-cite,
+  .cog-btn,
+  .cog-btn-solid {
+    transition: none;
   }
 }

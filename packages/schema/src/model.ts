@@ -8,15 +8,29 @@
  * Synced with pi 7ebf9087e.
  */
 
+/** Ordered low→high; the single source of truth for every thinking-level union. */
+export const MODEL_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 /** Reasoning effort actually sent on the wire. */
-export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ThinkingLevel = Exclude<ModelThinkingLevel, "off">;
 /** What a model or lane is configured to: a level, or reasoning off. */
-export type ModelThinkingLevel = "off" | ThinkingLevel;
+export type ModelThinkingLevel = (typeof MODEL_THINKING_LEVELS)[number];
 /**
  * Maps thinking levels to provider/model-specific values.
  * Missing keys use provider defaults. `null` marks a level as unsupported.
  */
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
+
+/** Request modes that a model explicitly supports. */
+export const MODEL_MODES = ["fast"] as const;
+export type ModelMode = (typeof MODEL_MODES)[number];
 
 export type KnownApi =
   | "openai-completions"
@@ -374,6 +388,8 @@ export interface Model<TApi extends Api> {
   provider: ProviderId;
   baseUrl: string;
   reasoning: boolean;
+  /** Provider-backed request modes available for this exact model. */
+  modes?: ModelMode[];
   /**
    * Maps pi thinking levels to provider/model-specific values.
    * Missing keys use provider defaults. null marks a level as unsupported.

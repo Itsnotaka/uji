@@ -1,15 +1,16 @@
 ---
 title: Tools
-description: The AgentTool contract and a field-level reference for the seven built-in coding tools in @june/core
+description: The AgentTool contract and a field-level reference for the seven built-in coding tools in @uji-ai/core
+icon: IconHammer
 ---
 
 import { TypeTable } from "fumadocs-ui/components/type-table";
 
-A tool is a plain object. `@june/core` does not have a tool registry, a decorator, or a builder: you construct an object that satisfies `AgentTool`, put it in an array, and hand the array to the agent loop or the harness. The seven built-in coding tools are factory functions that return exactly that shape.
+A tool is a plain object. `@uji-ai/core` does not have a tool registry, a decorator, or a builder: you construct an object that satisfies `AgentTool`, put it in an array, and hand the array to the agent loop or the harness. The seven built-in coding tools are factory functions that return exactly that shape.
 
 ## The AgentTool contract
 
-`AgentTool<TParams, TDetails>` is declared in `packages/core/src/types.ts` and re-exported from `@june/core`.
+`AgentTool<TParams, TDetails>` is declared in `packages/core/src/types.ts` and re-exported from `@uji-ai/core`.
 
 <TypeTable
   type={{
@@ -85,7 +86,7 @@ Do not put an error string in `content` and return normally. The loop wraps `exe
 The example below is a complete tool: a JSON Schema `parameters` object, hand-written argument validation, a typed `details` payload, one `onUpdate` call, and a throw on bad input.
 
 ```ts title="word-count-tool.ts"
-import { toolResultContent, type AgentTool, type AgentToolResult } from "@june/core";
+import { toolResultContent, type AgentTool, type AgentToolResult } from "@uji-ai/core";
 
 export interface WordCountDetails {
   words: number;
@@ -168,7 +169,7 @@ Four factories build tools. Membership differs between them; the tables are exha
 `ToolName` is `"read" | "bash" | "edit" | "write" | "grep" | "find" | "ls"`, and `allToolNames` is a `Set<ToolName>` holding all seven. `ToolsOptions` is a bag with one optional key per tool (`read`, `bash`, `write`, `edit`, `grep`, `find`, `ls`), each holding that tool's own options type.
 
 ```ts title="build-tools.ts"
-import { createAllTools, createTool, type ToolsOptions } from "@june/core";
+import { createAllTools, createTool, type ToolsOptions } from "@uji-ai/core";
 
 const options: ToolsOptions = {
   bash: { commandPrefix: "set -euo pipefail" },
@@ -218,7 +219,7 @@ Every tool's `label` equals its `name`.
 | `FindToolOptions` | `operations?: FindOperations` (`exists`, `glob`)                                     |
 | `BashToolOptions` | `operations?: BashOperations` (`exec`), `commandPrefix?`, `shellPath?`, `spawnHook?` |
 
-`edit` and `write` take no options: they use the local filesystem directly. June's direction is to grow one `ExecutionEnv` effects boundary instead of separate `operations` interfaces for each tool. `bash`'s `BashOperations` (the stand-in for `env.executeShell`) and the read-only `ls`/`grep`/`find` seams remain. `ImageProcessor` is the injectable image conversion/resizing hook (`(bytes, mimeType, { autoResizeImages }) => data/mimeType/hints or a failure message`); image processing needs native dependencies, which stay out of core.
+`edit` and `write` take no options: they use the local filesystem directly. Uji's direction is to grow one `ExecutionEnv` effects boundary instead of separate `operations` interfaces for each tool. `bash`'s `BashOperations` (the stand-in for `env.executeShell`) and the read-only `ls`/`grep`/`find` seams remain. `ImageProcessor` is the injectable image conversion/resizing hook (`(bytes, mimeType, { autoResizeImages }) => data/mimeType/hints or a failure message`); image processing needs native dependencies, which stay out of core.
 
 Two of these do not do what the symmetry suggests. `GrepOperations` does not make ripgrep pluggable: `grep` always spawns `rg`, and the overrides only affect the directory check and the file reads used to render context lines. `FindOperations.glob` does: supplying `operations` replaces ripgrep entirely for `find`; omitting it selects the local `rg --files` path.
 
@@ -232,15 +233,15 @@ Two of these do not do what the symmetry suggests. `GrepOperations` does not mak
 
 **Timeout.** The `timeout` argument is in seconds and has no default: a command with no `timeout` runs until it exits. Validation lives in `createLocalBashOperations`, not in the tool: a non-finite or non-positive value throws `Invalid timeout: must be a finite number of seconds`, and anything above 2147483.647 seconds throws. Custom `operations` receive the raw `timeout` value and are responsible for their own validation. On expiry, the local backend kills the whole process tree.
 
-**Output accumulation.** stdout and stderr both feed one `OutputAccumulator`. It keeps a rolling decoded tail and, once the limits are exceeded, spills the full raw stream to a file in `os.tmpdir()` named `june-bash-<8 hex bytes>.log`. That path is reported as `details.fullOutputPath` and in the trailing `[Showing lines …. Full output: …]` notice. Nothing deletes the file.
+**Output accumulation.** stdout and stderr both feed one `OutputAccumulator`. It keeps a rolling decoded tail and, once the limits are exceeded, spills the full raw stream to a file in `os.tmpdir()` named `uji-bash-<8 hex bytes>.log`. That path is reported as `details.fullOutputPath` and in the trailing `[Showing lines …. Full output: …]` notice. Nothing deletes the file.
 
 **Streaming.** `onUpdate` fires once immediately with `{ content: [], details: undefined }`, then at most every 100 ms while output arrives, then one final flush when output has arrived since the last update.
 
 **Failure.** `bash` throws when the command exits non-zero, when it times out, and when the signal aborts. In all three cases the captured output is prepended to the thrown message, followed by `Command exited with code N`, `Command timed out after N seconds`, or `Command aborted`. A failing command is therefore an error tool result, not a successful result containing an error message.
 
-**Process shutdown.** A running command is killed on timeout or when its call signal aborts. The detached-child
-tracking functions in `support/shell.ts` are otherwise no-ops because June has no process shutdown registry.
-Closing a repository or host is not currently a guarantee that every spawned command has been terminated.
+**Process shutdown.** A running command is killed as a process group on timeout, explicit abort, or
+harness close. A command that deliberately daemonizes and escapes that process group is no longer owned
+by the tool; Uji does not keep a process-global registry for completed commands.
 
 ## edit
 
@@ -292,7 +293,7 @@ Paths resolve through `resolveReadPathAsync`, which retries macOS NFD, curly-quo
 
 ## grep, find, ls
 
-`grep` and `find` shell out to `rg` on `PATH`. This is a June deviation: the upstream design ships managed `ripgrep` and `fd` binaries. When `rg` is missing, both tools throw `ripgrep (rg) not found on PATH`.
+`grep` and `find` shell out to `rg` on `PATH`. This is a Uji deviation: the upstream design ships managed `ripgrep` and `fd` binaries. When `rg` is missing, both tools throw `ripgrep (rg) not found on PATH`.
 
 **grep.** Fixed flags are `--json --line-number --color=never --hidden`; `ignoreCase` adds `--ignore-case`, `literal` adds `--fixed-strings`, `glob` adds `--glob <value>`. Matches stream in and the child is killed as soon as `limit` is reached. With `context: 0` the match line comes straight from ripgrep's JSON; with `context > 0` the file is read and a `path:line: text` / `path-line- text` block is rendered around it. No match is a success, not an error: `content` is `No matches found`.
 
@@ -308,7 +309,7 @@ All three append a bracketed notice when a cap is hit, and mirror it in `details
 
 Tool calls in one batch run in parallel by default. Two calls that mutate the same file would then interleave their read-modify-write, and the second writer would silently discard the first one's change. `withFileMutationQueue` is the process-global per-file mutex that prevents this:
 
-```ts
+```ts title="withFileMutationQueue"
 withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T>
 ```
 
@@ -317,8 +318,8 @@ The queue key is the file's `realpath`, falling back to the resolved path when t
 ```ts title="touch-tool.ts"
 import { utimes } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { AgentTool } from "@june/core";
-import { toolResultContent, withFileMutationQueue } from "@june/core";
+import type { AgentTool } from "@uji-ai/core";
+import { toolResultContent, withFileMutationQueue } from "@uji-ai/core";
 
 interface TouchInput {
   path: string;

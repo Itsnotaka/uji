@@ -20,7 +20,13 @@ export const CHAT_KEYBINDS = {
   "chat.queue.open": "ctrl+q",
   "chat.queue.submit": "ctrl+return,ctrl+kpenter,ctrl+o",
   "chat.skills.open": "ctrl+s",
-  "chat.commands.open": "?",
+  // Every shortcut here takes a modifier, because a bare printable key is a
+  // character first: binding `?` cost you the ability to send `?`, and hedging
+  // it behind an empty composer only moved the hole to the start of a draft.
+  // OpenCode makes the same call — its only bare-key bindings live in the diff
+  // viewer, which has no text input:
+  // https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/config/keybind.ts
+  "chat.commands.open": "ctrl+k",
   "chat.history.previous": "up",
   "chat.history.next": "down",
 } as const satisfies Readonly<Record<string, string>>;

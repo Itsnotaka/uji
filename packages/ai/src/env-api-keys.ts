@@ -13,15 +13,22 @@ import { getProviderEnvValue } from "./utils/provider-env.ts";
 export const ANTHROPIC_AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
 export const ANTHROPIC_OAUTH_TOKEN_ENV = "ANTHROPIC_OAUTH_TOKEN";
 export const ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY";
+export const ANTHROPIC_ENV_KEYS = [
+  ANTHROPIC_AUTH_TOKEN_ENV,
+  ANTHROPIC_OAUTH_TOKEN_ENV,
+  ANTHROPIC_API_KEY_ENV,
+] as const;
 
 function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
   // ANTHROPIC_AUTH_TOKEN participates in env discovery/status, but
   // getEnvApiKey() skips it because requests must pass it as Authorization: Bearer.
   if (provider === "anthropic") {
-    return [ANTHROPIC_AUTH_TOKEN_ENV, ANTHROPIC_OAUTH_TOKEN_ENV, ANTHROPIC_API_KEY_ENV];
+    return ANTHROPIC_ENV_KEYS;
   }
 
   const envMap: Record<string, string> = {
+    opencode: "OPENCODE_API_KEY",
+    "opencode-go": "OPENCODE_API_KEY",
     openai: "OPENAI_API_KEY",
   };
 

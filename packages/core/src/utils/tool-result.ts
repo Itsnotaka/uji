@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from "@june/schema";
+import type { ImageContent, TextContent } from "@uji-ai/schema";
 
 /** Wraps plain text as tool-result content. */
 export function toolResultContent(text: string): TextContent[] {

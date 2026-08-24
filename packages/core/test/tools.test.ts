@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { createLocalBashOperations } from "../src/tools/bash.ts";
 import { createLsTool } from "../src/tools/ls.ts";
 import { toolResultText } from "../src/utils/tool-result.ts";
 
@@ -37,4 +38,42 @@ void describe("ls tool", () => {
 
     await assert.rejects(execution, /Operation aborted/);
   });
+});
+
+void describe("local bash lifecycle", () => {
+  void test(
+    "abort kills the active shell process group",
+    { skip: process.platform === "win32" },
+    async () => {
+      const operations = createLocalBashOperations();
+      const controller = new AbortController();
+      let resolvePid: ((pid: number) => void) | undefined;
+      const childPid = new Promise<number>((resolve) => {
+        resolvePid = resolve;
+      });
+      let output = "";
+      const execution = operations.exec("sleep 30 & child=$!; echo $child; wait $child", "/tmp", {
+        signal: controller.signal,
+        onData: (chunk) => {
+          output += chunk.toString("utf8");
+          const pid = Number.parseInt(output.trim(), 10);
+          if (Number.isSafeInteger(pid) && pid > 0) resolvePid?.(pid);
+        },
+      });
+      const pid = await childPid;
+
+      controller.abort();
+      await assert.rejects(execution, /aborted/);
+      let alive = true;
+      for (let attempt = 0; attempt < 50 && alive; attempt += 1) {
+        try {
+          process.kill(pid, 0);
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        } catch {
+          alive = false;
+        }
+      }
+      assert.equal(alive, false);
+    },
+  );
 });

@@ -1,19 +1,21 @@
 ---
 title: Session storage
-description: "The durable contract behind a June session: write-once entries and records, mutable lane leaves and facts, and one seq that orders all of them"
+description: "The durable contract behind a Uji session: write-once entries and records, mutable head leaves and facts, and one seq that orders all of them"
+icon: IconStorage
 ---
 
 import { TypeTable } from "fumadocs-ui/components/type-table";
 
-A session exposes four kinds of ordered log item. **Entries** are write-once nodes that form a tree: each one records its `parentId`, so history branches instead of being rewritten. **Records** are a write-once, append-only ledger of what a lane did: a run started, a tool call was about to execute, a turn reported usage. **Lane moves** and **facts** are also appended to the log. The materialized lane leaf is overwritten in place for fast lookup; the session name is derived from the latest appended fact.
+A session log merges entries, records, head moves, facts, and claim events. **Entries** are write-once nodes that form a tree: each one records its `parentId`, so history branches instead of being rewritten. **Records** are a write-once, append-only ledger of what a head did: a run started, a tool call was about to execute, a turn reported usage. The materialized head leaf and live run claim are mutable indexes over that history; the session name is derived from the latest appended fact.
 
-One per-session `seq` counter orders all four, so the whole session collapses to a single ordered log.
+One per-session `seq` counter orders every durable log item, so the whole session collapses to a single ordered stream.
 
 <Callout type="warn" title="The seq invariant">
-  One counter per session, shared by entries, records, lane moves, and facts. `appendEntry` consumes
-  two values (the entry, then the lane move it implies), `appendRecord`, `moveLane`, and `setName`
-  consume one each. A backend that gives each table its own counter breaks `getLog`, which merges
-  the four tables and sorts on `seq`, and every `afterSeq` cursor built on it.
+  One counter per session, shared by entries, records, head moves, facts, and claim events.
+  `appendEntry` consumes two values (the entry, then the head move it implies), `appendRecord`,
+  `moveHead`, and `setName` consume one each. A backend that gives each table its own counter breaks
+  `getLog`, which merges the four tables and sorts on `seq`, and every `afterSeq` cursor built on
+  it.
 </Callout>
 
 ## Entries
@@ -23,13 +25,14 @@ An entry is a node in the session tree. `EntryBase` supplies `type`, `id`, `seq`
 | `type`                  | Extra fields                           | Meaning                                                      |
 | ----------------------- | -------------------------------------- | ------------------------------------------------------------ |
 | `message`               | `message: Message`                     | One neutral user, assistant, or tool-result message          |
+| `compaction`            | `summary`, retained context and usage  | A durable context checkpoint                                 |
 | `model_change`          | `modelId: string`                      | The model in effect from this point down the branch          |
 | `thinking_level_change` | `thinkingLevel: string`                | The thinking level in effect from this point down the branch |
 | `custom`                | `customType: string`, `data?: unknown` | An application-defined node the harness does not interpret   |
 
 Callers do not supply `parentId`, `seq`, or `timestamp`: the backend assigns them at append. What callers do supply is the `id`, which is why the provisioned shape exists:
 
-```ts
+```ts title="ProvisionedEntry"
 type ProvisionedEntry<TEntry extends Entry = Entry> = TEntry extends Entry
   ? Omit<TEntry, "parentId" | "seq" | "timestamp">
   : never;
@@ -39,24 +42,25 @@ The conditional is there to distribute over the union. A bare `Omit<Entry, ...>`
 
 Minting the id before the content is durable is what lets a caller reserve a slot: the harness writes a `tool_started` record naming `resultEntryId` before the tool runs, then appends the result entry under exactly that id. After a crash, a reserved id with no entry is an unsettled effect. See [the harness](./harness.mdx).
 
-`appendEntry(entry, lane)` reads the lane's current leaf inside the write transaction, sets `parentId` to it, inserts the entry, then advances the lane to the new entry. A duplicate id is rejected with `SessionError("invalid_entry")`; entries are never updated.
+`appendEntry(entry, head)` is the strict idle-head write. It reads the current leaf inside the transaction, sets `parentId`, inserts the entry, and advances the head. A live claim or duplicate id is `SessionError("invalid_entry")`. Participant code that may race a run uses `admitEntry`, which places immediately when idle and writes `deferred_write` behind a live claim.
 
 ## Records
 
-A record is a lane-scoped ledger row. Every variant carries `RecordBase` (`id`, `seq`, `lane`, `timestamp`) plus the fields below. Every writer today is `AgentHarness`; storage itself writes none of them.
+A record is a head-scoped ledger row. Every variant carries `id`, `seq`, `head`, and `timestamp` plus the fields below. The harness writes run records through `RunWriter`; participant verbs write queue, deferred-write, cancellation, and abort-request records directly.
 
-| `type`               | Extra fields                                                                                     | Written by                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `operation_started`  | `sourceLeafId`, `intent: { kind: "run", originalPrompt, initialMessages }`                       | `prompt()`, before the prompt entries are appended. The record's own `id` is the run id           |
-| `step_attempt`       | `runId`, `step: "assistant"`, `attempt`                                                          | Every `turn_start` event. `attempt` counts turns in the run, not retries                          |
-| `tool_started`       | `runId`, `toolCallId`, `toolName`, `effectiveArgs`, `resultEntryId`, `replay: "never" \| "safe"` | `beforeToolCall`, before the tool executes                                                        |
-| `usage`              | `runId`, `cause: "assistant" \| "tool"`, `usage: Usage`                                          | A `turn_end` with assistant usage or `tool_execution_end` with tool usage                         |
-| `queue_enqueued`     | `queue: "steer" \| "followUp" \| "nextRun"`, `runId?`, `target: ProvisionedEntry<MessageEntry>`  | `steer()`, `followUp()`, `nextRun()`                                                              |
-| `abort_requested`    | `runId`                                                                                          | `abort()`, committed before the `AbortController` is signalled                                    |
-| `operation_finished` | `runId`, `outcome: "completed" \| "aborted" \| "failed"`, `error?`                               | The end of a run, whatever the outcome                                                            |
-| `queue_cancelled`    | `entryId`                                                                                        | Nothing. Not built yet: the type exists and `drainQueue` honours it, but no public API writes one |
+| `type`               | Extra fields                                                                                     | Written by                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `operation_started`  | `sourceLeafId`, `intent: { kind: "run", originalPrompt, initialMessages }`                       | `prompt()`, before the prompt entries are appended. The record's own `id` is the run id |
+| `step_attempt`       | `runId`, `step: "assistant"`, `attempt`                                                          | Every `turn_start` event. `attempt` counts turns in the run, not retries                |
+| `tool_started`       | `runId`, `toolCallId`, `toolName`, `effectiveArgs`, `resultEntryId`, `replay: "never" \| "safe"` | `beforeToolCall`, before the tool executes                                              |
+| `usage`              | `runId`, `cause: "assistant" \| "tool"`, `usage: Usage`                                          | A `turn_end` with assistant usage or `tool_execution_end` with tool usage               |
+| `queue_enqueued`     | `queue: "steer" \| "followUp" \| "nextRun"`, `runId?`, `target: ProvisionedEntry<MessageEntry>`  | `steer()`, `followUp()`, `nextRun()`                                                    |
+| `deferred_write`     | `runId`, `target: ProvisionedEntry`                                                              | `admitEntry()` while a live claim holds the head                                        |
+| `abort_requested`    | `runId`                                                                                          | `abort()` or cross-process `requestAbort()`                                             |
+| `operation_finished` | `runId`, `outcome: "completed" \| "aborted" \| "failed"`, `error?`                               | The end of a run, whatever the outcome                                                  |
+| `queue_cancelled`    | `entryId`                                                                                        | `cancelQueued()`, also valid for an unconsumed deferred target                          |
 
-`NewRecord<TRecord extends LaneRecord = LaneRecord>` is `Omit<TRecord, "seq" | "timestamp">`, distributed over the union by the same conditional trick: the caller supplies the record `id` and `lane`, the backend stamps the rest.
+`NewRecord<TRecord extends SessionRecord = SessionRecord>` is `Omit<TRecord, "seq" | "timestamp">`, distributed over the union by the same conditional trick: the caller supplies the record `id` and `head`, the backend stamps the rest.
 
 ### The run id a backend must denormalize
 
@@ -64,55 +68,61 @@ A record is a lane-scoped ledger row. Every variant carries `RecordBase` (`id`, 
 
 ## SessionStorage
 
-Storage failures throw `SessionError` with a `code` of `not_found`, `invalid_entry`, or `storage`. They are not `Result`-typed; only the harness API uses `Result`.
+`SessionStorage` is the single live session handle. It combines reads, participant admission, facts, labels, and claim acquisition. Opening it grants no execution authority; only a fenced run claim does that. Storage failures throw `SessionError` with a code of `not_found`, `invalid_entry`, `claim_lost`, or `storage`. They are not `Result`-typed; only the harness API uses `Result`.
 
-| Method                        | Contract                                                                                                                                      | Ordering                  |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `getMetadata()`               | Returns `{ id, createdAt }`                                                                                                                   | no seq                    |
-| `appendEntry(entry, lane)`    | Parents the entry on the lane leaf, inserts it, advances the leaf. Returns the completed `Entry`. Rejects a duplicate id with `invalid_entry` | Consumes two `seq` values |
-| `appendRecord(record)`        | Inserts the record and returns it with `seq` and `timestamp` filled in                                                                        | Consumes one `seq`        |
-| `getEntry(id)`                | The entry, or `undefined`. Absence is meaningful: it is how an unsettled tool effect is detected                                              | no seq                    |
-| `getLeafId(lane)`             | The lane's current leaf, or `null` for an unknown or cleared lane                                                                             | no seq                    |
-| `moveLane(lane, to)`          | Points the lane at an existing entry, or at `null` to start a new root. An unknown target is `not_found`                                      | Consumes one `seq`        |
-| `getBranch(lane)`             | The path from the leaf to the root                                                                                                            | Oldest first              |
-| `findEntries(query?)`         | All entries in the session, optionally filtered by `type` and capped by `limit`                                                               | Oldest first              |
-| `findRecords(query)`          | `type` is required; `runId` and `afterSeq` narrow further                                                                                     | Oldest first              |
-| `findOpenOperations(lane)`    | Every `operation_started` on the lane with no `operation_finished` naming it. Callers resume the first result                                 | Newest first              |
-| `getLog(options?)`            | Entries, records, lane moves, and name facts merged into one `LogItem[]`, optionally after a `seq` cursor                                     | Ascending `seq`           |
-| `getName()` / `setName(name)` | The session name, latest write wins. `setName` consumes one `seq`                                                                             | no seq                    |
-| `close()`                     | Releases the writer lease. Idempotent                                                                                                         | no seq                    |
+| Method                              | Contract                                                                                                                       | Ordering                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
+| `getMetadata()`                     | Returns `{ id, createdAt }`                                                                                                    | no seq                           |
+| `appendEntry(entry, head)`          | Strict idle-head append. Rejects a live claim or duplicate id with `invalid_entry`                                             | Consumes two `seq` values        |
+| `appendEntries(entries, head)`      | Atomic batch form of `appendEntry`; the entire batch rolls back on failure                                                     | Two `seq` values per entry       |
+| `admitEntry(entry, head?)`          | Places on an idle head or records a deferred write behind its live run                                                         | Entry + move, or one record      |
+| `send(input, options?)`             | Atomically returns `placed` or `queued`; optional idempotency keys replay the original receipt without writing                 | Entry + move, or one record      |
+| `appendRecord(record)`              | Inserts a participant record and fills `seq` and `timestamp`; run records require `RunWriter`                                  | Consumes one `seq`               |
+| `requestAbort(head?)`               | Records `abort_requested` for the live run in the same transaction, or returns `undefined` and writes nothing                  | Zero or one `seq`                |
+| `getLiveClaim(head)` / `claimRun`   | Reads or compare-and-swaps the fenced execution claim; a successful claim returns its `RunWriter`                              | Claim acquisition uses one `seq` |
+| `watch(options?)`                   | Replays after the cursor, then streams committed log items without gaps or duplicates                                          | Ascending `seq`                  |
+| `getEntry(id)`                      | The entry, or `undefined`. Absence is meaningful: it is how an unsettled tool effect is detected                               | no seq                           |
+| `getLeafId(head)`                   | The head's current leaf, or `null` for an unknown or cleared head                                                              | no seq                           |
+| `moveHead(head, to)`                | Strict idle-head re-point to an existing entry or `null`; a live claim is `invalid_entry` and an unknown target is `not_found` | Consumes one `seq`               |
+| `getBranch(head)`                   | The path from the leaf to the root                                                                                             | Oldest first                     |
+| `findEntries(query?)`               | All entries in the session, optionally filtered by `type` and capped by `limit`                                                | Oldest first                     |
+| `findRecords(query)`                | `type` is required; `runId` and `afterSeq` narrow further                                                                      | Oldest first                     |
+| `findOpenOperations(head)`          | Every `operation_started` on the head with no `operation_finished` naming it                                                   | Newest first                     |
+| `getLog(options?)`                  | Every durable log kind merged into one `LogItem[]`, optionally after a `seq` cursor                                            | Ascending `seq`                  |
+| `getName()` / `setName(name)`       | The session name, latest write wins                                                                                            | `setName` uses one `seq`         |
+| `getFact` / `setFact` / `listFacts` | Generic latest-wins durable facts; `undefined` deletes a fact                                                                  | `setFact` uses one `seq`         |
+| `close()`                           | Closes the handle and releases run claims still owned by that handle. Idempotent                                               | no seq                           |
 
-The intended invariant is at most one open operation per lane. Storage does not enforce it, and the current
-`AgentHarness.prompt()` admission check has an asynchronous race before it marks the run active. More than one
-result from `findOpenOperations` is therefore a reachable harness bug, not proof that the SQLite file itself is
-corrupt. `resume()` currently takes the newest result and leaves any others open.
+At most one operation may be open per head. `AgentHarness` reserves local admission synchronously before its first await, and the store's run-claim CAS resolves races between processes. More than one result from `findOpenOperations` means the durable log is corrupt.
 
 `LogItem` is a discriminated union on `kind`:
 
-| `kind`   | Shape                         |
-| -------- | ----------------------------- |
-| `entry`  | `{ seq, lane, entry }`        |
-| `record` | `{ seq, record }`             |
-| `lane`   | `{ seq, lane, leafId }`       |
-| `fact`   | `{ seq, fact: "name", name }` |
+| `kind`       | Shape                         |
+| ------------ | ----------------------------- |
+| `entry`      | `{ seq, head, entry }`        |
+| `record`     | `{ seq, record }`             |
+| `head`       | `{ seq, head, leafId }`       |
+| `fact`       | `{ seq, fact: "name", name }` |
+| `fact_value` | `{ seq, fact, value }`        |
+| `claim`      | `{ seq, event }`              |
 
 ## SessionRepo and SessionSearch
 
 `SessionRepo` is the session factory. It has exactly three methods.
 
-| Method             | Behaviour                                                                                                                     |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `create(options?)` | Creates a session, optionally with your own `id`, and returns it already claimed for writing. A colliding id throws `storage` |
-| `open(id)`         | Opens an existing session and claims it. An unknown id throws `not_found`                                                     |
-| `list()`           | `SessionMetadata[]` for every session in the repo, `ORDER BY created_at, id`: oldest first, so `.at(-1)` is the newest        |
+| Method             | Behaviour                                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `create(options?)` | Creates a session, optionally with your own `id`, and returns its participant-capable handle. A collision is `storage` |
+| `open(id)`         | Opens the same participant-capable handle for an existing session; an unknown id is `not_found`                        |
+| `list()`           | `SessionMetadata[]` for every session, ordered by `created_at, id`: oldest first, so `.at(-1)` is the newest           |
 
-`SqliteSessionRepo` adds two methods the interface does not declare: `searchEntries` (from `SessionSearch`, below), and `close()`, which closes every session it handed out and then the database handle itself. The examples on this page call `repo.close()` for that reason; a session's own `close()` only releases that session's writer lease.
+`SqliteSessionRepo` adds two methods the interface does not declare: `searchEntries` (from `SessionSearch`, below), and `close()`, which closes every session handle it handed out and then the database handle itself. The examples on this page call `repo.close()` for that reason.
 
-Not built yet: there is no `delete`, no `fork`, and no way to remove a session or an entry. Nothing in the storage layer ever deletes a row.
+Not built yet: there is no `delete`, no `fork`, and no way to remove a session or a durable entry or record.
 
 `SessionSearch` is a separate interface, implemented by the repo rather than by a session, because the index spans every session in the file:
 
-```ts
+```ts title="SessionSearch"
 interface SessionSearch {
   searchEntries(
     text: string,
@@ -125,12 +135,12 @@ A hit is `{ sessionId, entryId, timestamp, snippet, score }`, and **lower `score
 
 ## The SQLite backend
 
-`SqliteSessionRepo` is the only implementation. It uses `node:sqlite`, so it needs a Node build with `node:sqlite` available; `@june/core` ships TypeScript sources with no build step.
+`SqliteSessionRepo` is the only implementation. It uses `node:sqlite`, so it needs a Node build with `node:sqlite` available; `@uji-ai/core` ships TypeScript sources with no build step.
 
-```ts
-import { SqliteSessionRepo, type SessionRepo, type SessionSearch } from "@june/core";
+```ts title="open-repo.ts"
+import { SqliteSessionRepo, type SessionRepo, type SessionSearch } from "@uji-ai/core";
 
-const repo: SessionRepo & SessionSearch = new SqliteSessionRepo("./.june/sessions.db");
+const repo: SessionRepo & SessionSearch = new SqliteSessionRepo("./.uji/sessions.db");
 
 const session = await repo.create();
 const { id } = await session.getMetadata();
@@ -146,10 +156,10 @@ console.log(id);
 
 Appending is the same two calls the harness makes, with the id chosen up front:
 
-```ts
-import { newId, SqliteSessionRepo, type MessageEntry, type ProvisionedEntry } from "@june/core";
+```ts title="append-entry.ts"
+import { newId, SqliteSessionRepo, type MessageEntry, type ProvisionedEntry } from "@uji-ai/core";
 
-const repo = new SqliteSessionRepo("./.june/sessions.db");
+const repo = new SqliteSessionRepo("./.uji/sessions.db");
 const session = await repo.create();
 
 const prompt: ProvisionedEntry<MessageEntry> = {
@@ -164,7 +174,7 @@ console.log(entry.parentId, entry.seq); // null 1
 await session.appendRecord({
   type: "operation_started",
   id: newId("run"),
-  lane: "main",
+  head: "main",
   sourceLeafId: null,
   intent: {
     kind: "run",
@@ -174,7 +184,7 @@ await session.appendRecord({
 });
 
 console.log((await session.getLog()).map((item) => item.kind));
-// [ 'entry', 'lane', 'record' ]
+// [ 'entry', 'head', 'record' ]
 
 await session.close();
 await repo.close();
@@ -184,16 +194,18 @@ await repo.close();
 
 The path you pass is a single database holding all sessions, keyed by `session_id`. That is what gives search one index across sessions, and it means opening a repo twice on the same path opens the same data. On first use the repo creates the parent directory and sets `journal_mode=WAL`, `synchronous=FULL`, and `busy_timeout=5000`.
 
-| Table           | Key                                            | Holds                                                                                             |
-| --------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `sessions`      | `id`                                           | `created_at` and `next_seq`, the session's single counter                                         |
-| `entries`       | `(session_id, id)`, unique `(session_id, seq)` | `parent_id`, `lane`, `type`, `timestamp`, and the JSON payload. Keeps its rowid for the FTS index |
-| `records`       | `(session_id, id)`, unique `(session_id, seq)` | `lane`, `type`, denormalized `run_id`, `timestamp`, JSON payload                                  |
-| `lanes`         | `(session_id, lane)`                           | `leaf_id`: the current leaf, overwritten in place                                                 |
-| `lane_moves`    | `(session_id, seq)`                            | Every leaf change, so `getLog` can replay lane movement                                           |
-| `facts`         | `(session_id, seq)`                            | One row per `setName`; `getName` reads the highest `seq`                                          |
-| `writer_leases` | `session_id`                                   | `owner_id`, `fence`, `expires_at_ms`                                                              |
-| `entries_fts`   | fts5 virtual                                   | Trigram index over `entries.payload`, external-content, insert-only trigger                       |
+| Table              | Key                                            | Holds                                                                                             |
+| ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `sessions`         | `id`                                           | `created_at` and `next_seq`, the session's single counter                                         |
+| `entries`          | `(session_id, id)`, unique `(session_id, seq)` | `parent_id`, `head`, `type`, `timestamp`, and the JSON payload. Keeps its rowid for the FTS index |
+| `records`          | `(session_id, id)`, unique `(session_id, seq)` | `head`, `type`, denormalized `run_id`, `timestamp`, JSON payload                                  |
+| `heads`            | `(session_id, head)`                           | `leaf_id`: the current leaf, overwritten in place                                                 |
+| `head_moves`       | `(session_id, seq)`                            | Every leaf change, so `getLog` can replay head movement                                           |
+| `facts`            | `(session_id, seq)`                            | One row per `setName`; `getName` reads the highest `seq`                                          |
+| `run_claims`       | `(session_id, head)`                           | The live run's `run_id`, fenced owner, and expiry                                                 |
+| `run_claim_events` | `(session_id, seq)`                            | Durable claim acquisition, heartbeat renewal, and release history                                 |
+| `send_keys`        | `(session_id, key)`                            | Write-once idempotency receipts retained for the session lifetime                                 |
+| `entries_fts`      | fts5 virtual                                   | Trigram index over `entries.payload`, external-content, insert-only trigger                       |
 
 Every writing transaction opens with `BEGIN IMMEDIATE`. Each one reads `next_seq` before writing it, and a deferred transaction takes a read snapshot it may fail to upgrade: a failure `busy_timeout` cannot rescue, because waiting never refreshes a stale snapshot.
 
@@ -217,60 +229,33 @@ Because the index is insert-only, it stays correct only as long as entries stay 
   (`GAP-C10`).
 </Callout>
 
-### The writer lease
+### Run claims
 
-One writer per session, enforced. WAL happily interleaves writers from several processes, which is exactly what the model forbids, so `create` and `open` claim a fenced, expiring lease before returning a session.
+Opening a session is non-exclusive. A runner calls `claimRun(head, runId)` before its first run record. At most one live claim exists per head, while different heads may run concurrently.
 
-<TypeTable
-  type={{
-    leaseTtlMs: {
-      description: "How long a claim stays valid without renewal",
-      type: "number",
-      default: "30000",
-    },
-    heartbeatIntervalMs: {
-      description:
-        "Idle renewal cadence. Must be positive and strictly less than leaseTtlMs, or the constructor throws RangeError",
-      type: "number",
-      default: "10000",
-    },
-  }}
-/>
+Each claim carries an owner id, fence, and expiry. Every `RunWriter` mutation renews and checks the fence inside its `BEGIN IMMEDIATE` transaction before touching durable state. Heartbeats record bounded-cadence renewal events while the provider is idle; ordinary run writes renew silently because their own log items already prove progress. An expired claim can be taken over with an incremented fence. The stale writer then fails with `claim_lost` and cannot release or write past its successor.
 
-The mechanics:
+Participant writes do not use a claim. `send` either places at an idle head or writes a durable queue record behind a live run. `admitEntry` does the same for arbitrary provisioned entries, using a `deferred_write` record that the runner applies before steering and again during terminal reconciliation. `requestAbort` resolves the live run and appends `abort_requested` in one transaction.
 
-| Event             | What happens                                                                                                                                                                                                                                                             |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `create` / `open` | Upserts a lease row. The upsert only applies when no lease exists or the current one has expired; otherwise it throws `storage` with `Session already has an active writer`                                                                                              |
-| Takeover          | An expired lease is replaced with a new `owner_id` and an incremented `fence`                                                                                                                                                                                            |
-| Every write       | Renews the lease inside the same transaction, matching on `(owner_id, fence)` and requiring it to be unexpired. Zero rows matched means the write dies before touching data and the instance throws `Writer lease lost` from then on. Reopen through the repo to recover |
-| Heartbeat         | An unref'd timer renews while the session is open but idle, so an expired lease is real evidence the owner is gone                                                                                                                                                       |
-| `close()`         | Deletes the lease row, matching on `(owner_id, fence)` so a stale owner cannot release its successor                                                                                                                                                                     |
-
-Two consequences worth holding onto. A lost lease is terminal for that `SqliteSessionStorage`
-instance: there is no re-acquire. Closing a storage releases its lease, rejects later reads and
-writes with `Session is closed`, and removes the storage from the repository's set of open handles.
-`repo.close()` closes whatever handles remain before closing the shared database.
-
-`SqliteSessionStorage` is fully synchronous behind `Promise.resolve` wrappers. The async signatures are contract, not concurrency.
+`SqliteSessionStorage` is synchronous behind Promise-returning methods. The async signatures are the backend contract, not a claim that SQLite work runs off-thread.
 
 ## Writing a backend
 
-The storage test suite is `packages/core/test/session-backends.test.ts`, and it constructs `SqliteSessionRepo` directly rather than taking a repo as a parameter. There is no backend-generic conformance harness: a second backend needs its own copy of these cases. They are worth copying, because they pin the contract:
+The storage tests are `packages/core/test/session-storage.test.ts` and the multiplayer drills in `durable-core.test.ts`. They construct `SqliteSessionRepo` directly rather than taking a repo as a parameter. There is no backend-generic conformance harness yet; a second backend needs the same cases.
 
 **Round trip.** The first entry has `parentId: null`; the second parents on the first; `seq` strictly increases. After `close()` and `open(id)`: metadata `id` survives, `getLeafId("main")` is the last appended entry, `getBranch("main")` is oldest first, `getEntry(a.id)` deep-equals the value `appendEntry` returned, and `getName()` returns what `setName` wrote.
 
-**One counter.** After two entries, one record, and one `setName`, `getLog()` returns exactly `["entry", "lane", "entry", "lane", "record", "fact"]`: seqs ascending, no duplicates.
+**One counter.** After two entries, one record, and one `setName`, `getLog()` returns exactly `["entry", "head", "entry", "head", "record", "fact"]`: seqs ascending, no duplicates.
 
 **Run-id denormalization.** `findRecords({ type: "operation_started", runId: "run_1" })` finds the record whose own `id` is `run_1`.
 
 **Open operations.** `findOpenOperations("main")` reports a started run after a reopen, and returns `[]` once an `operation_finished` naming that `runId` is appended.
 
-**Forking.** `moveLane` to an ancestor, then append: the new entry parents on the move target, `getBranch` follows the new path, the abandoned entries stay readable with their `parentId` intact, and `findEntries()` still returns all four in append order with `limit` honoured. `moveLane` to an unknown id rejects with `Entry not found`.
+**Forking.** `moveHead` to an ancestor, then append: the new entry parents on the move target, `getBranch` follows the new path, the abandoned entries stay readable with their `parentId` intact, and `findEntries()` still returns all four in append order with `limit` honoured. `moveHead` to an unknown id rejects with `Entry not found`.
 
 **Write-once.** Appending the same entry id twice rejects with `already exists`.
 
-**Lease.** A second `open` of a live session rejects with `active writer`, and succeeds after `close()`. An expired lease can be taken over: the successor sees the prior history and can write, and the stale owner's next write rejects with `lease lost`. The heartbeat pushes `expires_at_ms` past the original TTL on an idle session. A `heartbeatIntervalMs` not below `leaseTtlMs` throws `RangeError` from the constructor.
+**Open handles and claims.** Two repositories may open and append to the same idle session. A live run claim affects admission disposition, not opening. An expired claim can be taken over: the successor sees the prior history and can write, while the stale claimant's next run write fails with `claim_lost`. The heartbeat extends an owned claim, and its interval must remain below the claim TTL.
 
 **Search.** A phrase finds its entry across sessions with the right `sessionId` and `entryId` and a snippet containing the term; a mismatched `type` filter returns `[]`; a two-character query returns `[]`; `limit` is honoured.
 
@@ -278,11 +263,12 @@ Beyond the test, four properties a passing backend still has to hold:
 
 1. One counter per session, shared by all four row kinds. `appendEntry` takes two values, everything else takes one.
 2. Ids are unique per session and entries are never updated or deleted.
-3. `appendEntry` reads the leaf and advances it in the same atomic unit; a lane leaf moves only by append or `moveLane`.
-4. Concurrency is your problem to exclude. `SessionStorage` has no multi-write transaction (`appendEntry` and `appendRecord` each commit alone), so a second writer produces interleaving the model does not define.
+3. `appendEntry` reads the leaf and advances it in the same atomic unit; a head leaf moves only by append or `moveHead`.
+4. Participant concurrency is serialized by the store. Run mutations require a head-scoped fenced claim, and a stale claimant's transaction aborts before touching data.
 
-The suite does not construct `AgentHarness`, inject failures between its commits, or race lifecycle calls. It
-therefore proves the SQLite primitives above, not the harness's end-to-end durability contract.
+The storage suite does not construct `AgentHarness`, inject failures between its commits, or race lifecycle
+calls. Separate harness tests cover focused admission and abort queue behavior, but not the storage crash
+points above.
 
 ## Not built yet
 

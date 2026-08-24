@@ -2,7 +2,7 @@ import Link from "next/link";
 
 /*
  * The call path, drawn the way the docs already draw it — a vertical stack with
- * dotted leaders. It is the site's signature element because it is June's own
+ * dotted leaders. It is the site's signature element because it is Uji's own
  * artefact, and it does a job: every built row links to the page that documents
  * it, and the last hop is dashed because the wire is named and unwritten.
  *
@@ -22,7 +22,7 @@ interface Stage {
 const stages: Stage[] = [
   {
     name: "client",
-    note: "cli (OpenTUI) · grok-bot (Electron)",
+    note: "tui (OpenTUI) · desktop (Electron)",
     href: "/docs/architecture",
     built: true,
     hop: "solid",
@@ -49,14 +49,14 @@ const stages: Stage[] = [
     hop: "solid",
   },
   {
-    name: "@june/ai",
+    name: "@uji-ai/ai",
     note: "credential store, OAuth, streamed Responses client",
     href: "/docs/core/stream-fn",
     built: true,
     hop: "dashed",
   },
   {
-    name: "@june/protocol",
+    name: "@uji-ai/protocol",
     note: "the wire a browser client would attach to — reserved, not built",
     built: false,
   },
@@ -64,7 +64,7 @@ const stages: Stage[] = [
 
 export function SeamDiagram() {
   return (
-    <ol className="june-mono max-w-[46rem] text-[13px] leading-none">
+    <ol className="uji-mono max-w-[46rem] text-[13px] leading-none">
       {stages.map((stage, index) => (
         <li key={stage.name} className="relative pl-7">
           {stage.hop ? (
@@ -72,14 +72,14 @@ export function SeamDiagram() {
               aria-hidden
               className={`absolute left-[5px] top-[14px] bottom-0 w-0 border-l ${
                 stage.hop === "dashed" ? "border-dashed" : "border-solid"
-              } border-june-muted/30`}
+              } border-uji-muted/30`}
             />
           ) : null}
 
           <span
             aria-hidden
             className={`absolute left-[2px] top-[9px] size-1.5 ${
-              stage.built ? "bg-june-signal" : "border border-june-muted bg-june-paper"
+              stage.built ? "bg-uji-signal" : "border border-uji-muted bg-uji-paper"
             }`}
           />
 
@@ -99,19 +99,19 @@ function StageRow({ stage, isLast }: { stage: Stage; isLast: boolean }) {
         <span
           className={`shrink-0 ${
             stage.built
-              ? "text-june-ink underline decoration-transparent decoration-1 underline-offset-4 transition-[text-decoration-color] duration-150 group-hover:decoration-june-signal"
-              : "text-june-muted"
+              ? "text-uji-ink underline decoration-transparent decoration-1 underline-offset-4 transition-[text-decoration-color] duration-150 group-hover:decoration-uji-signal"
+              : "text-uji-muted"
           }`}
         >
           {stage.name}
         </span>
         <span
           aria-hidden
-          className="min-w-6 flex-1 translate-y-[-3px] border-b border-dotted border-june-muted/35"
+          className="min-w-6 flex-1 translate-y-[-3px] border-b border-dotted border-uji-muted/35"
         />
-        <span className="hidden shrink-0 text-june-muted sm:inline">{stage.note}</span>
+        <span className="hidden shrink-0 text-uji-muted sm:inline">{stage.note}</span>
       </span>
-      <span className="mt-2 block text-june-muted sm:hidden">{stage.note}</span>
+      <span className="mt-2 block text-uji-muted sm:hidden">{stage.note}</span>
     </>
   );
 

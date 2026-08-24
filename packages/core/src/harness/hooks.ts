@@ -22,7 +22,8 @@
  * - `before_tool`: args chained; the first `block` stops the chain; a throwing
  *   handler blocks the tool (fail-closed).
  * - `after_tool`: field-wise chained patch.
- * - `before_compaction`, `before_navigation`: land with compaction and forks; first structural answer wins.
+ * - `before_compaction`, `before_navigation`: not in `HookMap` yet; they land with
+ *   compaction and navigation hooks, first structural answer wins.
  *
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/agent/src/harness/agent-harness.ts (HookMap)
  * Synced with pi 7ebf9087e.

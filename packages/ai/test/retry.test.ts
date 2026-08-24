@@ -2,13 +2,13 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/test/retry.test.ts
  * Synced with pi 7ebf9087e.
  *
- * June divergence: pi builds messages with `fauxAssistantMessage` from
+ * Uji divergence: pi builds messages with `fauxAssistantMessage` from
  * `providers/faux.ts`; that provider is ported with the registry, so a local
  * builder with the same signature stands in here.
  */
 import assert from "node:assert/strict";
 import { describe, mock, test } from "node:test";
-import type { AssistantMessage } from "@june/schema";
+import type { AssistantMessage } from "@uji-ai/schema";
 import {
   isRetryableAssistantError,
   type RetryPolicy,

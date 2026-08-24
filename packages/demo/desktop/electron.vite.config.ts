@@ -1,3 +1,4 @@
+import stylex from "@stylexjs/unplugin";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 import { resolve } from "node:path";
@@ -33,8 +34,14 @@ export default defineConfig({
   renderer: {
     root: ".",
     esbuild,
-    plugins: [react({ babel: { plugins: ["babel-plugin-react-compiler"] } })],
-    optimizeDeps: { include: ["react", "react-dom/client"] },
+    plugins: [
+      stylex.vite({
+        useCSSLayers: true,
+        lightningcssOptions: { targets: { chrome: 142 << 16 } },
+      }),
+      react({ babel: { plugins: ["babel-plugin-react-compiler"] } }),
+    ],
+    optimizeDeps: { exclude: ["@uji-ai/ui"], include: ["react", "react-dom/client"] },
     resolve: { dedupe: ["react", "react-dom"] },
     build: {
       minify: true,

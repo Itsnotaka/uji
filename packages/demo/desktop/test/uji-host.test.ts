@@ -11,7 +11,7 @@ import {
   type Message,
   type Model,
 } from "@uji-ai/ai";
-import type { StreamFn } from "@uji-ai/core";
+import type { StreamFn, Turn } from "@uji-ai/core";
 import { demoAgentDrafts, parseAgentDraft, type AgentDraft, type AgentId } from "../src/agents.ts";
 import type { UjiDesktopEvent } from "../src/desktop-api.ts";
 import { UjiHost, type UjiHostDependencies } from "../src/main/uji-host.ts";
@@ -41,6 +41,13 @@ const testModel: Model<"openai-responses"> = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 32_000,
   maxTokens: 4_096,
+};
+
+const reasoningModel: Model<"openai-responses"> = {
+  ...testModel,
+  id: "reasoning-model",
+  name: "Reasoning Model",
+  reasoning: true,
 };
 
 class DeterministicAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -82,9 +89,12 @@ void test("starts empty and persists user-created agents and their conversations
     assert.equal(first.activeAgentId, seed.id);
     seedId = seed.id;
 
-    const answered = await host.send("A real request");
-    assert.equal(answered.messages.length, 2);
-    assert.equal(messageText(answered.messages[1]?.message.content), "Handled: A real request");
+    await host.send("A real request");
+    const answered = await waitForTranscript(host, 2);
+    assert.deepEqual(transcriptText(answered.messages), [
+      "A real request",
+      "Handled: A real request",
+    ]);
     assert.equal(prompts.get(seedId), seed.instructions);
 
     const created = await host.createAgent(scoutDraft);
@@ -94,17 +104,27 @@ void test("starts empty and persists user-created agents and their conversations
     assert.deepEqual(created.messages, []);
     scoutId = created.activeAgentId;
 
-    const scoutAnswered = await host.send("Scout request");
-    assert.equal(scoutAnswered.messages.length, 2);
+    await host.send("Scout request");
+    const scoutAnswered = await waitForTranscript(host, 2);
+    assert.equal(transcriptText(scoutAnswered.messages).length, 2);
     assert.equal(prompts.get(scoutId), scoutDraft.instructions);
 
     const restored = await host.selectAgent(seedId);
-    assert.equal(restored.messages.length, 2);
-    assert.equal(messageText(restored.messages[0]?.message.content), "A real request");
+    assert.equal(transcriptText(restored.messages).length, 2);
+    assert.equal(transcriptText(restored.messages)[0], "A real request");
 
     assert.ok(events.some((event) => event.type === "running" && event.running));
     assert.ok(events.some((event) => event.type === "delta"));
     assert.ok(events.some((event) => event.type === "snapshot"));
+    assert.ok(
+      events.every(
+        (event) =>
+          event.type === "status" ||
+          event.type === "snapshot" ||
+          event.type === "error" ||
+          event.sessionId !== "",
+      ),
+    );
   } finally {
     await host.close();
   }
@@ -117,7 +137,7 @@ void test("starts empty and persists user-created agents and their conversations
     const scout = resumed.agents.find((agent) => agent.id === scoutId);
     assert.deepEqual(scout, { id: scoutId, ...scoutDraft });
     const reselected = await restoredHost.selectAgent(seedId);
-    assert.equal(reselected.messages.length, 2);
+    assert.equal(transcriptText(reselected.messages).length, 2);
   } finally {
     await restoredHost.close();
     await rm(directory, { recursive: true, force: true });
@@ -165,16 +185,18 @@ void test("deleted agents stay deleted and their conversations disappear", async
     assert.ok(seeded.activeAgentId);
     seedId = seeded.activeAgentId;
     await host.send("Keep this");
+    await waitForTranscript(host, 2);
 
     const created = await host.createAgent(scoutDraft);
     assert.ok(created.activeAgentId);
     const scoutId = created.activeAgentId;
     await host.send("Scoped to Scout");
+    await waitForTranscript(host, 2);
 
     const afterScoutDelete = await host.deleteAgent(scoutId);
     assert.equal(afterScoutDelete.agents.length, 1);
     assert.equal(afterScoutDelete.activeAgentId, seedId);
-    assert.equal(afterScoutDelete.messages.length, 2);
+    assert.equal(transcriptText(afterScoutDelete.messages).length, 2);
 
     const afterSeedDelete = await host.deleteAgent(seedId);
     assert.equal(afterSeedDelete.agents.length, 0);
@@ -198,14 +220,37 @@ void test("deleted agents stay deleted and their conversations disappear", async
   }
 });
 
-void test("the product renderer stays on the minimal chat path", async () => {
-  const files = ["src/App.tsx", "src/styles.css"];
+void test("the product renderer exposes the complete desktop flow", async () => {
+  const files = [
+    "src/App.tsx",
+    "src/styles.css",
+    "src/components/agent-details.tsx",
+    "src/components/composer.tsx",
+    "src/components/conversation-intro.tsx",
+    "src/components/conversation-workspace.tsx",
+    "src/components/notices.tsx",
+    "src/components/settings-dialog.tsx",
+    "src/components/sidebar.tsx",
+    "src/components/transcript.tsx",
+  ];
   const source = (
     await Promise.all(files.map((file) => readFile(new URL(`../${file}`, import.meta.url), "utf8")))
   ).join("\n");
-  assert.match(source, /agent-strip/);
+  assert.match(source, /conversation-sidebar/);
+  assert.match(source, /settings-dialog/);
+  assert.match(source, /agent-details/);
   assert.match(source, /className="composer"/);
-  assert.doesNotMatch(source, /Sidebar|SearchPalette|BotDetails|@tanstack|@stylexjs/);
+  assert.match(source, /selectConversation/);
+  assert.match(source, /updateRuntimeSettings/);
+  // Flows that must stay reachable without opening a dialog.
+  assert.match(source, /composer-connect/);
+  assert.match(source, /starter-chip/);
+  assert.match(source, /jump-latest/);
+  assert.match(source, /notice-stack/);
+  assert.doesNotMatch(source, /activeSessionId === sessionId \|\| state\.view\.running/);
+  assert.doesNotMatch(source, /activeAgentId === agentId \|\| state\.view\.running/);
+  assert.doesNotMatch(source, /agentId === null \|\| state\.view\.running/);
+  assert.doesNotMatch(source, /@tanstack/);
 });
 
 void test("signed-out users can complete login and message an agent", async () => {
@@ -233,8 +278,9 @@ void test("signed-out users can complete login and message an agent", async () =
     await host.createAgent(ujiDraft);
     await assert.rejects(() => host.send("before login"), /Sign in with ChatGPT first/);
     assert.equal((await host.login()).auth.signedIn, true);
-    const answered = await host.send("Launch note");
-    assert.equal(messageText(answered.messages[1]?.message.content), "Handled: Launch note");
+    await host.send("Launch note");
+    const answered = await waitForTranscript(host, 2);
+    assert.equal(transcriptText(answered.messages)[1], "Handled: Launch note");
     assert.ok(
       events.some((event) => event.type === "status" && event.message === "Opening test login…"),
     );
@@ -254,17 +300,97 @@ void test("a message submitted during a run joins the active loop", async () => 
   try {
     await host.initialize();
     await host.createAgent(ujiDraft);
-    const first = host.send("First request");
+    await host.send("First request");
     await gate.started;
 
     const queued = await host.send("Second request");
     assert.equal(queued.running, true);
+    assert.equal(queued.pending.length, 1);
 
     gate.release();
-    const completed = await first;
-    assert.deepEqual(
-      completed.messages.map((entry) => messageText(entry.message.content)),
-      ["First request", "Handled: First request", "Second request", "Handled: Second request"],
+    const completed = await waitForTranscript(host, 4);
+    assert.deepEqual(completed.pending, []);
+    assert.deepEqual(transcriptText(completed.messages), [
+      "First request",
+      "Handled: First request",
+      "Second request",
+      "Handled: Second request",
+    ]);
+  } finally {
+    gate.release();
+    await host.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+void test("running conversations survive navigation and keep their own status", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "uji-background-navigation-"));
+  const gate = gatedStream();
+  const events: UjiDesktopEvent[] = [];
+  const dependencies = deterministicDependencies(new Map());
+  dependencies.createStreamFn = () => gate.streamFn;
+  const host = new UjiHost(
+    join(directory, "sessions.db"),
+    (event) => events.push(event),
+    dependencies,
+  );
+
+  try {
+    await host.initialize();
+    await host.createAgent(ujiDraft);
+    await host.send("Background request");
+    await gate.started;
+    const background = await host.initialize();
+    assert.ok(background.activeSessionId);
+    const backgroundSessionId = background.activeSessionId;
+    assert.equal(background.running, true);
+
+    const newChat = await host.newChat();
+    assert.ok(newChat.activeSessionId);
+    const foregroundSessionId = newChat.activeSessionId;
+    assert.notEqual(foregroundSessionId, backgroundSessionId);
+    assert.equal(newChat.running, false);
+    assert.equal(
+      newChat.conversations.find((conversation) => conversation.id === backgroundSessionId)
+        ?.running,
+      true,
+    );
+
+    await host.send("Foreground request");
+    const foreground = await waitForTranscript(host, 2);
+    assert.deepEqual(transcriptText(foreground.messages), [
+      "Foreground request",
+      "Handled: Foreground request",
+    ]);
+    assert.equal(
+      foreground.conversations.find((conversation) => conversation.id === backgroundSessionId)
+        ?.running,
+      true,
+    );
+
+    const reselected = await host.selectConversation(backgroundSessionId);
+    assert.equal(reselected.running, true);
+    gate.release();
+    const completed = await waitForTranscript(host, 2);
+    assert.deepEqual(transcriptText(completed.messages), [
+      "Background request",
+      "Handled: Background request",
+    ]);
+    assert.equal(
+      completed.conversations.find((conversation) => conversation.id === backgroundSessionId)
+        ?.running,
+      false,
+    );
+
+    const restoredForeground = await host.selectConversation(foregroundSessionId);
+    assert.equal(transcriptText(restoredForeground.messages)[0], "Foreground request");
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "running" &&
+          event.running === false &&
+          event.sessionId === backgroundSessionId,
+      ),
     );
   } finally {
     gate.release();
@@ -298,6 +424,7 @@ void test("agent settings persist and become the next harness instructions", asy
       { id: seedId, ...changes },
     );
     await host.send("Ship it");
+    await waitForTranscript(host, 2);
     assert.equal(prompts.get(seedId), changes.instructions);
 
     const database = new DatabaseSync(databasePath, { readOnly: true });
@@ -323,6 +450,115 @@ void test("agent settings persist and become the next harness instructions", asy
     );
   } finally {
     await restoredHost.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+void test("conversations can be listed, renamed, and selected by session", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "uji-conversations-"));
+  const host = new UjiHost(
+    join(directory, "sessions.db"),
+    () => undefined,
+    deterministicDependencies(new Map()),
+  );
+
+  try {
+    await host.initialize();
+    const created = await host.createAgent(ujiDraft);
+    assert.ok(created.activeAgentId);
+
+    await host.newChat(created.activeAgentId);
+    await host.send("First thread");
+    const first = await waitForTranscript(host, 2);
+    assert.ok(first.activeSessionId);
+    const firstSessionId = first.activeSessionId;
+
+    await host.newChat(created.activeAgentId);
+    await host.send("Second thread");
+    const second = await waitForTranscript(host, 2);
+    assert.ok(second.activeSessionId);
+    assert.notEqual(second.activeSessionId, firstSessionId);
+    assert.equal(second.conversations.length, 2);
+
+    const renamed = await host.renameConversation(firstSessionId, "Launch plan");
+    assert.equal(
+      renamed.conversations.find((conversation) => conversation.id === firstSessionId)?.name,
+      "Launch plan",
+    );
+    const selected = await host.selectConversation(firstSessionId);
+    assert.equal(selected.activeSessionId, firstSessionId);
+    assert.equal(transcriptText(selected.messages)[0], "First thread");
+  } finally {
+    await host.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+void test("an untouched chat is neither listed nor duplicated", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "uji-empty-chats-"));
+  const host = new UjiHost(
+    join(directory, "sessions.db"),
+    () => undefined,
+    deterministicDependencies(new Map()),
+  );
+
+  try {
+    await host.initialize();
+    const created = await host.createAgent(ujiDraft);
+    assert.ok(created.activeAgentId);
+    const agentId = created.activeAgentId;
+
+    const blank = await host.newChat(agentId);
+    assert.ok(blank.activeSessionId);
+    assert.deepEqual(blank.conversations, []);
+
+    // Pressing new chat again keeps the same untouched session.
+    const again = await host.newChat(agentId);
+    assert.equal(again.activeSessionId, blank.activeSessionId);
+    assert.deepEqual(again.conversations, []);
+
+    await host.send("Now it is a chat");
+    const used = await waitForTranscript(host, 2);
+    assert.equal(used.conversations.length, 1);
+    assert.equal(used.conversations[0]?.id, blank.activeSessionId);
+
+    const next = await host.newChat(agentId);
+    assert.notEqual(next.activeSessionId, blank.activeSessionId);
+    assert.equal(next.conversations.length, 1);
+  } finally {
+    await host.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+void test("runtime model and reasoning settings persist", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "uji-runtime-settings-"));
+  const databasePath = join(directory, "sessions.db");
+  const dependencies = deterministicDependencies(new Map());
+  dependencies.models = [testModel, reasoningModel];
+
+  const host = new UjiHost(databasePath, () => undefined, dependencies);
+  try {
+    const initial = await host.initialize();
+    assert.equal(initial.runtime.modelKey, "test/test-model");
+    const selected = await host.updateRuntimeSettings({
+      kind: "model",
+      modelKey: "test/reasoning-model",
+    });
+    assert.equal(selected.runtime.modelKey, "test/reasoning-model");
+    const reasoned = await host.updateRuntimeSettings({ kind: "thinking", thinkingLevel: "high" });
+    assert.equal(reasoned.runtime.thinkingLevel, "high");
+  } finally {
+    await host.close();
+  }
+
+  const restored = new UjiHost(databasePath, () => undefined, dependencies);
+  try {
+    const snapshot = await restored.initialize();
+    assert.equal(snapshot.runtime.modelKey, "test/reasoning-model");
+    assert.equal(snapshot.runtime.thinkingLevel, "high");
+  } finally {
+    await restored.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -409,6 +645,56 @@ function finishStream(stream: DeterministicAssistantStream, response: string): v
   stream.push({ type: "text_delta", contentIndex: 0, delta: response, partial: message });
   stream.push({ type: "text_end", contentIndex: 0, content: response, partial: message });
   stream.push({ type: "done", reason: "stop", message });
+}
+
+function transcriptText(turns: readonly Turn[]): string[] {
+  const text: string[] = [];
+  for (const turn of turns) {
+    switch (turn.kind) {
+      case "turn":
+        for (const part of turn.parts) {
+          switch (part.kind) {
+            case "user":
+              text.push(messageText(part.content));
+              break;
+            case "assistant":
+              text.push(part.text);
+              break;
+            case "thinking":
+            case "tool":
+            case "note":
+              break;
+            default: {
+              const _exhaustive: never = part;
+              return _exhaustive;
+            }
+          }
+        }
+        break;
+      case "compaction":
+      case "model_change":
+      case "custom":
+        break;
+      default: {
+        const _exhaustive: never = turn;
+        return _exhaustive;
+      }
+    }
+  }
+  return text;
+}
+
+async function waitForTranscript(
+  host: UjiHost,
+  expectedParts: number,
+): Promise<Awaited<ReturnType<UjiHost["initialize"]>>> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const snapshot = await host.initialize();
+    if (transcriptText(snapshot.messages).length >= expectedParts && !snapshot.running)
+      return snapshot;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`Transcript did not reach ${expectedParts} visible parts`);
 }
 
 function messageText(content: Message["content"] | undefined): string {

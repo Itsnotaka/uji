@@ -1,5 +1,5 @@
 /**
- * @june/ai: the provider layer. Side-effect free: provider factories and API
+ * @uji-ai/ai: the provider layer. Side-effect free: provider factories and API
  * implementations are exported explicitly below; nothing registers globally.
  *
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/src/index.ts
@@ -13,11 +13,13 @@ export type {
   AnthropicOptions,
   AnthropicThinkingDisplay,
 } from "./api/anthropic-messages.ts";
+export type { GoogleOptions } from "./api/google-generative-ai.ts";
 export * from "./api/lazy.ts";
 export type {
   OpenAICodexResponsesOptions,
   OpenAICodexWebSocketDebugStats,
 } from "./api/openai-codex-responses.ts";
+export type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 export type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
 export * from "./auth/context.ts";
 export * from "./auth/credential-store.ts";
@@ -63,5 +65,14 @@ export { uuidv7 } from "./utils/uuid.ts";
 export * from "./utils/validation.ts";
 
 export { anthropicProvider } from "./providers/anthropic.ts";
+export {
+  parseOpenCodeCatalog,
+  type OpenCodeApi,
+  type OpenCodeCatalogOptions,
+  type OpenCodeGoApi,
+  type OpenCodeProviderId,
+} from "./providers/opencode-catalog.ts";
+export { opencodeGoProvider } from "./providers/opencode-go.ts";
+export { opencodeProvider } from "./providers/opencode.ts";
 export { openaiProvider } from "./providers/openai.ts";
 export { openaiCodexProvider } from "./providers/openai-codex.ts";

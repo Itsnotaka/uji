@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { Entry } from "@uji-ai/core";
-import type { Message, Usage } from "@uji-ai/schema";
 import {
+  clockDuration,
+  providerCacheTtlMs,
   compactArgs,
   describeToolCall,
   diffFromDetails,
@@ -22,20 +22,9 @@ import {
   resultSummary,
   shortId,
   spinnerFrame,
-  transcriptFromEntries,
-  transcriptItemIndex,
 } from "../src/format.ts";
 import type { PowerlineState } from "../src/format.ts";
 import { BUSY_HINTS, GLYPHS, SPINNER_FRAMES, SPINNER_INTERVAL_MS } from "../src/constants.ts";
-
-const usage: Usage = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
 
 void describe("parseToolArgs", () => {
   void test("decodes the JSON string the loop emits", () => {
@@ -298,252 +287,6 @@ void describe("partsText", () => {
   });
 });
 
-function entry(id: string, message: Message, seq: number): Entry {
-  return {
-    type: "message",
-    id,
-    seq,
-    parentId: seq === 0 ? null : `e${String(seq - 1)}`,
-    timestamp: seq,
-    message,
-  };
-}
-
-void describe("transcriptFromEntries", () => {
-  void test("maps a branch to items and pairs tool calls with outputs", () => {
-    const items = transcriptFromEntries([
-      entry("e0", { role: "user", content: "list files", timestamp: 0 }, 0),
-      entry(
-        "e1",
-        {
-          role: "assistant",
-          content: [
-            { type: "thinking", thinking: "need ls" },
-            { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } },
-          ],
-          api: "openai-codex-responses",
-          provider: "openai-codex",
-          model: "gpt-5.6-luna",
-          usage,
-          stopReason: "toolUse",
-          timestamp: 1,
-        },
-        1,
-      ),
-      entry(
-        "e2",
-        {
-          role: "toolResult",
-          toolCallId: "c1",
-          toolName: "bash",
-          content: [{ type: "text", text: "a.ts\nb.ts" }],
-          details: { patch: "--- a/a.ts\n+++ b/a.ts" },
-          isError: false,
-          timestamp: 2,
-        },
-        2,
-      ),
-      entry(
-        "e3",
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "Two files." }],
-          api: "openai-codex-responses",
-          provider: "openai-codex",
-          model: "gpt-5.6-luna",
-          usage,
-          stopReason: "stop",
-          timestamp: 3,
-        },
-        3,
-      ),
-      {
-        type: "model_change",
-        id: "e4",
-        seq: 4,
-        parentId: "e3",
-        timestamp: 4,
-        modelId: "gpt-5.5",
-      },
-    ]);
-    assert.deepEqual(items, [
-      {
-        kind: "turn",
-        id: "e0",
-        entryIds: ["e0", "e1", "e2", "e3"],
-        outcome: "completed",
-        parts: [
-          { kind: "user", entryId: "e0", parentId: null, content: "list files" },
-          { kind: "thinking", text: "need ls" },
-          {
-            kind: "tool",
-            callId: "c1",
-            toolName: "bash",
-            args: { command: "ls" },
-            output: "a.ts\nb.ts",
-            details: { patch: "--- a/a.ts\n+++ b/a.ts" },
-            isError: false,
-          },
-          { kind: "assistant", text: "Two files." },
-        ],
-      },
-    ]);
-    assert.equal(transcriptItemIndex(items, "e0"), 0);
-    assert.equal(transcriptItemIndex(items, "e2"), 0);
-    assert.equal(transcriptItemIndex(items, "missing"), -1);
-  });
-
-  void test("keeps model and thinking changes out of the conversation transcript", () => {
-    const items = transcriptFromEntries([
-      {
-        type: "model_change",
-        id: "e0",
-        seq: 0,
-        parentId: null,
-        timestamp: 0,
-        modelId: "gpt-5.6-sol",
-      },
-      {
-        type: "thinking_level_change",
-        id: "e1",
-        seq: 1,
-        parentId: "e0",
-        timestamp: 1,
-        thinkingLevel: "high",
-      },
-    ]);
-    assert.deepEqual(items, []);
-  });
-
-  void test("renders compaction checkpoints and known custom notes", () => {
-    const items = transcriptFromEntries([
-      entry("e0", { role: "user", content: "list files", timestamp: 0 }, 0),
-      {
-        type: "compaction",
-        id: "e1",
-        seq: 1,
-        parentId: "e0",
-        timestamp: 1,
-        summary: "Worked on the parser.",
-        retainedTail: [],
-        tokensBefore: 42000,
-        fromHook: false,
-      },
-      {
-        type: "custom",
-        id: "e2",
-        seq: 2,
-        parentId: "e1",
-        timestamp: 2,
-        customType: "provider_change",
-        data: { providerId: "openai-codex" },
-      },
-      {
-        type: "custom",
-        id: "e3",
-        seq: 3,
-        parentId: "e2",
-        timestamp: 3,
-        customType: "cwd_change",
-        data: { cwd: "/tmp/project" },
-      },
-      {
-        type: "custom",
-        id: "e4",
-        seq: 4,
-        parentId: "e3",
-        timestamp: 4,
-        customType: "something_else",
-        data: { x: 1 },
-      },
-    ]);
-    assert.deepEqual(items, [
-      {
-        kind: "turn",
-        id: "e0",
-        entryIds: ["e0", "e1"],
-        outcome: "completed",
-        parts: [
-          { kind: "user", entryId: "e0", parentId: null, content: "list files" },
-          { kind: "compaction", summary: "Worked on the parser.", tokensBefore: 42000 },
-        ],
-      },
-      { kind: "note", entryIds: ["e2"], text: "Provider → openai-codex" },
-      { kind: "note", entryIds: ["e3"], text: "Directory → /tmp/project" },
-    ]);
-  });
-
-  void test("caps long compaction summaries", () => {
-    const items = transcriptFromEntries([
-      {
-        type: "compaction",
-        id: "e0",
-        seq: 0,
-        parentId: null,
-        timestamp: 0,
-        summary: Array.from({ length: 45 }, (_, index) => `line ${String(index)}`).join("\n"),
-        retainedTail: [],
-        tokensBefore: 900,
-        fromHook: false,
-      },
-    ]);
-    const item = items[0];
-    if (item?.kind !== "compaction") throw new Error("expected a compaction item");
-    assert.equal(item.summary.split("\n").length, 41);
-    assert.ok(item.summary.endsWith(omittedLabel(5)));
-    assert.equal(item.tokensBefore, 900);
-  });
-
-  void test("drops empty reasoning and assistant items", () => {
-    const items = transcriptFromEntries([
-      entry(
-        "e0",
-        {
-          role: "assistant",
-          content: [
-            { type: "thinking", thinking: "" },
-            { type: "text", text: "" },
-          ],
-          api: "openai-codex-responses",
-          provider: "openai-codex",
-          model: "gpt-5.6-luna",
-          usage,
-          stopReason: "stop",
-          timestamp: 0,
-        },
-        0,
-      ),
-    ]);
-    assert.deepEqual(items, []);
-  });
-
-  void test("preserves a failed turn outcome for restored sessions", () => {
-    const items = transcriptFromEntries([
-      entry("e0", { role: "user", content: "try it", timestamp: 0 }, 0),
-      entry(
-        "e1",
-        {
-          role: "assistant",
-          content: [],
-          api: "openai-codex-responses",
-          provider: "openai-codex",
-          model: "gpt-5.6-luna",
-          usage,
-          stopReason: "error",
-          errorMessage: "provider failed",
-          timestamp: 1,
-        },
-        1,
-      ),
-    ]);
-    const turn = items[0];
-    if (turn?.kind !== "turn") throw new Error("expected a turn");
-    assert.equal(turn.outcome, "failed");
-    assert.deepEqual(turn.entryIds, ["e0", "e1"]);
-    assert.deepEqual(turn.parts.at(-1), { kind: "note", text: "Error: provider failed" });
-  });
-});
-
 const state: PowerlineState = {
   runState: "idle",
   workspace: "uji",
@@ -551,7 +294,7 @@ const state: PowerlineState = {
   dirty: true,
   model: "gpt-5.6-luna",
   effort: "medium",
-  fast: false,
+  statuses: [],
   queued: 0,
 };
 
@@ -585,8 +328,44 @@ void describe("powerline", () => {
       powerlineSegments(state),
     );
   });
-  void test("shows fast inference with the thinking mode", () => {
-    assert.equal(powerlineSegments({ ...state, fast: true })[2]?.text, "medium fast");
+  void test("shows setting badges with the thinking mode", () => {
+    assert.equal(powerlineSegments({ ...state, statuses: ["fast"] })[2]?.text, "medium fast");
+  });
+  void test("ticks idle time and the cache countdown once a turn has stopped", () => {
+    const stopped = { ...state, stoppedAt: 1_000_000, cacheTtlMs: 5 * 60_000 };
+    assert.equal(
+      powerlineSegments(stopped, 1_000_000 + 42_000).at(-1)?.text,
+      "idle 42s · cache 4m18s",
+    );
+    assert.equal(
+      powerlineSegments(stopped, 1_000_000 + 6 * 60_000).at(-1)?.text,
+      "idle 6m · cache cold",
+    );
+    assert.equal(
+      powerlineSegments({ ...stopped, cacheTtlMs: undefined }, 1_000_000 + 90_000).at(-1)?.text,
+      "idle 1m30s",
+    );
+    assert.equal(
+      powerlineSegments({ ...stopped, runState: "working" }, 1_000_000 + 42_000).some(
+        (segment) => segment.tone === "clock",
+      ),
+      false,
+    );
+    assert.equal(
+      powerlineSegments(state, 1_000_000).some((segment) => segment.tone === "clock"),
+      false,
+    );
+  });
+  void test("maps built-in providers to their prompt-cache lifetime", () => {
+    assert.equal(providerCacheTtlMs("anthropic"), 5 * 60_000);
+    assert.equal(providerCacheTtlMs("acme-llm"), undefined);
+    assert.equal(clockDuration(3_720_000), "1h02m");
+    assert.equal(clockDuration(-5), "0s");
+  });
+  void test("shows a setting badge alone when thinking is off", () => {
+    const segments = powerlineSegments({ ...state, effort: undefined, statuses: ["fast"] });
+    assert.equal(segments[2]?.text, "fast");
+    assert.equal(segments[2]?.tone, "effort");
   });
   void test("omits branch and effort when unknown", () => {
     const text = powerlineText({ ...state, branch: undefined, effort: undefined, dirty: false });

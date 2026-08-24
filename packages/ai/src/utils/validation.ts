@@ -7,7 +7,7 @@
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
-import type { Tool, ToolCall } from "@june/schema";
+import type { Tool, ToolCall } from "@uji-ai/schema";
 
 const validatorCache = new WeakMap<object, ReturnType<typeof Compile>>();
 const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");

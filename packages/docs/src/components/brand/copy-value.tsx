@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { IconCheckmark2, IconClipboard } from "central-icons";
+import { cn } from "@/lib/cn";
 
 /*
  * Copy control used throughout /branding. The icon swaps in place with a scale
@@ -31,8 +32,12 @@ export function CopyValue({
         clearTimeout(timer.current);
         timer.current = setTimeout(() => setCopied(false), 1600);
       }}
-      aria-label={copied ? `${label} copied` : `Copy ${label}`}
-      className={`june-ghost inline-flex min-h-11 items-center gap-2 rounded-(--radius-june-control) px-3 text-[12px] text-june-muted hover:text-june-ink ${className ?? ""}`}
+      aria-label={copied ? `${label} copied` : label}
+      className={cn(
+        "inline-flex min-h-11 touch-manipulation items-center gap-2 rounded-md px-3 text-sm text-fd-muted-foreground",
+        "hover:bg-fd-secondary hover:text-fd-foreground",
+        className,
+      )}
     >
       <span className="relative inline-block size-3.5 shrink-0">
         {/* Central Icons bake the stroke into the variant, so there is no
@@ -40,21 +45,23 @@ export function CopyValue({
         <IconClipboard
           size={14}
           ariaHidden
-          className={`absolute inset-0 transition-[opacity,transform,filter] duration-200 ${
-            copied ? "scale-75 opacity-0 blur-[2px]" : "scale-100 opacity-100 blur-0"
-          }`}
+          className={cn(
+            "absolute inset-0 motion-reduce:transition-none motion-safe:transition-[opacity,transform,filter] motion-safe:duration-200",
+            copied ? "scale-75 opacity-0 blur-[2px]" : "scale-100 opacity-100 blur-0",
+          )}
         />
         <IconCheckmark2
           size={14}
           ariaHidden
-          className={`absolute inset-0 text-june-signal transition-[opacity,transform,filter] duration-200 ${
-            copied ? "scale-100 opacity-100 blur-0" : "scale-75 opacity-0 blur-[2px]"
-          }`}
+          className={cn(
+            "absolute inset-0 text-fd-primary motion-reduce:transition-none motion-safe:transition-[opacity,transform,filter] motion-safe:duration-200",
+            copied ? "scale-100 opacity-100 blur-0" : "scale-75 opacity-0 blur-[2px]",
+          )}
         />
       </span>
       {/* The label never changes text — only the icon does — so the control
           keeps its width and nothing around it reflows on copy. */}
-      <span className="june-label">{label}</span>
+      <span className="font-mono text-xs">{label}</span>
       <span aria-live="polite" className="sr-only">
         {copied ? "Copied" : ""}
       </span>

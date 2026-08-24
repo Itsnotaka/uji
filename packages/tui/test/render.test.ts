@@ -154,7 +154,7 @@ void describe("opentui frames", () => {
 
   void test("one turn morphs working into a settled activity row", async () => {
     const turn = new ConversationTurnBlock(transcript);
-    turn.addUser({ kind: "live", content: "hello" });
+    turn.addUser("hello");
     await setup.renderOnce();
     const first = setup.captureCharFrame();
     assert.match(first, /Working/);
@@ -181,7 +181,7 @@ void describe("opentui frames", () => {
 
   void test("reasoning, text, and tools stay above one persistent activity tail", async () => {
     const turn = new ConversationTurnBlock(transcript);
-    turn.addUser({ kind: "live", content: "inspect this" });
+    turn.addUser("inspect this");
     await setup.renderOnce();
     const root = scroll.getChildren()[0];
     const tail = root?.getChildren().at(-1);
@@ -222,6 +222,37 @@ void describe("opentui frames", () => {
     await setup.renderOnce();
     assert.match(setup.captureCharFrame(), /✓ Read a\.ts[\s\S]*Worked/);
     assert.equal(root.getChildren().at(-1), tail);
+  });
+
+  void test("a whitespace-only part keeps one blank row between blocks", async () => {
+    const turn = new ConversationTurnBlock(transcript);
+    turn.startTool("first", "read", { path: "a.ts" });
+    turn.finishTool("first", "read", "body");
+    // Providers pad text and thinking around tool calls; neither pad draws a
+    // glyph, so neither may claim the row its block margin would reserve.
+    turn.updateAssistant({
+      type: "text_delta",
+      contentIndex: 0,
+      delta: "\n\n",
+      partial: partialAssistant,
+    });
+    turn.updateAssistant({
+      type: "thinking_delta",
+      contentIndex: 1,
+      delta: " ",
+      partial: partialAssistant,
+    });
+    turn.updateAssistant({
+      type: "thinking_end",
+      contentIndex: 1,
+      content: " ",
+      partial: partialAssistant,
+    });
+    turn.startTool("second", "read", { path: "b.ts" });
+    turn.finishTool("second", "read", "body");
+    const frame = await renderHighlightedFrame(setup);
+    assert.doesNotMatch(frame, /Thought/);
+    assert.match(frame, /✓ Read a\.ts {2}body *\n *\n *✓ Read b\.ts {2}body/);
   });
 
   void test("thinking_end replaces the streamed preview instead of duplicating it", async () => {
@@ -376,7 +407,6 @@ void describe("opentui frames", () => {
       {
         kind: "turn",
         id: "turn-failed",
-        entryIds: ["tool-result"],
         outcome: "completed",
         parts: [
           {
@@ -384,14 +414,77 @@ void describe("opentui frames", () => {
             callId: "failed",
             toolName: "read",
             args: { path: "missing.ts" },
-            output: "File not found",
-            isError: true,
+            result: {
+              output: "File not found",
+              isError: true,
+            },
           },
         ],
       },
     ]);
     await setup.renderOnce();
     assert.match(setup.captureCharFrame(), /✗ Read missing\.ts  File not found/);
+  });
+
+  void test("restored markers keep their client-owned labels", async () => {
+    renderItems(transcript, [
+      {
+        kind: "compaction",
+        entry: {
+          type: "compaction",
+          id: "compaction",
+          seq: 1,
+          parentId: null,
+          timestamp: 1,
+          summary: "Parser checkpoint",
+          retainedTail: [],
+          tokensBefore: 42_000,
+          fromHook: false,
+        },
+      },
+      {
+        kind: "model_change",
+        entry: {
+          type: "model_change",
+          id: "model",
+          seq: 2,
+          parentId: "compaction",
+          timestamp: 2,
+          modelId: "gpt-5.6-sol",
+        },
+      },
+      {
+        kind: "custom",
+        entry: {
+          type: "custom",
+          id: "provider",
+          seq: 3,
+          parentId: "model",
+          timestamp: 3,
+          customType: "provider_change",
+          data: { providerId: "openai-codex" },
+        },
+      },
+      {
+        kind: "custom",
+        entry: {
+          type: "custom",
+          id: "cwd",
+          seq: 4,
+          parentId: "provider",
+          timestamp: 4,
+          customType: "cwd_change",
+          data: { cwd: "/tmp/project" },
+        },
+      },
+    ]);
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    assert.match(frame, /context compacted · 42000 tokens before/);
+    assert.match(frame, /Parser checkpoint/);
+    assert.match(frame, /Model → gpt-5\.6-sol/);
+    assert.match(frame, /Provider → openai-codex/);
+    assert.match(frame, /Directory → \/tmp\/project/);
   });
 
   void test("a suspended restored turn remains open for recovered tool output", async () => {
@@ -401,7 +494,6 @@ void describe("opentui frames", () => {
         {
           kind: "turn",
           id: "suspended",
-          entryIds: ["user", "assistant"],
           outcome: "completed",
           parts: [
             {
@@ -442,9 +534,8 @@ void describe("opentui frames", () => {
         {
           kind: "turn",
           id: "failed",
-          entryIds: ["assistant"],
           outcome: "failed",
-          parts: [{ kind: "assistant", text: "partial answer" }],
+          parts: [{ kind: "assistant", entryId: "assistant", text: "partial answer" }],
         },
       ],
       { openLastTurn: true },
@@ -457,21 +548,23 @@ void describe("opentui frames", () => {
   });
 
   void test("user and restored items reuse the same blocks", async () => {
-    appendUser(transcript, { kind: "live", content: "hello there" });
+    appendUser(transcript, "hello there");
     renderItems(transcript, [
       {
         kind: "turn",
         id: "restored",
-        entryIds: ["restored"],
         outcome: "completed",
         parts: [
-          { kind: "assistant", text: "plain answer" },
+          { kind: "assistant", entryId: "restored", text: "plain answer" },
           {
             kind: "tool",
             callId: "c",
             toolName: "read",
             args: '{"path":"b.ts"}',
-            output: "body",
+            result: {
+              output: "body",
+              isError: false,
+            },
           },
         ],
       },
@@ -499,32 +592,20 @@ void describe("opentui frames", () => {
 
   void test("user attachments render as clickable tags with an expandable image", async () => {
     let opened: string | undefined;
-    let selected: string | undefined;
     transcript.openPath = (path) => {
       opened = path;
     };
-    transcript.onUserMessage = (message) => {
-      selected = message.entryId;
-    };
-    appendUser(transcript, {
-      kind: "stored",
-      message: {
-        kind: "user",
-        entryId: "e-user",
-        parentId: null,
-        content: [
-          {
-            type: "text",
-            text: "review this @file:///tmp/screenshot.png [Image 1]",
-          },
-          {
-            type: "image",
-            mimeType: "image/png",
-            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAAB3RJTUUH6ggWDxgWQ5q78wAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wOC0yMlQxNToyNDoyMiswMDowMCBNydkAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDgtMjJUMTU6MjQ6MjIrMDA6MDBREHFlAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA4LTIyVDE1OjI0OjIyKzAwOjAwBgVQugAAAApJREFUCNdjYAAAAAIAAeIhvDMAAAAASUVORK5CYII=",
-          },
-        ],
+    appendUser(transcript, [
+      {
+        type: "text",
+        text: "review this @file:///tmp/screenshot.png [Image 1]",
       },
-    });
+      {
+        type: "image",
+        mimeType: "image/png",
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAAB3RJTUUH6ggWDxgWQ5q78wAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wOC0yMlQxNToyNDoyMiswMDowMCBNydkAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDgtMjJUMTU6MjQ6MjIrMDA6MDBREHFlAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA4LTIyVDE1OjI0OjIyKzAwOjAwBgVQugAAAApJREFUCNdjYAAAAAIAAeIhvDMAAAAASUVORK5CYII=",
+      },
+    ]);
     await setup.renderOnce();
     const imagePreview = renderables(setup.renderer.root).find(
       (renderable): renderable is ImageRenderable => renderable instanceof ImageRenderable,
@@ -538,6 +619,17 @@ void describe("opentui frames", () => {
     assert.doesNotMatch(before, /@file:|iVBOR/);
 
     const lines = before.split("\n");
+    // The message body is not a mouse target. Taking a turn back is esc esc and
+    // moving the head is /tree, so a click on the text leaves the frame alone.
+    const textY = lines.findIndex((line) => line.includes("review this"));
+    const textX = lines[textY]?.indexOf("review this") ?? -1;
+    assert.ok(textX >= 0 && textY >= 0, before);
+    await setup.renderOnce();
+    const idle = setup.captureCharFrame();
+    await setup.mockMouse.click(textX, textY);
+    await setup.renderOnce();
+    assert.equal(setup.captureCharFrame(), idle);
+
     const fileY = lines.findIndex((line) => line.includes("File screenshot.png"));
     const fileX = lines[fileY]?.indexOf("File screenshot.png") ?? -1;
     assert.ok(fileX >= 0 && fileY >= 0, before);
@@ -551,12 +643,6 @@ void describe("opentui frames", () => {
     await setup.renderOnce();
     assert.notEqual(setup.captureCharFrame(), before);
 
-    const textY = lines.findIndex((line) => line.includes("review this"));
-    const textX = lines[textY]?.indexOf("review this") ?? -1;
-    assert.ok(textX >= 0 && textY >= 0, before);
-    await setup.mockMouse.click(textX, textY);
-    assert.equal(selected, "e-user");
-
     const widePreview = imagePreview.width;
     setup.resize(20, 30);
     await setup.renderOnce();
@@ -566,7 +652,7 @@ void describe("opentui frames", () => {
 
   void test("a pasted wall of text folds to a preview and a tag that opens it", async () => {
     const pasted = Array.from({ length: 12 }, (_, index) => `line ${String(index + 1)}`).join("\n");
-    appendUser(transcript, { kind: "live", content: `look at this\n${pasted}` });
+    appendUser(transcript, `look at this\n${pasted}`);
     await setup.renderOnce();
     const folded = setup.captureCharFrame();
     assert.match(folded, /❯ look at this/);
@@ -590,10 +676,7 @@ void describe("opentui frames", () => {
       { length: 6 },
       (_, index) => `const x${String(index)} = ${String(index)};`,
     ).join("\n");
-    appendUser(transcript, {
-      kind: "live",
-      content: `explain this ${fileAttachmentBlock("/tmp/sample.ts", body)}`,
-    });
+    appendUser(transcript, `explain this ${fileAttachmentBlock("/tmp/sample.ts", body)}`);
     await setup.renderOnce();
 
     // The body is the attachment, not the prompt: it must not leak into the turn.
@@ -638,7 +721,7 @@ void describe("opentui frames", () => {
     transcript.openPath = (path) => {
       opened = path;
     };
-    appendUser(transcript, { kind: "live", content: "look @file:///tmp/notes.txt" });
+    appendUser(transcript, "look @file:///tmp/notes.txt");
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
     assert.match(frame, /File notes\.txt/);

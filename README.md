@@ -15,8 +15,15 @@ macOS (Apple silicon) builds are on [GitHub Releases](https://github.com/Itsnota
 curl -fsSL https://raw.githubusercontent.com/Itsnotaka/uji/main/install.sh | sh
 ```
 
-The script downloads the newest release tarball, verifies the sha256, and puts `uji` in
-`~/.local/bin`. Set `UJI_INSTALL_DIR` to install somewhere else. Then `uji login` and run.
+The script downloads the newest release tarball, verifies the sha256, puts `uji` in
+`~/.local/bin`, and adds that directory to `PATH` in your shell's rc file (`.zshrc`, `.bashrc`,
+`config.fish`) when it is not already there. It appends one line, once; it never rewrites the
+file. Pass `--no-modify-path` (or set `UJI_NO_MODIFY_PATH=1`) to skip that, `--version 0.2.0` to
+pin a release, and `UJI_INSTALL_DIR` to install somewhere else. Then `uji login` and run.
+
+Later, `uji update` (or `/update` inside the TUI) replaces the binary with the newest release after
+verifying its checksum; `uji update --check` only reports. Turn on Auto-update in `/settings` to
+install at startup instead of being told.
 
 ## What it is
 

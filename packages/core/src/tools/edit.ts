@@ -1,5 +1,5 @@
 /**
- * Edit tool ported from pi's harness edit tool, adapted to June's AgentTool
+ * Edit tool ported from pi's harness edit tool, adapted to Uji's AgentTool
  * contract and direct filesystem access (pi routes file access through its
  * ExecutionEnv effects boundary). The matching logic lives in edit-diff.ts
  * and is unchanged.

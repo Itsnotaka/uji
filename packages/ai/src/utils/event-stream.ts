@@ -4,7 +4,7 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/src/utils/event-stream.ts
  * Synced with pi 7ebf9087e.
  */
-import type { AssistantMessage, AssistantMessageEvent } from "@june/schema";
+import type { AssistantMessage, AssistantMessageEvent } from "@uji-ai/schema";
 
 // Generic event stream class for async iteration
 export class EventStream<T, R = T> implements AsyncIterable<T> {

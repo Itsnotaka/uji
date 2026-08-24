@@ -19,7 +19,7 @@ import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
-import { getJuneUserAgent } from "../utils/june-user-agent.ts";
+import { getUjiUserAgent } from "../utils/uji-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
@@ -230,6 +230,7 @@ export const streamSimple: StreamFunction<"openai-responses", SimpleStreamOption
   const base = {
     ...buildBaseOptions(model, context, options, options?.apiKey),
     toolChoice: options?.toolChoice,
+    serviceTier: options?.fast === true ? "priority" : undefined,
   } satisfies OpenAIResponsesOptions;
   const clampedReasoning = options?.reasoning
     ? clampThinkingLevel(model, options.reasoning)
@@ -251,7 +252,7 @@ function createClient(
   sessionId?: string,
 ) {
   const compat = getCompat(model);
-  const headers: ProviderHeaders = { "User-Agent": getJuneUserAgent(), ...model.headers };
+  const headers: ProviderHeaders = { "User-Agent": getUjiUserAgent(), ...model.headers };
   if (model.provider === "github-copilot") {
     const hasImages = hasCopilotVisionInput(context.messages);
     const copilotHeaders = buildCopilotDynamicHeaders({

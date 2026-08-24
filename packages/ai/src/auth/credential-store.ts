@@ -1,5 +1,5 @@
 /**
- * Default in-memory `CredentialStore`. Apps inject persistent stores (June's
+ * Default in-memory `CredentialStore`. Apps inject persistent stores (Uji's
  * `FileCredentialStore` in store.ts); this one backs tests and ephemeral
  * hosts. Writes are serialized per provider through a promise chain and
  * queued work can be cancelled before it runs.

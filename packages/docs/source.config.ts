@@ -1,5 +1,9 @@
 import { defineConfig } from "fumadocs-mdx/config";
-import { remarkMdxMermaid } from "fumadocs-core/mdx-plugins";
+import {
+  rehypeCodeDefaultOptions,
+  remarkMdxFiles,
+  remarkMdxMermaid,
+} from "fumadocs-core/mdx-plugins";
 
 /*
  * Collections live in `src/lib/source.ts` via the `fumadocs-mdx/macro` API. This
@@ -11,8 +15,18 @@ import { remarkMdxMermaid } from "fumadocs-core/mdx-plugins";
  */
 export default defineConfig({
   mdxOptions: {
-    // Rewrites ```mermaid fences into <Mermaid chart="..." />, which
-    // src/components/mdx.tsx resolves.
-    remarkPlugins: (plugins) => [remarkMdxMermaid, ...plugins],
+    // ```mermaid → <Mermaid />, ```files → <Files />. Both resolve from
+    // src/components/mdx.tsx.
+    remarkPlugins: (plugins) => [remarkMdxMermaid, remarkMdxFiles, ...plugins],
+    // Dual-theme Shiki tokens (`--shiki-light` / `--shiki-dark`) plus the
+    // default notation transformers and language icons on titled blocks.
+    rehypeCodeOptions: {
+      ...rehypeCodeDefaultOptions,
+      themes: {
+        light: "github-light",
+        dark: "github-dark",
+      },
+      defaultColor: false,
+    },
   },
 });

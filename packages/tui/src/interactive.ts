@@ -26,7 +26,6 @@ import type {
   TrustedWorkspace,
   WorkspaceTrustStore,
 } from "@uji-ai/core";
-import { FAST_MODE_PLUGIN_ID, readFastModeState } from "@uji-ai/plugin/examples/fast-mode";
 import type { Usage } from "@uji-ai/schema";
 import {
   cachedAuthenticatedModels,
@@ -50,7 +49,13 @@ import {
 import type { ComposerPart, MentionFile } from "./composer.ts";
 import { ComposerTags } from "./composer-tags.ts";
 import { discoverDirectorySuggestions } from "./directory-autocomplete.ts";
-import { oneLine, parseComposerSubmission, partsText, shortId } from "./format.ts";
+import {
+  oneLine,
+  parseComposerSubmission,
+  partsText,
+  shortId,
+  providerCacheTtlMs,
+} from "./format.ts";
 import type { ParsedSlashCommand, PowerlineState } from "./format.ts";
 import { HarnessHost } from "./harness-host.ts";
 import type { CreateHostedHarness } from "./harness-host.ts";
@@ -92,9 +97,9 @@ import {
   slashCommandLabel,
 } from "./slash.ts";
 import type { SlashCommand } from "./slash.ts";
-import { appendAuthUrl, appendNote, ConversationTurnBlock } from "./transcript.ts";
-import type { UserBlock } from "./transcript.ts";
+import { appendAuthUrl, appendNote, ConversationTurnBlock, entryNote } from "./transcript.ts";
 import { THEME } from "./theme.ts";
+import { describeUpdateOutcome, selfUpdate } from "./update.ts";
 import { checkForUpdate } from "./version.ts";
 import {
   AUTH_URL_HINTS,
@@ -142,6 +147,10 @@ function refreshHints(ui: Ui, harness: AgentHarness): void {
         ? BUSY_HINTS
         : IDLE_HINTS,
   );
+}
+
+function markEntryRendered(ui: Ui, entryId: string): void {
+  if (!ui.renderedEntries.delete(entryId)) ui.renderedEntries.add(entryId);
 }
 
 async function answerAsk(
@@ -232,14 +241,13 @@ async function answerAsk(
   }
 }
 
-function wireHarness(
+export function wireHarness(
   ui: Ui,
   harness: AgentHarness,
   status: ComposerStatus,
   cwd: string,
   isVisible: () => boolean = () => true,
 ): () => void {
-  let user: UserBlock | undefined;
   let queueVersion = 0;
 
   const ensureTurn = (): ConversationTurnBlock => {
@@ -274,6 +282,10 @@ function wireHarness(
     });
   };
 
+  const cacheTtlPatch = (provider: string): Partial<PowerlineState> => {
+    const ttl = providerCacheTtlMs(provider);
+    return ttl === undefined ? {} : { cacheTtlMs: ttl };
+  };
   const unsubscribe = harness.subscribe((event) => {
     if (!isVisible()) return;
     switch (event.type) {
@@ -289,29 +301,15 @@ function wireHarness(
         if (event.message.role === "user") {
           ui.activeTurn?.settle();
           ui.activeTurn = new ConversationTurnBlock(ui.transcript);
-          user = ui.activeTurn.addUser({ kind: "live", content: event.message.content });
+          ui.activeTurn.addUser(event.message.content);
         }
         break;
       case "message_update":
         ensureTurn().updateAssistant(event.assistantMessageEvent);
         break;
       case "message_end":
-        ui.renderedEntries.add(event.entryId);
-        if (event.message.role === "user") {
-          const block = user;
-          user = undefined;
-          if (block !== undefined) {
-            void harness.session.getEntry(event.entryId).then((entry) => {
-              if (entry?.type !== "message" || entry.message.role !== "user") return;
-              block.setMessage({
-                kind: "user",
-                entryId: entry.id,
-                parentId: entry.parentId,
-                content: entry.message.content,
-              });
-            });
-          }
-        }
+        ui.steeringStatus.resolve(event.entryId);
+        markEntryRendered(ui, event.entryId);
         if (event.message.role === "assistant") ensureTurn().finishAssistant(event.message);
         if (event.message.role === "toolResult") {
           ensureTurn().finishTool(
@@ -352,7 +350,7 @@ function wireHarness(
         status.set({ runState: harness.state.isStreaming ? "working" : "idle" });
         if (!harness.state.isStreaming) ui.input.placeholder = COMPOSER_PLACEHOLDER;
         if (event.outcome === "completed") {
-          ui.renderedEntries.add(event.entry.id);
+          markEntryRendered(ui, event.entry.id);
           if (ui.activeTurn === undefined) {
             appendNote(
               ui.transcript,
@@ -381,12 +379,19 @@ function wireHarness(
       }
       case "queue_update":
         queueVersion += 1;
+        ui.steeringStatus.sync(
+          event.items.filter((item) => item.delivery === "steer").map((item) => item.entryId),
+        );
         status.set({ queued: event.items.length });
         break;
       case "agent_end":
         ui.activeTurn?.settle();
         ui.activeTurn = undefined;
-        status.set({ runState: "idle" });
+        status.set({
+          runState: "idle",
+          stoppedAt: Date.now(),
+          ...cacheTtlPatch(harness.state.model.provider),
+        });
         ui.input.placeholder = COMPOSER_PLACEHOLDER;
         refreshHints(ui, harness);
         refreshWorkspace();
@@ -435,13 +440,41 @@ function wireHarness(
         if (event.source === "client")
           runNote(`Answered: ${event.answer}`, ui.transcript.theme.dim);
         break;
+      case "config_update":
+        if (event.property === "settings") {
+          void settingStatuses(harness).then((statuses) => {
+            if (isVisible()) status.set({ statuses });
+          });
+        }
+        break;
+      default: {
+        const _exhaustive: never = event;
+        return _exhaustive;
+      }
     }
   });
   const snapshotVersion = queueVersion;
   void harness.pendingQueue().then((items) => {
-    if (isVisible() && queueVersion === snapshotVersion) status.set({ queued: items.length });
+    if (!isVisible() || queueVersion !== snapshotVersion) return;
+    ui.steeringStatus.sync(
+      items.filter((item) => item.delivery === "steer").map((item) => item.entryId),
+    );
+    status.set({ queued: items.length });
   });
   return unsubscribe;
+}
+
+export function shouldReloadTranscript(
+  ui: Ui,
+  harness: Pick<AgentHarness, "state">,
+  leafId: string | null,
+): boolean {
+  if (leafId !== null && ui.renderedEntries.delete(leafId)) return false;
+  if (leafId !== null && harness.state.isBusy) {
+    ui.renderedEntries.add(leafId);
+    return false;
+  }
+  return !harness.state.isBusy;
 }
 
 function openAuthUrl(ui: Ui, input: string): void {
@@ -639,9 +672,14 @@ function entryLabel(entry: Entry): string {
   return `${message.role}: ${line}`;
 }
 
-async function sessionLabel(repo: SqliteSessionRepo, sessionId: string): Promise<string> {
+/** Name for the picker, or undefined for a session nothing was ever sent to. */
+async function sessionLabel(
+  repo: SqliteSessionRepo,
+  sessionId: string,
+): Promise<string | undefined> {
   const reader = await repo.open(sessionId);
   try {
+    if ((await reader.getLeafId("main")) === null) return undefined;
     return (await reader.getName()) ?? shortId(sessionId);
   } finally {
     await reader.close().catch(() => undefined);
@@ -723,17 +761,21 @@ export function slashCommandsForHarness(harness: AgentHarness): SlashCommand[] {
   return projected;
 }
 
-export async function isFastModeEnabled(harness: AgentHarness): Promise<boolean> {
-  const active = harness.plugins
-    .list()
-    .some(
-      (plugin) =>
-        plugin.id === FAST_MODE_PLUGIN_ID &&
-        plugin.source === "builtin" &&
-        plugin.status === "active",
-    );
-  if (!active) return false;
-  return (await readFastModeState(harness.session, harness.state.model)).enabled;
+/** Badges from plugin settings: each setting's current choice contributes its `status`, if any. */
+export async function activeSettingBadges(
+  harness: AgentHarness,
+): Promise<ReadonlyMap<string, { label: string; status: string }>> {
+  const badges = new Map<string, { label: string; status: string }>();
+  for (const [id, setting] of harness.getSettings()) {
+    const current = await setting.read();
+    const status = setting.choices.find((choice) => choice.id === current)?.status;
+    if (status !== undefined) badges.set(id, { label: setting.label, status });
+  }
+  return badges;
+}
+
+export async function settingStatuses(harness: AgentHarness): Promise<readonly string[]> {
+  return [...(await activeSettingBadges(harness)).values()].map((badge) => badge.status);
 }
 
 export async function activateLoggedInRuntime({
@@ -890,7 +932,11 @@ export async function runCommand(
       if (result.value.disposition === "queued") {
         const invocation =
           parsed.argument === "" ? `/${parsed.name}` : `/${parsed.name} ${parsed.argument}`;
-        note(ui, delivery === "steer" ? `Steering: ${invocation}` : `Queued: ${invocation}`);
+        if (delivery === "steer") {
+          ui.steeringStatus.show(result.value.entryId, invocation);
+        } else {
+          note(ui, `Queued: ${invocation}`);
+        }
       }
       return;
     }
@@ -913,26 +959,22 @@ export async function runCommand(
 
   if (command === "resume") {
     if (argument !== "") throw new Error("/resume opens the chat picker and takes no argument");
-    const sessions = (await context.repo.list()).reverse();
+    const currentId = target.sessionId;
+    const sessions: Choice[] = [];
+    for (const session of (await context.repo.list()).reverse()) {
+      const label = await sessionLabel(context.repo, session.id);
+      if (label === undefined) continue;
+      sessions.push({
+        id: session.id,
+        label: `${label}${session.id === currentId ? " (current)" : ""}`,
+        description: `${new Date(session.createdAt).toLocaleString()} · ${shortId(session.id)}`,
+      });
+    }
     if (sessions.length === 0) {
       flash(ui, "No saved chats");
       return;
     }
-    const currentId = target.sessionId;
-    const names = new Map<string, string>();
-    for (const session of sessions) {
-      names.set(session.id, await sessionLabel(context.repo, session.id));
-    }
-    const sessionId = await selectChoice(
-      ui,
-      "Resume chat",
-      sessions.map((session) => ({
-        id: session.id,
-        label: `${names.get(session.id)}${session.id === currentId ? " (current)" : ""}`,
-        description: `${new Date(session.createdAt).toLocaleString()} · ${shortId(session.id)}`,
-      })),
-      { selectedId: currentId },
-    );
+    const sessionId = await selectChoice(ui, "Resume chat", sessions, { selectedId: currentId });
     await context.resumeSession(sessionId);
     return;
   }
@@ -1154,6 +1196,21 @@ export async function runCommand(
     return;
   }
 
+  if (command === "update") {
+    const outcome = await selfUpdate({
+      ...(argument === "" ? {} : { version: argument }),
+      report: (line) => note(ui, line),
+    });
+    const color =
+      outcome.kind === "failed"
+        ? ui.transcript.theme.error
+        : outcome.kind === "unsupported"
+          ? ui.transcript.theme.warning
+          : undefined;
+    note(ui, describeUpdateOutcome(outcome), color);
+    return;
+  }
+
   if (command === "skills") {
     if (argument !== "") throw new Error("/skills opens the skill palette and takes no argument");
     await context.openSkillPalette();
@@ -1325,6 +1382,15 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         if (workspace === undefined) throw new WorkspaceTrustRequired(cwd);
         return workspace.cwd;
       },
+      // Draw what a transition writes and claim it, so the head move it causes
+      // does not rebuild a transcript that is already correct.
+      beforeAppend: (entries) => {
+        for (const entry of entries) {
+          markEntryRendered(ui, entry.id);
+          const text = entryNote(entry);
+          if (text !== undefined) note(ui, text);
+        }
+      },
     });
     const syncSettingsFromHarness = (): void => {
       const current = settingsByHarness.get(host.harness);
@@ -1382,11 +1448,25 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         process.stdout.write(`${resumeSessionHint(host.sessionId)}\n`);
       }
     };
-    void checkForUpdate().then((notice) => {
+    void checkForUpdate().then(async (notice) => {
       if (notice === undefined || shutdownStarted) return;
+      if (!settings.autoUpdate) {
+        note(
+          ui,
+          `Update available: ${notice.version} · /update to install`,
+          ui.transcript.theme.warning,
+        );
+        return;
+      }
+      const outcome = await selfUpdate();
+      if (shutdownStarted) return;
+      if (outcome.kind === "updated") {
+        note(ui, describeUpdateOutcome(outcome));
+        return;
+      }
       note(
         ui,
-        `Update available: ${notice.version} · Download ${notice.url}`,
+        `Update available: ${notice.version} · ${describeUpdateOutcome(outcome)}`,
         ui.transcript.theme.warning,
       );
     });
@@ -1414,11 +1494,15 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         dirty: workspace.dirty,
         model,
         effort: host.harness.state.thinkingLevel,
-        fast: await isFastModeEnabled(host.harness),
+        statuses: await settingStatuses(host.harness),
         queued: 0,
         ...(await usageStatus()),
+        ...(providerCacheTtlMs(host.harness.state.model.provider) === undefined
+          ? {}
+          : { cacheTtlMs: providerCacheTtlMs(host.harness.state.model.provider) }),
       },
     );
+    disposers.push(() => status.dispose());
     // The composer's border swaps color on focus; the rule that closes its
     // frame has to swap with it.
     for (const event of [RenderableEvents.FOCUSED, RenderableEvents.BLURRED]) {
@@ -1426,7 +1510,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       disposers.push(() => ui.input.off(event, status.repaint));
     }
     const refreshPluginState = async (): Promise<void> => {
-      status.set({ fast: await isFastModeEnabled(host.harness) });
+      status.set({ statuses: await settingStatuses(host.harness) });
     };
     const unsubscribeHarness = host.bind((harness, cwd) =>
       wireHarness(ui, harness, status, cwd, () => harness === host.harness),
@@ -1469,33 +1553,32 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
     const initialBranch = await host.harness.session.getBranch("main");
     const promptHistory = new PromptHistory();
     promptHistory.replace(userPromptHistory(initialBranch));
-    const unsubscribeSessionObserver = host.bind((harness) =>
-      watchSessionBranch(harness.session, {
-        head: "main",
-        // The live event path already renders this process's own appends;
-        // a rebuild is only for moves it did not see (another process or
-        // a navigation).
-        shouldReload: (leafId) =>
-          harness !== host.harness ||
-          (!harness.state.isStreaming && (leafId === null || !ui.renderedEntries.has(leafId))),
-        onBranch(entries) {
-          if (harness !== host.harness) return;
-          promptHistory.replace(userPromptHistory(entries));
-          // Every entry this harness writes also moves the head, so a live run
-          // reaches here before its own `message_start`. Rebuilding then would
-          // settle the stored copy of the prompt ("Worked for 0.0s") right
-          // before the live turn draws it again. The harness events own the
-          // transcript until the run settles; this watcher covers head moves
-          // made while it is idle, like /tree, /edit, and other processes.
-          if (harness.state.isBusy) return;
-          replaceTranscript(ui, entries);
-        },
-        onError(error) {
-          if (harness === host.harness) {
-            note(ui, `Session watch failed: ${error.message}`, ui.transcript.theme.error);
-          }
-        },
-      }),
+    // Keyed on the session: a model, thinking level, or directory change swaps
+    // the harness but keeps the session, and restarting the watch there would
+    // republish the whole branch and redraw the chat for nothing.
+    const unsubscribeSessionObserver = host.bind(
+      (harness) => {
+        const watched = harness.session;
+        const isCurrent = (): boolean => host.harness.session === watched;
+        return watchSessionBranch(watched, {
+          head: "main",
+          // Rebuild only for head moves the live event path did not draw.
+          shouldReload: (leafId) =>
+            !isCurrent() || shouldReloadTranscript(ui, host.harness, leafId),
+          onBranch(entries) {
+            if (!isCurrent()) return;
+            promptHistory.replace(userPromptHistory(entries));
+            if (host.harness.state.isBusy) return;
+            replaceTranscript(ui, entries);
+          },
+          onError(error) {
+            if (isCurrent()) {
+              note(ui, `Session watch failed: ${error.message}`, ui.transcript.theme.error);
+            }
+          },
+        });
+      },
+      { dependsOn: (harness) => harness.session },
     );
     disposers.push(unsubscribeSessionObserver);
 
@@ -1503,17 +1586,16 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       nextRuntime: ResolvedRuntime,
       nextModel: string,
     ): Promise<void> => {
-      const wasFast = await isFastModeEnabled(host.harness);
+      const badgesBefore = await activeSettingBadges(host.harness);
       if (!(await host.switchRuntime(nextRuntime, nextModel))) {
         flash(ui, `Already using ${nextModel}`);
         return;
       }
       syncSettingsFromHarness();
-      const fast = await isFastModeEnabled(host.harness);
       status.set({
         model: nextModel,
         effort: host.harness.state.thinkingLevel,
-        fast,
+        statuses: await settingStatuses(host.harness),
       });
       setCurrentSettings({
         ...settings,
@@ -1524,8 +1606,9 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         defaultProvider: nextRuntime.provider.id,
         defaultModel: nextModel,
       });
-      if (wasFast && !fast) {
-        note(ui, `Fast mode unavailable for ${nextModel}`);
+      const settingsAfter = host.harness.getSettings();
+      for (const [id, badge] of badgesBefore) {
+        if (!settingsAfter.has(id)) note(ui, `${badge.label} unavailable for ${nextModel}`);
       }
     };
 
@@ -1543,8 +1626,8 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         branch: workspace.branch,
         dirty: workspace.dirty,
       });
+      // The claimed cwd_change entry already drew the new directory.
       await refreshMentionFiles(host.cwd);
-      note(ui, `Working directory: ${host.cwd}`, ui.transcript.theme.ok);
     };
 
     const changeThinkingLevel = async (level: ThinkingLevel, announce = true): Promise<void> => {
@@ -1661,7 +1744,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         dirty: workspace.dirty,
         model: host.harness.state.model.id,
         effort: host.harness.state.thinkingLevel,
-        fast: await isFastModeEnabled(host.harness),
+        statuses: await settingStatuses(host.harness),
         queued: 0,
         ...(await usageStatus()),
       });
@@ -1701,7 +1784,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       promptHistory.replace([]);
       status.set({
         runState: "idle",
-        fast: await isFastModeEnabled(host.harness),
+        statuses: await settingStatuses(host.harness),
         queued: 0,
         tokens: undefined,
         pct: undefined,
@@ -1720,6 +1803,31 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         throw new Error("Wait for the current operation before changing settings");
       }
       if (ui.selecting) throw new Error("Another menu is already open");
+
+      // Prefetched because read() is durable-storage I/O and settingValue()
+      // runs during a sync render.
+      const pluginSettings = [...host.harness.getSettings()];
+      const settingValues = new Map(
+        await Promise.all(
+          pluginSettings.map(async ([id, setting]) => [id, await setting.read()] as const),
+        ),
+      );
+      const pluginRows = pluginSettings.map(([id, setting]): SettingRow => ({
+        id: `plugin:${id}`,
+        label: setting.label,
+        current: () => settingValues.get(id) ?? setting.choices[0].id,
+        choices: () =>
+          setting.choices.map((choice) => ({
+            id: choice.id,
+            label: choice.label,
+            ...(choice.description === undefined ? {} : { description: choice.description }),
+          })),
+        apply: async (choiceId) => {
+          await setting.apply(choiceId);
+          settingValues.set(id, choiceId);
+          await refreshPluginState();
+        },
+      }));
 
       const rows: readonly SettingRow[] = [
         {
@@ -1763,6 +1871,20 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
           },
         },
         {
+          id: "auto-update",
+          label: "Auto-update",
+          current: () => (settings.autoUpdate ? "on" : "off"),
+          choices: () => [
+            { id: "on", label: "on", description: "Install a newer release when uji starts" },
+            { id: "off", label: "off", description: "Only say when one exists; /update installs" },
+          ],
+          apply: async (choiceId) => {
+            const autoUpdate = choiceId === "on";
+            setCurrentSettings({ ...settings, autoUpdate });
+            await settingsStore.updateGlobal({ autoUpdate });
+          },
+        },
+        {
           id: "transport",
           label: "Transport",
           current: () => settings.transport,
@@ -1775,6 +1897,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
             await settingsStore.updateGlobal({ transport });
           },
         },
+        ...pluginRows,
       ];
 
       return new Promise<void>((resolve) => {
@@ -1821,6 +1944,17 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       });
     };
 
+    /**
+     * A palette pick that needs an argument lands in front of whatever is
+     * already drafted instead of replacing it. For a skill prompt the draft is
+     * the argument, and for the rest a visible `/name ` in front of your text
+     * beats a message that vanished when you opened a menu.
+     */
+    const prefillComposer = (text: string): void => {
+      setInputText(ui.input, `${text}${ui.input.plainText}`);
+      ui.input.focus();
+    };
+
     const openCommandPalette = async (): Promise<void> => {
       const commands = availableSlashCommands(host.harness.getCommands(), new Map());
       const selectedName = await selectChoice(
@@ -1837,8 +1971,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       if (resolveSlashCommand(selected.name) !== undefined) {
         const acceptance = acceptSlashCommand(selected, "return");
         if (acceptance.action === "complete") {
-          setInputText(ui.input, acceptance.text);
-          ui.input.focus();
+          prefillComposer(acceptance.text);
           return;
         }
       }
@@ -1852,8 +1985,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         return;
       }
       const selectedName = await selectChoice(ui, "Skills", items);
-      setInputText(ui.input, `/${selectedName} `);
-      ui.input.focus();
+      prefillComposer(`/${selectedName} `);
     };
 
     const focusComposer = (): void => {
@@ -1909,10 +2041,12 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       }
       // The picker was open for as long as the user took to read it.
       requireEditableHistory();
-      if (target !== leaf) await host.harness.session.moveHead("main", target);
-      replaceTranscript(ui, await host.harness.session.getBranch("main"));
+      if (target !== leaf) {
+        ui.renderedEntries.clear();
+        await host.harness.session.moveHead("main", target);
+      }
       if (sent === undefined) {
-        note(
+        flash(
           ui,
           target === null
             ? "Moved to the start of the chat. The next message starts a branch."
@@ -1922,7 +2056,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       } else {
         setInputText(ui.input, composerParts.load(sent.content));
         promptHistory.resetBrowse();
-        note(
+        flash(
           ui,
           "Message moved back to the composer. Enter sends it again.",
           ui.transcript.theme.ok,
@@ -1936,6 +2070,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       getTarget: () => ({ sessionId: host.sessionId, harness: host.harness }),
       getRuntime: () => host.runtime,
       getTrustedWorkspace: () => trustStore.require(host.harness.env.cwd),
+
       switchRuntime,
       changeDirectory,
       changeThinkingLevel,
@@ -1999,37 +2134,6 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       }
     };
 
-    ui.transcript.onUserMessage = (message) => {
-      void (async () => {
-        requireEditableHistory();
-        const action = await selectChoice(ui, "Message", [
-          {
-            id: "edit",
-            label: "Edit",
-            description: "Move it back to the composer and drop what followed it",
-          },
-          {
-            id: "branch",
-            label: "Branch after",
-            description: "Keep it and continue on a new branch",
-          },
-        ]);
-        if (action === "edit") {
-          await navigateTo(message.entryId);
-          return;
-        }
-        requireEditableHistory();
-        const leaf = await host.harness.session.getLeafId("main");
-        if (message.entryId === leaf) {
-          flash(ui, "Already at that point in the chat");
-          return;
-        }
-        await host.harness.session.moveHead("main", message.entryId);
-        replaceTranscript(ui, await host.harness.session.getBranch("main"));
-        note(ui, "Branched after the selected message", ui.transcript.theme.ok);
-      })().catch(reportCommandError);
-    };
-
     slashAutocomplete = new SlashAutocomplete({
       renderer,
       input: ui.input,
@@ -2070,7 +2174,12 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         slashAutocomplete.close();
         return;
       }
-      slashAutocomplete.update(value, slashCommandsForHarness(host.harness), mentionFiles);
+      slashAutocomplete.update(
+        value,
+        slashCommandsForHarness(host.harness),
+        mentionFiles,
+        host.cwd,
+      );
     };
     const refreshMentionFiles = async (cwd: string): Promise<void> => {
       const generation = ++mentionFilesGeneration;
@@ -2187,7 +2296,11 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
             throw result.error;
           }
           if (result.value.disposition === "queued") {
-            note(ui, delivery === "steer" ? `Steering: ${text}` : `Queued: ${text}`);
+            if (delivery === "steer") {
+              ui.steeringStatus.show(result.value.entryId, text);
+            } else {
+              note(ui, `Queued: ${text}`);
+            }
           } else {
             observeStartedRun(submittedHarness);
           }
@@ -2377,12 +2490,8 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
           "chat.commands.open": {
             title: "Open the command palette",
             run: () => {
-              // `?` is a character before it is a shortcut, so it only opens
-              // the palette from an empty composer.
-              if (ui.input.plainText !== "") return false;
               focusComposer();
               void openCommandPalette().catch(reportCommandError);
-              return true;
             },
           },
           // Plain up/down inside a multi-line draft move the cursor; history

@@ -4,7 +4,7 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/src/utils/retry.ts
  * Synced with pi 7ebf9087e.
  */
-import type { AssistantMessage } from "@june/schema";
+import type { AssistantMessage } from "@uji-ai/schema";
 
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
   return new RegExp(patterns.join("|"), "i");

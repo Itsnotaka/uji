@@ -1,5 +1,5 @@
 /**
- * Read tool ported from pi's harness read tool, adapted to June's AgentTool
+ * Read tool ported from pi's harness read tool, adapted to Uji's AgentTool
  * contract and direct filesystem access (pi routes reads through its
  * ExecutionEnv effects boundary). Images are detected by content (magic
  * bytes) and returned as image content parts; conversion/resizing is an

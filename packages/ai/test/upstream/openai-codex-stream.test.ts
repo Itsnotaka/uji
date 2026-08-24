@@ -170,8 +170,8 @@ describe("openai-codex streaming", () => {
         expect(headers?.get("Authorization")).toBe(`Bearer ${token}`);
         expect(headers?.get("chatgpt-account-id")).toBe("acc_test");
         expect(headers?.get("OpenAI-Beta")).toBe("responses=experimental");
-        expect(headers?.get("originator")).toBe("june");
-        expect(headers?.get("User-Agent")).toBe(`june (${platform()} ${release()}; ${arch()})`);
+        expect(headers?.get("originator")).toBe("uji");
+        expect(headers?.get("User-Agent")).toBe(`uji (${platform()} ${release()}; ${arch()})`);
         expect(headers?.get("accept")).toBe("text/event-stream");
         expect(headers?.has("x-api-key")).toBe(false);
         return new Response(stream, {
@@ -1412,6 +1412,108 @@ describe("openai-codex streaming", () => {
     expect(getOpenAICodexWebSocketDebugStats("session-auto")).toMatchObject({
       cachedContextRequests: 1,
       fullContextRequests: 1,
+    });
+  });
+
+  it("accepts a terminal websocket frame that finishes decoding after the socket closes", async () => {
+    const token = mockToken();
+
+    class MockWebSocket {
+      static OPEN = 1;
+      static CLOSED = 3;
+      readyState = MockWebSocket.OPEN;
+      private listeners = new Map<string, Set<(event: unknown) => void>>();
+
+      constructor() {
+        queueMicrotask(() => this.dispatch("open", {}));
+      }
+
+      addEventListener(type: string, listener: (event: unknown) => void): void {
+        let listeners = this.listeners.get(type);
+        if (!listeners) {
+          listeners = new Set();
+          this.listeners.set(type, listeners);
+        }
+        listeners.add(listener);
+      }
+
+      removeEventListener(type: string, listener: (event: unknown) => void): void {
+        this.listeners.get(type)?.delete(listener);
+      }
+
+      send(): void {
+        const encoded = new TextEncoder().encode(
+          JSON.stringify({
+            type: "response.completed",
+            response: {
+              id: "resp_1",
+              status: "completed",
+              usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+            },
+          }),
+        );
+        const payload = new ArrayBuffer(encoded.byteLength);
+        new Uint8Array(payload).set(encoded);
+
+        queueMicrotask(() => {
+          this.dispatch("message", {
+            data: {
+              arrayBuffer: () =>
+                new Promise<ArrayBuffer>((resolve) => {
+                  setTimeout(() => resolve(payload), 0);
+                }),
+            },
+          });
+          this.readyState = MockWebSocket.CLOSED;
+          this.dispatch("close", { code: 1006, reason: "Connection ended", wasClean: false });
+        });
+      }
+
+      close(): void {
+        this.readyState = MockWebSocket.CLOSED;
+      }
+
+      private dispatch(type: string, event: unknown): void {
+        for (const listener of this.listeners.get(type) ?? []) listener(event);
+      }
+    }
+
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("unexpected fetch", { status: 500 })),
+    );
+
+    const model: Model<"openai-codex-responses"> = {
+      id: "gpt-5.1-codex",
+      name: "GPT-5.1 Codex",
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      baseUrl: "https://chatgpt.com/backend-api",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 400000,
+      maxTokens: 128000,
+    };
+
+    const result = await streamOpenAICodexResponses(
+      model,
+      { systemPrompt: "", messages: [] },
+      {
+        apiKey: token,
+        sessionId: "terminal-close-race",
+        transport: "auto",
+      },
+    ).result();
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.responseId).toBe("resp_1");
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(getOpenAICodexWebSocketDebugStats("terminal-close-race")).toMatchObject({
+      connectionsCreated: 1,
+      websocketFailures: 0,
+      sseFallbacks: 0,
     });
   });
 

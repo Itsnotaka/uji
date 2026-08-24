@@ -1,0 +1,1025 @@
+---
+title: Design record
+description: The durable session model @uji-ai/core implements, the SDK it owes its clients, why each piece is shaped the way it is, and the order we build it in
+icon: IconBookSimple
+---
+
+This page is the document of record for `@uji-ai/core`. It states the technical path we chose, the
+reasoning behind it, and the implementation contracts at draft-code level. When this page and any
+other document disagree on a contract, this page wins. It is living and appendable: add sections,
+correct visibly, never rewrite history silently.
+
+**must** and **must not** are normative. "Landed" marks facts verified in the working tree on
+2026-08-24. File references point at that snapshot and will drift; the contract statements will not.
+
+## One core, any placement, many simultaneous clients
+
+Uji core is a durable runtime for agent conversations. Every argument on this page serves one goal:
+
+- **Any placement.** The same core runs embedded in an Electron main process, under a TUI, inside a
+  long-lived server on a VM, inside a sandbox, and on stateless infrastructure such as Cloudflare
+  Workers and Durable Objects. The loop is a function over external state, so where it runs never
+  changes what is durable. A process is an optimization, not a requirement.
+- **Many simultaneous clients.** A session is not owned by the client that happens to be rendering
+  it. A phone, a web page, a desktop app, and a cloud job can all send into the same conversation at
+  the same time, and none of them gets an error for trying. The model is multiplayer by
+  construction, not single-player with a lock bolted on.
+
+The acceptance scene for the whole design: three phones send at the same moment into an idle
+session. The store serializes them. The first placement wins the head, the other two land queued,
+one run starts and drains all three in order. Nobody gets an error, nothing forks, and the
+transcript reads as if the three people were in a room.
+
+Both goals point at one API shape. One root with a few namespaces (`sessions`, `messages`, `runs`,
+`heads`, `workspace`, `provider`, `plugins`), every verb taking one flat object, where the default composition
+gives a working loop with everything a client needs to render, and where the protocol layer later
+mirrors the same verbs one-to-one over the wire.
+
+Non-goals, so nothing below is misread as promising them:
+
+- **Exactly-once external effects.** The effect sandwich gives at-most-once for `replay: "never"`
+  tools and at-least-once for `replay: "safe"`. Nothing stronger.
+- **CRDTs or offline merge.** Multiplayer means concurrent writers against one authoritative store,
+  serialized by that store. A session lives in one store.
+- **Provider stream resumption.** A partial stream stays process-local. Only settled steps persist.
+- **Accidental forks.** Concurrent sends linearize; they never fork the conversation. Branching is
+  deliberate: a fork or a tree navigation.
+- **Product chrome in core.** Approval cards, permission modals, plan mode: extension and client
+  territory. Core owes the data and the hooks, never the pixels.
+
+## A session is a log
+
+A session is exactly what it is in storage: write-once **entries** forming a parent-linked tree, an
+append-only **records** ledger, mutable **head** pointers, and **facts**, all ordered by one
+per-session `seq`. Nothing mutates an entry or a record after commit. The only mutable state is
+heads and facts.
+
+Entry types: `message`, `compaction`, `model_change`, `thinking_level_change`, `custom`. Record
+types: `operation_started`, `abort_requested`, `operation_finished`, `step_attempt`, `tool_started`,
+`queue_enqueued`, `deferred_write`, `queue_cancelled`, `usage`. Every durable value crosses the
+storage boundary through `toJsonValue`.
+
+The whole log is queryable as one typed stream, and this shape is the base of the event system
+described later:
+
+```ts
+export type LogItem =
+  | { kind: "entry"; seq: number; head: string; entry: Entry }
+  | { kind: "record"; seq: number; record: SessionRecord }
+  | { kind: "head"; seq: number; head: string; leafId: string | null }
+  | { kind: "fact"; seq: number; fact: "name"; name: string }
+  | { kind: "fact_value"; seq: number; fact: string; value: JsonValue | undefined }
+  | { kind: "claim"; seq: number; event: ClaimLogEvent };
+```
+
+Why write-once plus one counter:
+
+- Crash states are enumerable. A crash lands between transactions, never inside one, so recovery
+  reads state instead of repairing it.
+- Projections are rebuildable. Transcript, usage, and directory views fold the log; they carry no
+  authority and never write.
+- Concurrency gets cheap. Appends from different processes cannot conflict at the content layer;
+  contention exists only at the pointers, which is where the next section puts it.
+
+Landed: the SQLite backend (`packages/core/src/harness/session/sqlite.ts`) implements this contract,
+serializing every write with `BEGIN IMMEDIATE`.
+
+## Heads are named pointers
+
+A **head** is a named pointer to an entry: `head/{name} -> entryId | null`. Every session has
+`main`. A fork creates another. That is the entire feature.
+
+A head deliberately carries almost nothing, and each omission is a decision:
+
+- No configuration register. Model, thinking level, and tool set are run inputs supplied by the
+  host and recorded per run in `operation_started`. Recording them per run means there is no
+  per-pointer register to migrate and no stale configuration to reconcile after a crash.
+- No state machine. The current run lives on the run claim (next section), so the pointer itself
+  has no lifecycle to corrupt.
+- No pending-input list. Pending input is session-scoped records, drained by whichever run comes.
+- No last-result register. The outcome of a run is its `operation_finished` record, queryable by
+  run id.
+
+A head moves in exactly two ways: an append through the head advances it to the new entry, or a
+deliberate navigation re-points it. Concurrent appends through one head linearize; they never fork
+it.
+
+The tree is a first-class product feature, not an implementation detail. A client renders the
+session's tree, the user jumps to any earlier entry, the head re-points there, and the next send
+diverges from that point with every abandoned branch retained. Navigation is a structural run: it
+claims the head exactly as compaction does, so nothing re-points a head under a live run's feet.
+Entry labels are facts, writable without a claim. Re-pointing a pointer over an immutable tree is
+the operation this whole design is built around, so the tree view costs almost nothing extra.
+
+## Runs claim heads; nothing claims a session
+
+A **run** is an operation bracketed by `operation_started` and `operation_finished`, containing step
+attempts, tool intents, settlements, and usage.
+
+Execution rights come from a **run claim**: a store-level compare-and-swap that binds one runner to
+one run on one head, with a fence and a TTL, renewed transactionally on every runner write and by
+heartbeat while a hot loop idles between commits.
+
+```ts
+export interface RunClaim {
+  readonly head: string;
+  readonly runId: string;
+  readonly ownerId: string;
+  readonly fence: number;
+  readonly expiresAtMs: number;
+}
+
+export type ClaimOutcome =
+  | { ok: true; claim: RunClaim }
+  | { ok: false; holder: { runId: string; ownerId: string; expiresAtMs: number } };
+```
+
+The landed SQLite implementation is one upsert: insert the claim row, or take over an existing row
+only when it has expired, incrementing the fence on takeover. The fence invalidates every write the
+previous claimant might still attempt. Three semantics are deliberate and easy to get wrong:
+
+- **Losing the race is a value, not an error.** The loser's input, if any, is already admitted and
+  the winner will drain it. No error reaches a user.
+- **Renewal matches on `(ownerId, fence)` alone and ignores expiry.** Expiry exists so a successor
+  can take over after a crash; it must not kill a claimant merely because its clock jumped while the
+  process was suspended. Zero rows matched means fenced out, which is terminal for that claimant.
+- **Release deletes only the claimant's own `(ownerId, fence)` row.** A stale owner can never
+  release the successor that replaced it.
+
+Rules:
+
+1. At most one live claim per head. Two runners racing to start a run on the same head resolve by
+   CAS.
+2. A claim's fence guards every write the run makes. Every runner write runs inside one immediate
+   transaction that first renews the claim; a fenced-out claimant dies before touching data.
+3. An expired claim on an unfinished run is an orphan. **Any** runner may claim it and resume:
+   settle unsettled tool intents by replay policy, then continue or finish. Resume is not "the owner
+   process came back"; it is "some runner picked up the orphan," which is what cloud placement
+   needs.
+4. Claims are the only lock in the system. Readers, senders, observers, and runners on other heads
+   of the same session never touch one.
+
+Two runs on two heads of one session proceed concurrently with no coordination.
+
+One rule the claim design refuses on purpose: **no core verb or claim option encodes a wall-clock
+execution budget.** A budget checked before admitting an effect bounds nothing that effect does
+afterward; the host may terminate the process anyway, and recovery from durable state already
+handles that. Hosts own budgets. Process termination is the fence. The claim TTL is failover
+metadata, never an execution budget (invariant 23).
+
+The write access a claim grants is a typed handle, landed as:
+
+```ts
+export interface RunWriter {
+  readonly claim: RunClaim;
+  /** Aborts when a successor fences this writer out. Release does not abort it. */
+  readonly claimLost: AbortSignal;
+  appendEntry(entry: ProvisionedEntry): Promise<Entry>;
+  appendEntries(entries: readonly ProvisionedEntry[]): Promise<Entry[]>;
+  /** Applies all currently pending deferred writes atomically in admission order. */
+  applyDeferred(): Promise<Entry[]>;
+  appendRecord<TRecord extends RunRecord>(record: NewRecord<TRecord>): Promise<TRecord>;
+  /** Deliberate re-point (navigation). Appends a head move; never deletes entries. */
+  moveHead(to: string | null): Promise<void>;
+  renew(): Promise<boolean>;
+  /** Applies remaining deferred writes, writes the terminal record, releases the claim. */
+  finish(record: NewRecord<OperationFinishedRecord>): Promise<{
+    record: OperationFinishedRecord;
+    deferredEntries: Entry[];
+  }>;
+  release(): Promise<void>;
+}
+```
+
+Landed: claims, fencing, takeover, and the fenced writer, drilled with a stale claimant that cannot
+write past its successor and SIGKILL recovery by a different process.
+
+## Admission is open
+
+Appending a user message, a queued send, a custom entry, or an answer to an ask requires no claim of
+any kind. The store serializes concurrent appends and assigns `seq`. Two sends that arrive in the
+same millisecond both land, in some order, and both are answered. Rejecting a send because someone
+else is talking **must not** happen at any layer (invariant 5). Session exclusivity is not something
+a sender can ever see.
+
+Open admission does not mean mid-run insertion into the provider context. Across the requests of one
+run, context grows only at the tail, because inserting earlier invalidates the provider's prefix
+cache. So admission has two dispositions, and the store decides between them atomically, inside the
+admit transaction, by reading the head's claim state:
+
+```ts
+export type SendReceipt =
+  | {
+      /** No live claim on the head: the entry was appended at the tip. A run is wanted. */
+      disposition: "placed";
+      entryId: string;
+      duplicate: boolean;
+    }
+  | {
+      /** A live run holds the head: the send is a durable pending item that run will drain. */
+      disposition: "queued";
+      entryId: string;
+      runId: string;
+      duplicate: boolean;
+    };
+```
+
+The admit transaction, as landed:
+
+```text
+TX[
+  if idempotencyKey exists in send_keys: return recorded receipt, duplicate: true
+  claim := live claim on (session, head)
+  if no claim:  write entry at head tip (+ head move), receipt "placed"
+  else:         write queue_enqueued { steer | followUp, runId, provisioned entry },
+                receipt "queued"
+  if idempotencyKey: insert send_keys(key -> receipt)
+]
+```
+
+Disposition is decided inside the transaction that reads the claim; there is no window where a claim
+starts between the read and the write. Delivery for queued sends keeps two modes: `steer` drains at
+the runner's next turn boundary, `queue` when the run would otherwise stop.
+
+Two additions ride admission because multiplayer input needs them:
+
+- **Attribution.** Message entries and send records carry an optional `origin` (client id, device,
+  user identity as the host defines it). Attribution, not authorization.
+- **Idempotency.** Admission accepts a caller-supplied key so a mobile retry cannot double-send.
+  Receipts are write-once rows kept for the session lifetime, so storage is bounded by the client's
+  key generation.
+
+Participant tree writes use the same atomic split through `admitEntry`: an idle head receives the
+entry immediately; a live head receives a durable `deferred_write` that the claimant applies in
+`seq` order before steering at each checkpoint, and any remainder before the terminal record,
+including for an aborted run.
+
+**Who runs?** Ensuring a run exists is host territory, not store territory. A host that has a
+session open subscribes to admission events and starts a runner when a placement lands with no
+claim. A thin client (mobile, web) may have no runner at all; its send sits durable until a host
+attaches. Admitted messages survive restart and are delivered once at a safe boundary. Multiple
+attached hosts reacting to one placement resolve by the claim CAS.
+
+Landed: open admission with dispositions, idempotency receipts, origin, deferred writes, and
+`AgentHarness.attach()`: one incremental log scan per idle-head signal that resumes an orphan,
+starts a run for a placement newer than the last operation record, or wakes queued steers. Drilled
+with a second-process placement, an orphan left by another process, and two attached hosts running
+one placement exactly once.
+
+## The step and the effect sandwich
+
+The **step** is the durable unit of run progress: one provider turn plus its tool batch, committed.
+A runner that has committed a step may die; nothing is lost and any runner continues.
+
+Every uncertain effect is wrapped in two commits:
+
+```text
+commit:  "about to do X; its output will land at provisioned id R"   <- intent
+         do X                                                        <- the uncertain part
+commit:  settled output at R + usage + next state                    <- settlement
+```
+
+For tools, the intent is a `tool_started` record carrying the provisioned `resultEntryId` and the
+tool's replay policy. It commits before the tool executes; settlement is written exactly once, at
+that id. Replay policy decides recovery: `replay: "safe"` re-executes with the persisted arguments;
+`replay: "never"` settles a synthetic error result stating the interruption, so the conversation
+stays coherent and nothing runs twice. The four crash positions and their recovery:
+
+| Crash point                            | Recovery                                                 |
+| -------------------------------------- | -------------------------------------------------------- |
+| before intent commit                   | previous state; run the procedure as if nothing happened |
+| after intent, before the effect        | indistinguishable from a crash mid-effect; apply policy  |
+| during or after effect, pre-settlement | same unknown-outcome policy                              |
+| after settlement                       | continue; never re-settle                                |
+
+Two runner shapes sit on the step, with identical durable behavior:
+
+- **Hot loop** (desktop, TUI, VM server): claim once, execute steps in-process until the run
+  finishes, renew as it goes.
+- **Step-at-a-time** (Cloudflare Worker, queue consumer, alarm-driven Durable Object): claim or
+  renew, read the branch, execute one step, commit, schedule re-entry, exit. The claim TTL covers
+  the gap between invocations.
+
+The rule that keeps both shapes honest: **the runner must not require in-memory state that outlives
+a step.** Everything the next step needs (drained queue positions, retry counts, compaction
+bookkeeping) must be derivable from the log or carried in run records (invariant 12).
+
+Two requirements are recorded now for the runner even though the features are not built yet:
+
+- **Out-of-order outcome staging for parallel tools.** Parallel effects finish in completion order;
+  result entries must enter the tree in assistant source order. Without an intermediate durable
+  state, tools B and C finishing while A still runs exist only in process memory, and a crash
+  replays or interrupts completed effects. When parallel tool execution lands, a finalized result
+  must become durable immediately in completion order and materialize into the tree in source
+  order.
+- **A synchronous admission gate.** The check "may this effect still start" and the invocation of
+  the effect must happen with no yield between them, or an abort that commits between check and
+  start races the effect. One `admit(invoke)` shape closes the gap.
+
+Landed: the sandwich, replay policy, synthetic settlements, one `seq` ordering everything, and crash
+resume that never replays a settled effect, drilled with SIGKILL at every commit boundary and
+resumed by a different process.
+
+## Suspension and wake
+
+A run does not have to hold a claim while it waits on the world. A tool may settle as
+**suspended**: the intent commits, the run records what it is waiting for (an ask's answer, a child
+run's completion, an external event), releases its claim, and stops consuming any resource anywhere.
+The wake input arrives as ordinary admission (an answer record, a child settlement, a
+webhook-driven append). Whichever host observes it claims the run and continues, settling the
+suspended tool's provisioned result entry exactly once.
+
+This one mechanism covers asks that outlive the asking process (the desktop closes; the phone
+answers an approval an hour later), mid-run approvals, cross-agent delegation with parent
+suspension, and scheduled wakes. The invariants that make cross-agent runs safe are the suspension
+invariants: persist the parent link before child admission, derive the child's admission
+idempotency key from the parent session, run, and tool call, store child completion before waking
+the parent, and settle the parent exactly once.
+
+Asks are deliberately not an SDK feature. A plugin that needs an answer mid-run appends a custom
+entry describing the question and suspends. The client renders that entry through its `custom` turn
+renderer, and the answer is an ordinary `messages.send` whose content the plugin recognizes on wake.
+The plugin owns the question and answer shapes. Core owes the suspension and the exactly-once
+settlement; the SDK owes nothing. This keeps the wire free of a question vocabulary that would
+otherwise grow one variant per product. Saved "always allow" rules are plugin storage.
+
+## One event stream, one cursor
+
+Two event tiers, one contract:
+
+- **Durable events are the log.** `LogItem`s are the replayable event stream and `seq` is the
+  cursor. A client that reconnects replays from its cursor and is complete with respect to durable
+  state.
+- **Ephemeral events overlay the log.** Streaming deltas and tool progress reference the
+  provisioned entry id they settle into. They are never durable; a client that missed them recovers
+  the settled entry from the log and lost only intermediate animation frames.
+
+`watch({ afterSeq })` is the one subscription verb. It replays durable items from the cursor, emits
+a `synced` watermark so the client knows its initial render is complete, then interleaves live
+durable items with ephemeral overlays. In-process it is a store subscription. Over the wire it is
+SSE with the same cursor semantics. Cross-process on one machine, the store's admission
+notifications carry durable items (the landed SQLite store wakes watchers off `PRAGMA data_version`
+so no client polls), and overlays are present when the observer can reach the runner's host, absent
+when it cannot. Absent means settled-entry granularity, which is safe by construction (invariant
+18).
+
+One discipline makes the stream gap-free: every committing write publishes its log items in the
+continuation that observes the commit, before the writing verb resolves. A watcher that registered
+before the commit gets the item live; one that registered after replays it by cursor. There is no
+ordering in which an item is neither replayed nor delivered.
+
+## Views: projections belong to core
+
+Every client was rebuilding the same read models, so core takes them over as pure projections over
+the log, shipped beside the store:
+
+- **Transcript projection.** Entries to turns, tool calls paired with their results, compactions
+  and model changes as annotated markers, custom entries passed through for product renderers.
+- **Streaming accumulation.** Partial-message state folded from overlay events, so a client renders
+  a live turn without owning fold logic.
+- **Usage and context arithmetic.** Tokens per run, cost, context percentage against the model
+  window.
+- **Session directory.** Id, name, preview, last activity, head list, live-claim status, for
+  session pickers.
+
+Projections are read-side and versionless with respect to storage. They consume the log, they never
+write, and a product that wants a different view writes its own beside them. The standing test: if a
+consumer needs more than embarrassingly little code to render a session, the missing piece belongs
+here.
+
+## The SDK
+
+### Three entry points, not one barrel
+
+```text
+@uji-ai/core            createUji, Uji, and the SDK types. Nothing else.
+@uji-ai/core/plugins    definePlugin, SessionApi, hook names, builtin plugins, tool authoring.
+@uji-ai/core/store      SqliteSessionRepo, DurableSessionStore, records, LogItem. Hosts and backends only.
+```
+
+- The main entry **must not** re-export storage, loop, tool, compaction, or plugin internals.
+  `resolvePlugins`, `watchPluginDirectories`, and `LoadedPlugin` are host composition, not internals:
+  a host needs them to build `UjiOptions.plugins`, so they sit beside `createUji`. `PluginHost`, the
+  registries, and the scope are internals and are exported from nowhere.
+- `@uji-ai/plugin` is the author-facing package name for `@uji-ai/core/plugins`. It re-exports that
+  entry and contains nothing else, so one process never holds two copies of the plugin types.
+- Clients import `@uji-ai/core` and `@uji-ai/schema`. A client that imports `/store` has taken a
+  dependency this page forbids. A client that imports `/plugins` is authoring a plugin, which is
+  host-side code.
+- Every SDK type is a plain interface or `kind`-discriminated union with no class instances and no
+  methods on data. That is what makes the protocol a one-to-one mirror later: the in-process API is
+  already wire-shaped.
+
+### Root
+
+```ts
+export function createUji(options: UjiOptions): Promise<Uji>;
+
+export interface UjiOptions {
+  readonly store: SessionStore; // from @uji-ai/core/store; the only storage type a host names
+  readonly streamFn: StreamFn; // explicit; no global registry (invariant 22)
+  readonly models: ModelCatalog; // resolve model refs; provider auth lives here
+  readonly plugins: readonly LoadedPlugin[]; // resolved by the host behind trust; built-ins included
+  readonly runner?: RunnerOptions; // retry, compaction thresholds, claim TTL, suspension timeout
+}
+
+export interface Uji {
+  readonly sessions: Sessions;
+  readonly messages: Messages;
+  readonly runs: Runs;
+  readonly heads: Heads;
+  readonly workspace: Workspace;
+  readonly provider: Provider;
+  readonly plugins: Plugins;
+  watch(input: {
+    sessionId: SessionId;
+    afterSeq?: Seq;
+    signal?: AbortSignal;
+  }): AsyncIterable<SessionEvent>;
+  attach(input?: AttachOptions): Disposer; // volunteer this process as a runner
+  close(): Promise<void>;
+}
+```
+
+Every verb takes exactly one argument, an object, and `sessionId` rides inside it. There is no
+session handle: a handle is a second variable a client has to hold and thread, and it is the one
+thing a wire cannot carry. `attach` is the only host verb on the root. A thin client never calls
+it; a desktop app calls it once. The runner internals (`step`, `drive`, `resume`) are not on `Uji`;
+they are `/store`-level machinery that `attach` composes.
+
+### `sessions`
+
+```ts
+export interface Sessions {
+  create(input?: { id?: SessionId; name?: string; origin?: Origin }): Promise<SessionInfo>;
+  get(input: { sessionId: SessionId }): Promise<SessionInfo | undefined>;
+  list(input?: { search?: string; limit?: number; cursor?: string }): Promise<Page<SessionInfo>>;
+  fork(input: { sessionId: SessionId; at?: EntryId; name?: string }): Promise<SessionInfo>;
+  rename(input: { sessionId: SessionId; name: string }): Promise<void>;
+  delete(input: { sessionId: SessionId }): Promise<void>; // aborts, waits idle, deletes
+}
+
+export interface SessionInfo {
+  readonly id: SessionId;
+  readonly name?: string;
+  readonly preview?: string;
+  readonly createdAt: number;
+  readonly lastActivityAt: number;
+  readonly heads: readonly HeadInfo[];
+}
+
+export interface Page<T> {
+  readonly items: readonly T[];
+  readonly next?: string;
+}
+```
+
+Cursors are opaque. Search folds into `list`. Model is a run input, not session state, so there is
+no `switchModel` here.
+
+### `messages`
+
+```ts
+export interface Messages {
+  send(input: SendInput): Promise<SendReceipt>;
+  cancel(input: { sessionId: SessionId; entryId: EntryId }): Promise<CancelOutcome>;
+  list(input: { sessionId: SessionId; head?: HeadName }): Promise<readonly Turn[]>; // transcript projection
+  context(input: { sessionId: SessionId; head?: HeadName }): Promise<readonly Message[]>; // what the model sees next
+  pending(input: { sessionId: SessionId; head?: HeadName }): Promise<readonly PendingItem[]>;
+}
+
+export interface SendInput {
+  readonly sessionId: SessionId;
+  readonly id?: EntryId; // caller-supplied idempotency: first admission wins
+  readonly content: string | readonly ContentPart[];
+  readonly delivery?: "steer" | "queue"; // default "steer"
+  readonly head?: HeadName; // default "main"
+  readonly origin?: Origin;
+  readonly wake?: boolean; // default true; false admits without asking a host to run
+}
+
+export type SendReceipt =
+  | { kind: "placed"; entryId: EntryId; seq: Seq }
+  | { kind: "queued"; entryId: EntryId; seq: Seq; runId: RunId }
+  | { kind: "duplicate"; entryId: EntryId };
+
+export type CancelOutcome =
+  { kind: "cancelled" } | { kind: "already_consumed" } | { kind: "not_found" };
+```
+
+`send` never rejects for "someone is talking." There is no busy error in this vocabulary.
+`wake: false` exists because a batch importer needs to admit without waking a runner.
+
+### `runs`
+
+```ts
+export interface Runs {
+  current(input: { sessionId: SessionId; head?: HeadName }): Promise<RunInfo | undefined>; // from the claim, never from memory
+  get(input: { sessionId: SessionId; runId: RunId }): Promise<RunInfo | undefined>;
+  abort(input: { sessionId: SessionId; runId: RunId; continue?: boolean }): Promise<AbortOutcome>;
+  wait(input: { sessionId: SessionId; head?: HeadName; signal?: AbortSignal }): Promise<void>;
+  compact(input: { sessionId: SessionId; head?: HeadName }): Promise<SendReceipt>;
+  context(input: { sessionId: SessionId; head?: HeadName }): Promise<ContextStatus>;
+}
+
+export type RunInfo =
+  | {
+      kind: "live";
+      runId: RunId;
+      head: HeadName;
+      startedAt: number;
+      claim: { ownerId: string; expiresAt: number };
+    }
+  | { kind: "orphaned"; runId: RunId; head: HeadName; startedAt: number; expiredAt: number }
+  | {
+      kind: "finished";
+      runId: RunId;
+      head: HeadName;
+      startedAt: number;
+      finishedAt: number;
+      outcome: RunOutcome;
+    };
+
+export type RunOutcome =
+  | { kind: "completed"; usage: Usage }
+  | { kind: "aborted"; usage: Usage }
+  | { kind: "failed"; error: RunError; usage: Usage };
+
+export type AbortOutcome = { kind: "requested"; runId: RunId } | { kind: "not_running" };
+
+export interface ContextStatus {
+  readonly tokens: number;
+  readonly window: number;
+  readonly percent: number;
+  readonly reserve: number;
+  readonly lastCompaction?: { entryId: EntryId; seq: Seq };
+}
+```
+
+`abort` is durable (`abort_requested`); the claimant honors it at its next checkpoint or provider
+event. `continue: true` resumes with pending steers and leaves queued items parked. `compact`
+returns a `SendReceipt` because a manual compaction is admitted exactly like a message: placed if
+idle, queued behind a live run.
+
+### `heads`
+
+```ts
+export interface Heads {
+  list(input: { sessionId: SessionId }): Promise<readonly HeadInfo[]>;
+  move(input: {
+    sessionId: SessionId;
+    head: HeadName;
+    to: EntryId | null;
+    label?: string;
+  }): Promise<MoveOutcome>;
+  tree(input: { sessionId: SessionId }): Promise<readonly TreeNode[]>;
+  label(input: { sessionId: SessionId; entryId: EntryId; label?: string }): Promise<void>; // a fact; no claim needed
+}
+
+export interface HeadInfo {
+  readonly name: HeadName;
+  readonly entryId: EntryId | null;
+  readonly run?: RunInfo;
+}
+export type MoveOutcome =
+  { kind: "moved"; seq: Seq } | { kind: "busy"; run: RunInfo } | { kind: "not_found" };
+```
+
+`busy` on `move` is the one place a client can see a live run as a reason for not doing something,
+and it is the honest one: re-pointing under a run's feet would corrupt it. There is no separate
+revert API, because entries are immutable and moving a head is the revert.
+
+### `workspace` and `provider`
+
+```ts
+export interface Workspace {
+  trust: {
+    status(input: { path: string }): Promise<TrustStatus>;
+    grant(input: { path: string }): Promise<void>;
+    revoke(input: { path: string }): Promise<void>;
+  };
+}
+export type TrustStatus = { kind: "trusted"; decidedAt: number } | { kind: "untrusted" };
+
+export interface Provider {
+  models: { list(): Promise<readonly ModelInfo[]>; default(): Promise<ModelInfo | undefined> };
+  credentials: { status(input: { provider: string }): Promise<CredentialStatus> };
+}
+```
+
+### `plugins`
+
+Plugins are host-side code, but what they contribute is what a client renders: the command
+palette, the settings menu, the skill list, the plugin inventory. The SDK carries those as one
+namespace so the wire mirrors them like every other verb. The contracts behind it are argued in the
+[Plugins](#plugins) section.
+
+```ts
+export interface Plugins {
+  list(input: { sessionId: SessionId }): Promise<readonly PluginInfo[]>;
+  commands: {
+    list(input: { sessionId: SessionId }): Promise<readonly CommandInfo[]>;
+    run(input: { sessionId: SessionId; name: string; argument?: string }): Promise<CommandOutcome>;
+  };
+  settings: {
+    list(input: { sessionId: SessionId }): Promise<readonly SettingInfo[]>;
+    apply(input: { sessionId: SessionId; id: string; choiceId: string }): Promise<ApplyOutcome>;
+  };
+  resources: { list(input: { sessionId: SessionId }): Promise<readonly Skill[]> };
+}
+
+export interface CommandInfo {
+  readonly name: string;
+  readonly owner: string; // plugin id
+  readonly description: string;
+}
+export interface SettingInfo {
+  readonly id: string;
+  readonly owner: string;
+  readonly label: string;
+  readonly choices: readonly [SettingChoice, ...SettingChoice[]];
+  readonly current: string; // choice id, read from plugin storage at list time
+}
+export type CommandOutcome =
+  { kind: "ran"; output?: string } | { kind: "not_found" } | { kind: "failed"; message: string };
+export type ApplyOutcome = { kind: "applied" } | { kind: "not_found" } | { kind: "invalid_choice" };
+```
+
+- Every verb is session-scoped because activation is (see [Plugins](#plugins)). The host that
+  answers is the one the client is connected to; two hosts attached to one session may answer
+  `list` differently when their plugin lists differ, which is the honest answer (invariant 21).
+- `commands.run` executes on the answering host. Its output is text for the client to show. A
+  command that wants to change the conversation sends a message like any other participant.
+- `settings.apply` writes plugin storage and returns. The client re-lists; there is no in-memory
+  value to patch, so there is nothing else to return.
+- None of this is durable state. `plugins_changed` and `diagnostic` are ephemeral events on `watch`
+  (below); a client lists after `synced` and again on each `plugins_changed`.
+
+### Events
+
+```ts
+export type SessionEvent = DurableEvent | EphemeralEvent;
+
+export type DurableEvent = { readonly seq: Seq } & (
+  | { kind: "message"; entryId: EntryId; turn: Turn } // projected, not raw Entry
+  | { kind: "head_moved"; head: HeadName; to: EntryId | null; by: "append" | "move" }
+  | { kind: "run_started"; run: RunInfo }
+  | { kind: "run_finished"; run: RunInfo }
+  | {
+      kind: "claim";
+      head: HeadName;
+      runId: RunId;
+      state: "acquired" | "renewed" | "released" | "expired";
+    }
+  | { kind: "queued"; item: PendingItem }
+  | { kind: "queue_consumed"; entryId: EntryId }
+  | { kind: "queue_cancelled"; entryId: EntryId }
+  | { kind: "compaction"; entryId: EntryId; summary: string }
+  | { kind: "name_changed"; name: string }
+  | { kind: "synced"; seq: Seq } // replay complete; live follows
+);
+
+export type EphemeralEvent =
+  | { kind: "text_delta"; entryId: EntryId; delta: string }
+  | { kind: "reasoning_delta"; entryId: EntryId; delta: string }
+  | { kind: "tool_progress"; entryId: EntryId; callId: string; progress: JsonValue }
+  | { kind: "retry_scheduled"; runId: RunId; attempt: number; at: number }
+  // host notifications: no entry to settle into; re-derivable by a list call
+  | { kind: "plugins_changed"; plugins: readonly PluginInfo[] }
+  | { kind: "diagnostic"; owner: string; level: "warn" | "error"; message: string };
+```
+
+- Every ephemeral overlay names the provisioned `entryId` it settles into (invariant 18). The two
+  host notifications are the exception the invariant allows: they promise nothing durable, and a
+  client that misses one has a stale menu until it lists again, never a wrong conversation.
+- `watch` **must** replay from `afterSeq`, emit `synced`, then interleave. Reconnect is
+  `watch({ sessionId, afterSeq: lastSeen })`; no client keeps any other bookkeeping.
+- `message` carries a `Turn`, not an `Entry`. Raw entries do not cross the boundary; a product that
+  projects its own view reads `/store`.
+- There is no global event stream with weaker guarantees than the session stream. Cross-session
+  signals arrive as a directory watch when a picker needs them.
+
+### Errors
+
+Values, not throws, at every verb:
+
+```ts
+export type SdkError =
+  | { kind: "not_found"; what: "session" | "entry" | "run" | "head" }
+  | { kind: "invalid_input"; message: string }
+  | { kind: "closed" }
+  | { kind: "untrusted"; path: string };
+```
+
+Everything else a verb can report is a `kind` on its own outcome union (`queued`, `busy`,
+`duplicate`). "Someone is running" is not an error anywhere.
+
+### Branded ids
+
+```ts
+type SessionId = string & { readonly __brand: "SessionId" };
+type EntryId = string & { readonly __brand: "EntryId" };
+type RunId = string & { readonly __brand: "RunId" };
+type HeadName = string & { readonly __brand: "HeadName" };
+type Seq = number & { readonly __brand: "Seq" };
+```
+
+Created only by the store; parsed at the protocol boundary. A client cannot pass a run id where an
+entry id belongs.
+
+### What each client deletes
+
+| Client   | Today                                                                                                                                                    | After                                                                                      |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| TUI      | harness composition, host module, transcript projection, context gauge, ask modals, streaming polls, command and settings menus read off harness getters | `createUji`, `attach()`, `watch()` folding turns, `runs.context`, `runs.wait`, `plugins.*` |
+| Desktop  | a hand-rolled IPC vocabulary forwarding a subset of events, with crash resume dropped                                                                    | preload exposes these interfaces verbatim; resume is `attach`                              |
+| Demo CLI | a third copy of the same assembly                                                                                                                        | `createUji`, `send`, `wait`, `list`                                                        |
+
+## Plugins
+
+Everything the model sees comes from a plugin. The harness owns no system prompt, no tool list, and
+no skill catalog; `plugins` is a required option, and the four built-ins (`system-prompt`,
+`context-files`, `tools-fs`, `skills`) are ordinary plugins a host lists first and a user or project
+plugin replaces by id. `src/tools` is a library of implementations; `tools-fs` is the only thing
+that puts them in front of the model. This is what keeps product policy out of the harness (the
+non-goal above): a product that wants a different prompt, tool set, or skill source swaps a plugin,
+never a harness option.
+
+`@uji-ai/core/plugins` is the in-process extension contract: host-side code behind workspace trust,
+never a wire client. A plugin is an id and one factory:
+
+```ts
+export interface Plugin {
+  readonly id: string;
+  session(api: SessionApi): void | Promise<void>;
+}
+
+export interface SessionApi {
+  readonly id: string;
+  readonly options: JsonValue; // from the host manifest; per-plugin configuration
+  readonly env: PluginEnv; // { cwd }
+
+  // 1. contribute: replayed over a fresh draft on every rebuild, in activation order; no I/O
+  readonly tools: Registry<ToolDraft>;
+  readonly commands: Registry<Draft<Command>>;
+  readonly prompt: Registry<Draft<PromptSection>>;
+  readonly resources: Registry<Draft<Skill>>;
+  readonly settings: Registry<Draft<PluginSetting>>;
+
+  // 2. intercept: a typed result the harness reads, combined per hook
+  hook<TName extends HookName>(name: TName, handler: HookHandler<TName>): Disposer;
+  // 3. observe: no result the harness reads; a throw is a handler_error event
+  on<TType extends HarnessEvent["type"]>(type: TType, listener: Listener<TType>): Disposer;
+  // 4. effect: process-local I/O, aborted when the plugin is disposed
+  effect(setup: (signal: AbortSignal) => void | Disposer | Promise<void | Disposer>): void;
+
+  readonly storage: PluginStorage; // session facts under `plugin:{id}:`
+  ask<TRequest extends AskRequest>(request: TRequest): Promise<AskAnswer<TRequest>>;
+  readonly plugins: { list(): readonly PluginInfo[] };
+  readonly diagnostics: { warn(message: string): void; error(message: string): void };
+}
+```
+
+Four verbs, and the split between them is the design:
+
+- **Contributions are declarative and synchronous.** `add` registers a function over a draft. The
+  registry replays every function over a fresh draft whenever the plugin set changes and swaps the
+  result in; there is no undo, so removing a plugin is dropping its functions and replaying. Later
+  plugins see earlier plugins' entries and may `update`, `delete`, or `wrap` them, which is how a
+  policy plugin wraps `bash` without owning it. A throwing contribution is a `diagnostic` and the
+  rest of the table still builds.
+- **Hooks return a result the harness reads.** `before_run`, `before_drive`, `before_run_end`,
+  `transform_context`, `before_request`, `before_payload`, `after_response`, `before_tool`,
+  `after_tool`; the combining rule per hook is fixed in `harness/hooks.ts`. `before_drive` and
+  `before_tool` fail closed: a throw refuses the drive or blocks the tool. Every other hook
+  contains its failure and continues.
+- **Listeners return nothing the harness reads.** Keeping hooks and listeners as two lists is what
+  stops an observer from becoming an interceptor by accident.
+- **Effects are process-local** with a lifetime equal to the activation.
+
+### Activation is per session, per host process
+
+`session(api)` runs once per activation of one plugin against one session in one process. The host
+owns one map, id to live scope, and `activate(list)` is its only mutation: a plugin whose
+`(id, version)` is unchanged is left alone; a changed version is disposed and re-run; a version
+whose factory throws is recorded `failed` and its previous version put back; an id missing from the
+list is disposed. Disposing a scope undoes the plugin completely: hooks, listeners, contributions,
+effects, in reverse order, each disposer under a budget, a slow or throwing one reported and skipped
+(invariant 21). Reload, add, remove, and option changes are all `activate` with a different list.
+
+What the session model forces:
+
+- A stateless runner activates the host's resolved list before its step and disposes after it. Hook
+  handlers therefore **must** be re-entrant per step, and `effect` **must not** be the only home of
+  anything that matters: on a step-at-a-time placement it runs and is aborted every invocation.
+  Cross-step memory goes to `storage` or custom entries (invariant 12).
+- Two hosts attached to one session activate plugins independently. Nothing about a plugin is
+  shared across processes except what it writes to the log.
+- A host serving many sessions activates each plugin once per session. Work that is per host, not
+  per session (watching `.uji/plugins`, refreshing a credential), belongs to the host and reaches
+  the plugin as `options` or as a new version.
+
+### Storage is session facts
+
+`api.storage` is the session's fact store under `plugin:{id}:`. Every `set` is a `fact_value` log
+item with its own `seq`, so a value written by one process is visible to every other process on the
+next read and replays to every watcher. That is what lets `fast-mode` hold nothing in memory and
+lets a fresh host see the state the last one wrote. The scope is one session: state that should
+follow the user across sessions needs a host-provided store (open question 7). Correction to an
+earlier draft of this page: "always allow" rules that outlive a session are host settings a plugin
+reads through `options`, not plugin storage.
+
+A `PluginSetting` is a label, a non-empty choice tuple, and a durable value read and applied over
+plugin storage with no cached copy in memory. A choice may carry a `status` badge; off states carry
+none, so clients render badges with no sentinel and no per-plugin knowledge.
+
+### Ask
+
+The contract is the one in [Suspension and wake](#suspension-and-wake): a plugin that needs an
+answer mid-run raises a custom entry and suspends, the answer is an admitted message, the run
+continues on whichever host observes it, and timeouts are host policy, not mechanism.
+
+Landed today is the compatibility path, not the contract. `api.ask` emits an `ask` host event
+carrying a typed request (`confirm`, `select`, `input`), the attached client answers through
+`answer(askId, value)`, and a host timeout resolves the request's default or rejects. The answer
+lives in process memory, so it does not survive the asking host. Slice 7 replaces the mechanism and
+keeps the plugin-facing signature. Whether the three request kinds stay a core vocabulary or become
+a builtin plugin's custom-entry shapes is open question 8.
+
+### Loading and trust
+
+`resolvePlugins({ builtins, directories, manifest })` builds the activation list: built-ins first,
+then each directory in order (`~/.uji/plugins` as `user`, `<cwd>/.uji/plugins` as `project`); a
+file whose id matches an earlier plugin replaces it in place, a new id is appended. The id is the
+file name, so `profile.ts` and `profile/index.ts` are both `profile`; a default export that is not a
+plugin, or whose id disagrees with its file, is a load failure reported and skipped. A file's
+version is its mtime and size and rides the module URL, so an edit is a new module. The manifest
+(`.uji/uji.json`) disables ids and sets options; it never lists plugins. `watchPluginDirectories`
+turns a burst of edits into one `activate`.
+
+Core does not check trust. `resolvePlugins` imports what it is given, so the gate is the argument:
+a host **must not** pass a project directory before the workspace is trusted (invariant 21). The
+TUI hands its resolver a `TrustedWorkspace`, a value that exists only after the grant, and that is
+the whole enforcement. Workspace trust is the only permission gate; after it, tools run without
+per-call prompts unless a plugin's `before_tool` hook says otherwise.
+
+Landed: the host, registries, scope, session-fact storage, settings, the four built-ins, file
+loading with manifest and watch, and the compatibility `ask`, drilled with a policy plugin blocking
+a tool, a hot swap that replaces a version's hooks atomically, a broken version that keeps the old
+one live, and a dispose that removes every registration. Not landed: the `plugins` SDK namespace
+(slice 6; the TUI reads the harness directly), durable asks (slice 7), and the barrel cut that makes
+`/plugins` a real entry point.
+
+## The wire
+
+Three package names are reserved with no directories: `@uji-ai/protocol`, `@uji-ai/server`,
+`@uji-ai/client`. Clients speak schema and protocol, never core internals, and the wire must be
+implementable from any client language; a Swift app is a first-class citizen of the protocol, not a
+port of the TS client.
+
+- **`@uji-ai/protocol`** is the wire definition of the SDK and nothing else. Because every verb
+  already takes one flat object with `sessionId` inside it, the mapping is mechanical: one route per
+  verb, the input object as the body, one SSE channel per session carrying durable log items and
+  ephemeral overlays, `seq` as the only reconnect cursor. It contains no behavior and imports
+  nothing from core.
+- **`@uji-ai/server`** binds one core host to the protocol: a process that owns a store and
+  volunteers runners exposes the namespaces over HTTP and fans `watch` out as SSE. Placement is its
+  whole variability: localhost under a desktop or TUI, a VM, a Durable Object host. It adds
+  authentication at the boundary and nothing of the session model.
+- **`@uji-ai/client`** is the first-party TypeScript client: the same verbs, typed receipts and
+  errors, reconnect-by-cursor handled inside `watch` so no consumer writes cursor bookkeeping.
+
+They stay empty deliberately until their first real consumer. The SDK lands in-process first; the
+packages materialize when the first remote client exists, protocol first, server binding second,
+client generated against both. Scaffolding them earlier would freeze wire shapes the SDK is still
+earning.
+
+## Invariants
+
+Storage and session:
+
+1. Entries and records are write-once; writing under an existing id is corruption.
+2. One `seq` per session orders entries, records, head moves, claims, and facts. Backends must not
+   shard counters.
+3. Heads and facts are the only mutable state, and heads move only by append-through or deliberate
+   re-point.
+4. A value crosses into durable storage only through `toJsonValue`.
+5. Admission never requires a claim, never blocks on one, and never fails because one exists. Its
+   two dispositions are decided atomically with the claim-state read.
+6. Concurrent sends linearize; nothing forks a head except a deliberate fork or navigation.
+7. Admission is idempotent under a caller-supplied key.
+
+Claims and runs:
+
+8. At most one live claim per head; every run write is fenced by its claim; a fenced-out runner's
+   transaction aborts before touching data.
+9. An unfinished run with an expired claim is claimable by any runner. Resume settles unsettled
+   intents by replay policy and never replays a settled effect.
+10. The `tool_started` intent, with provisioned `resultEntryId` and replay policy, commits before
+    the tool executes; settlement is written exactly once, at that id.
+11. Every accepted run eventually commits `operation_finished`, including on runner failure,
+    including when a different process finishes it.
+12. A runner requires no in-memory state that outlives a step; everything the next step needs is in
+    the log.
+13. A suspended run holds no claim and consumes no process anywhere; its wake input arrives by
+    admission and its settlement obeys invariant 10.
+
+Loop and boundaries:
+
+14. The loop imports nothing from runner, store, providers, or Node hosts; a stream function never
+    throws, failing in-band by stop reason.
+15. A `length`-stopped turn fails its whole tool batch.
+16. Tool results are content parts end to end; adapters encode at request time.
+
+Events and views:
+
+17. The log is the durable event stream; `seq` is the only cursor; replay from a cursor is complete
+    with respect to durable state.
+18. Ephemeral overlays reference the provisioned entry they settle into; host notifications carry
+    nothing durable and are re-derivable by a list call. No client state depends on having seen
+    either.
+19. Projections read the log and never write.
+
+Policy:
+
+20. Ported files change only within the recorded divergence classes; new behavior composes.
+21. Extension failures are contained; extension capabilities degrade across hosts; project extension
+    code never loads before trust.
+22. No global mutable defaults in core (the stream-function registry stays dead).
+23. No public verb, claim, or runner option encodes a wall-clock execution budget. The claim TTL is
+    failover metadata; hosts own budgets, process termination is the fence, and recovery works from
+    durable state alone.
+
+Plugins:
+
+24. Nothing reaches the model except through a plugin contribution. The harness owns no prompt,
+    tool, or skill of its own; built-ins are plugins and are replaceable by id.
+25. Contribution tables are a function of the activation list alone: replaying the same list over a
+    fresh draft yields the same tables, and a rebuild never reads the previous table.
+26. Plugin storage is session facts under the plugin's own prefix. A plugin cannot reach another
+    plugin's keys, and a setting has no in-memory copy the log could contradict.
+
+## Build order
+
+Sequenced so each slice lands with its crash drill, and so the multiplayer change was proven before
+the SDK sits on top of it.
+
+| #   | Slice             | Status | Proof                                                                                                                                                             |
+| --- | ----------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Heads + claims    | Landed | Two processes: one runs, one sends; fencing drill (stale claimant cannot write)                                                                                   |
+| 2   | Open admission    | Landed | Three concurrent senders against idle and running sessions; linearization asserted; duplicate-key retry lands once                                                |
+| 3   | Watch             | Landed | Observer client renders live via watch; the 250ms poller deleted from the TUI                                                                                     |
+| 4   | Runner extraction | Landed | SIGKILL at every commit boundary, resumed by a different process; attach drills (foreign placement, orphan, two hosts)                                            |
+| 5   | Views             | Next   | TUI transcript projection and desktop conversation assembly replaced by core calls                                                                                |
+| 6   | SDK               | Next   | `createUji` and the namespaces in-process; barrel cut to the three entry points; `plugins.*` replaces the TUI's harness getters; the three-phones test end to end |
+| 7   | Suspension        | Next   | Ask answered by a second client after the asking host exits; cross-agent crash positions                                                                          |
+| 8   | DO backend        | Next   | Second store implementation + conformance suite; step-at-a-time runner on alarms                                                                                  |
+
+Slice 4's runner carries the two recorded requirements from the step section: out-of-order outcome
+staging when parallel tools land, and the synchronous admission gate for the abort race.
+
+## Open questions
+
+1. **Step budget on stateless hosts.** Invariant 23 settles that no budget enters the contract.
+   What remains: long tool executions (bash) on stateless placements likely need suspension,
+   running the tool where a process lives and settling by admission. Decide when the DO backend
+   lands, and do not let the local hot loop inherit accidental limits from this.
+2. **Durable streaming frames.** Committing one compact frame per provider stream event to a
+   run-owned list, deleted atomically at settlement, would upgrade every cross-process observer
+   from settled-entry to frame granularity through the store alone, and would hand crash recovery a
+   partial to preserve. The price is one durable write per stream event. Decide with a write-volume
+   measurement when a second local client ships; degrading stays safe either way (invariant 18).
+3. **Records ledger growth.** We retain every record forever; the alternative deletes run-scoped
+   state at the terminal record and keeps only the conversation. We keep the ledger for audit and
+   replay; revisit only if growth measurably hurts.
+4. **Merge semantics for deliberate forks.** Fork, tree navigation, and linearized appends exist;
+   join does not. Whether a product ever needs to join two heads (summarize-and-append is the
+   likely shape, a structural run) is deferred until a demo forces it.
+5. **Identity and ACL depth.** `origin` on admission is attribution, not authorization.
+   Linear-shaped products need callers scoped by ACL on every tool call. That remains host and
+   protocol territory; the only core obligation today is that `origin` is durable and hooks can
+   read it.
+6. **Directory projection cost.** The session directory over many sessions wants an index (name,
+   preview, last seq, live claims) maintained on write rather than scans on read. SQLite gets
+   through v1 with a view; a remote backend will force materialization. Tied to slice 8.
+7. **Host-scoped plugin storage.** `api.storage` is one session's facts. "Always allow" rules,
+   per-provider preferences, and anything a user expects to follow them across sessions have no
+   home in core today; hosts pass them in as `options`. The likely shape is a second, host-owned
+   store on `SessionApi` (`api.host.storage`) keyed by workspace, with no durable-event semantics.
+   Decide when a second plugin needs it; `fast-mode` per session is tolerable.
+8. **Ask vocabulary after slice 7.** [Suspension and wake](#suspension-and-wake) says the plugin
+   owns the question shape so the wire carries no question vocabulary; the compatibility `ask`
+   ships three kinds (`confirm`, `select`, `input`) that every client already renders. The
+   recommended resolution keeps both: the three kinds become the custom-entry shapes of a builtin
+   `ask` plugin, `api.ask` stays as sugar over it, and core's wire stays free of them. Decide with
+   slice 7.
+
+## Lineage
+
+The loop and the durability mechanics (the effect sandwich, provisioned ids, replay policy, one
+`seq`) are ported from and tracked against pi; the admission vocabulary (`steer`/`queue`, `wait`,
+opaque cursors) follows OpenCode v2. Ported files keep their `Based on <link>` credit and change
+only within the recorded divergence classes (invariant 20); the root `THIRD-PARTY-NOTICES.md`
+lists every upstream, and the [references](/docs/references) page carries the reading list.
+Everything else on this page, in particular open admission, heads, run claims, and the step
+contract, is Uji's own path, and this page is where it is argued.

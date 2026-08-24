@@ -1,52 +1,49 @@
 ---
-title: June
+title: Uji
 description: An independent, handwritten core for building cross-platform agentic UI, and an honest inventory of what runs in this repo today
+icon: IconAgent
 ---
 
-June is an independent, handwritten core for building cross-platform agentic UI. It is not a chat product and not only an agent loop. The position it takes is that harnesses and agent loops are already well understood and the UI layer is the unsolved part, so the core stays small and durable and many clients attach to it, rather than a UI framework with a loop welded inside it. The loop, harness, session storage, tools, and provider blocks are written in this repo; no other project's harness is imported or wrapped as the implementation.
+Uji is an independent, handwritten core for building cross-platform agentic UI. It is not a chat product and not only an agent loop. The position it takes is that harnesses and agent loops are already well understood and the UI layer is the unsolved part, so the core stays small and durable and many clients attach to it, rather than a UI framework with a loop welded inside it. The loop, harness, session storage, tools, and provider blocks are written in this repo; no other project's harness is imported or wrapped as the implementation.
 
-Two clients attach today, both in-process: the terminal CLI and the Electron desktop chat. A browser client has nothing to attach to yet. That is what the unbuilt `@june/protocol`, `@june/server`, and `@june/client` rows below are for.
+Two clients attach today, both in-process: the terminal CLI and the Electron desktop chat. A browser client has nothing to attach to yet. That is what the unbuilt `@uji-ai/protocol`, `@uji-ai/server`, and `@uji-ai/client` rows below are for.
 
 ## The shape
 
 A client never runs the loop. It talks to a harness, the harness drives the loop, the loop talks to a provider through an injected `StreamFn`, and tools are bound to whichever process owns the filesystem and shell.
 
-```text
- client                     packages/demo/grok-bot (Electron renderer)
-                            packages/demo/cli (@june/demo, OpenTUI + print mode)
-   |
-   |  today: a direct in-process call (cli), or Electron IPC
-   |         through a preload bridge (grok-bot) into the main process
-   |  planned: @june/protocol over HTTP+SSE, served by @june/server
-   v
- AgentHarness ............... durable run bracket, tool intents, crash resume
-   |    \
-   |     `--> SessionStorage ..... SqliteSessionStorage (node:sqlite), handed out
-   |                               by SqliteSessionRepo. Write-once entries,
-   |                               append-only records
-   |  runAgentLoopContinue
-   v
- agent loop (runAgentLoop) .. turns, tool batches, steering and follow-up queues
-   |    \
-   |     `--> AgentTool[] ....... tool host: the process that owns cwd
-   v
- StreamFn ................... Models.streamSimple
-   v
- @june/ai Models ............ providers, credentials, OAuth, neutral event streams
+```mermaid
+flowchart TD
+  clients["clients — tui, desktop"]
+  harness["AgentHarness"]
+  storage["SessionStorage / SQLite"]
+  loop["runAgentLoop"]
+  tools["AgentTool"]
+  stream["StreamFn"]
+  models["@uji-ai/ai Models"]
+  protocol["@uji-ai/protocol — reserved"]
+
+  clients -->|"in-process or Electron IPC"| harness
+  clients -.-> protocol
+  harness --> storage
+  harness --> loop
+  loop --> tools
+  loop --> stream
+  stream --> models
 ```
 
-The tool host is a placement, not a fixed location. Today every tool in `@june/core` runs against a `cwd` string in the harness process. Nothing about `AgentTool` requires that process to be local, but no remote tool host exists yet.
+The tool host is a placement, not a fixed location. Today every tool in `@uji-ai/core` runs against a `cwd` string in the harness process. Nothing about `AgentTool` requires that process to be local, but no remote tool host exists yet.
 
 ## The smallest real composition
 
-This is the shape `packages/demo/cli/src/run.ts` uses, trimmed. Node 26 runs the TypeScript sources directly, so there is no build step.
+This is the shape `packages/tui/src/run.ts` uses, trimmed. Node 26 runs the TypeScript sources directly, so there is no build step.
 
-```ts
+```ts title="packages/tui/src/run.ts"
 import process from "node:process";
-import { createModels, FileCredentialStore, openaiCodexProvider } from "@june/ai";
-import { AgentHarness, createAllTools, SqliteSessionRepo } from "@june/core";
+import { createModels, FileCredentialStore, openaiCodexProvider } from "@uji-ai/ai";
+import { AgentHarness, createAllTools, SqliteSessionRepo } from "@uji-ai/core";
 
-const repo = new SqliteSessionRepo(".june/sessions.db");
+const repo = new SqliteSessionRepo(".uji/sessions.db");
 const session = await repo.create();
 const models = createModels({ credentials: new FileCredentialStore() });
 const provider = openaiCodexProvider();
@@ -81,7 +78,7 @@ await repo.close();
 ```
 
 <Callout type="warn" title="Result.ok does not mean the run succeeded">
-  `prompt()` returns `Result.err` only for precondition failures (`LaneBusy`, `Closed`). A provider
+  `prompt()` returns `Result.err` only for precondition failures (`HeadBusy`, `Closed`). A provider
   failure or a thrown tool error arrives inside `Result.ok` as `{ kind: "failed", error }`. Session
   storage failures are different again: they throw `SessionError`. [The harness
   page](/docs/core/harness#lifecycle-api) states the three error channels in full.
@@ -91,26 +88,30 @@ Requirements as of today: Node 26 with `node:sqlite` available, `--experimental-
 
 ## What exists today
 
-Every package is `private` and unpublished. "Shipped" below means the source exists in this workspace and runs, not that it is on npm. `@june/schema`, `@june/ai`, and `@june/core` each declare a single `exports` entry pointing straight at `./src/index.ts`. `@june/demo` is a demo composition with a `june` script, not a published bin. [Roadmap](/docs/roadmap) carries the same table with the gap analysis attached.
+The library and application packages remain private. `uji-ai` is the public executable distribution; its `0.0.1` placeholder reserves the package and `uji` bin while the runnable distribution is assembled. "Shipped" below means the source exists in this workspace and runs. `@uji-ai/schema`, `@uji-ai/ai`, and `@uji-ai/core` each declare a single `exports` entry pointing straight at `./src/index.ts`. `@uji-ai/tui` is the terminal client package. It runs from source and is not a published bin. [Roadmap](/docs/roadmap) carries the same table with the gap analysis attached.
 
-| Package                            | Status              | One line                                                                                                                         |
-| ---------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `@june/schema`                     | Shipped             | Neutral `Message`, `Model`, `Tool`, request-context, and content contracts shared across the runtime                             |
-| `@june/ai`                         | Shipped             | `Models`, provider adapters, model catalogs, credentials, auth flows, and neutral assistant event streams                        |
-| `@june/core`                       | Shipped             | The standalone agent loop, `AgentHarness`, the SQLite session backend, and seven tools (read, bash, edit, write, grep, find, ls) |
-| `@june/demo` (`packages/demo/cli`) | Shipped             | The `june` CLI: full-screen TUI, `-p` print mode, readline login funnel                                                          |
-| `@june/protocol`                   | Reserved, not built | The wire clients would bind to. No directory exists                                                                              |
-| `@june/server`                     | Reserved, not built | The HTTP+SSE host. No directory exists                                                                                           |
-| `@june/client`                     | Reserved, not built | The typed TS client. No directory exists                                                                                         |
+| Package                        | Status                | One line                                                                                                        |
+| ------------------------------ | --------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `@uji-ai/schema`               | Shipped               | Neutral `Message`, `Model`, `Tool`, request-context, and content contracts shared across the runtime            |
+| `@uji-ai/ai`                   | Shipped               | `Models`, provider adapters, model catalogs, credentials, auth flows, and neutral assistant event streams       |
+| `@uji-ai/core`                 | Shipped               | The standalone agent loop, `AgentHarness`, SQLite sessions, plugins, skills, compaction, and seven coding tools |
+| `@uji-ai/plugin`               | Shipped               | Author API: `definePlugin` and the types a plugin file imports. The host lives in core                          |
+| `@uji-ai/telemetry`            | Shipped               | `TelemetryContext` on `Context`. `NOOP_TELEMETRY_CONTEXT` records nothing; no exporter yet                      |
+| `@uji-ai/ui`                   | Shipped               | Shared Base UI primitives. No agent runtime                                                                     |
+| `@uji-ai/tui` (`packages/tui`) | Shipped               | The `uji` CLI: full-screen TUI, `-p` print mode, login funnel                                                   |
+| `uji-ai` (`packages/cli`)      | Placeholder published | Public executable distribution that reserves the `uji` bin                                                      |
+| `@uji-ai/protocol`             | Reserved, not built   | The wire clients would bind to. No directory exists                                                             |
+| `@uji-ai/server`               | Reserved, not built   | The HTTP+SSE host. No directory exists                                                                          |
+| `@uji-ai/client`               | Reserved, not built   | The typed TS client. No directory exists                                                                        |
 
 Demos and supporting packages:
 
-| Path                     | Package               | One line                                                                                                     |
-| ------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `packages/demo/grok-bot` | `@june/demo-grok-bot` | Electron desktop chat; the main process hosts the harness, the sandboxed renderer sees a typed preload API   |
-| `packages/demo/website`  | `@june/demo-website`  | TanStack Start marketing site; it does not run a harness                                                     |
-| `packages/ui`            | `@june/ui`            | Shared Base UI primitives styled with StyleX, composed by product shells instead of growing one-off controls |
-| `packages/docs`          | `docs`                | This site                                                                                                    |
+| Path                    | Package                | One line                                                                                                     |
+| ----------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `packages/demo/desktop` | `@uji-ai/demo-desktop` | Electron desktop chat; the main process hosts the harness, the sandboxed renderer sees a typed preload API   |
+| `packages/demo/website` | `@uji-ai/demo-website` | TanStack Start marketing site; it does not run a harness                                                     |
+| `packages/ui`           | `@uji-ai/ui`           | Shared Base UI primitives styled with StyleX, composed by product shells instead of growing one-off controls |
+| `packages/docs`         | `docs`                 | This site                                                                                                    |
 
 ## What is deliberately not here
 
@@ -134,43 +135,85 @@ Named so you do not assume they work.
 
 - Protocol, server, and client packages. Clients reach the harness by direct call or Electron IPC, never over a wire.
 - The host and SDK layer between the core and a product. `sdk.provider` and `sdk.session` appear only inside `TODO` comments, so each product assembles Core itself. [The host and SDK layer](./host-sdk.mdx) is the inventory.
-- Multiple lanes. `AgentHarness` hardcodes the single lane `"main"`.
-- Compaction, branch navigation, and forks. Sessions grow without bound.
+- Multiple heads. `AgentHarness` hardcodes the single head `"main"`.
+- Branch navigation and forks. Compaction exists; sessions still have one lane.
 - Retry policy. There is no attempt cap and no backoff.
-- Telemetry spans, and anything that decides whether a tool may run. `AgentLoopConfig` does take
-  `beforeToolCall`, `afterToolCall`, and `shouldStopAfterTurn`, and `beforeToolCall` can block a
-  call, but no policy in the repo uses them for approval, and the harness only records intents.
-- Skills: no catalog, no activate step, no mid-run injection.
+- A telemetry exporter. `@uji-ai/telemetry` is a no-op parent on `Context`.
+- Tool approval policy. `beforeToolCall` can block a call; nothing in the repo uses it for approval.
 - Session backends other than SQLite. There is no in-memory backend.
 
 ## Where to go next
 
 <Cards>
-  <Card
+  <DocCard
+    icon="IconRocket"
     title="Quickstart"
     href="/docs/quickstart"
     description="Install the workspace, log in to a provider, and get a streaming run"
   />
-  <Card
+  <DocCard
+    icon="IconLayersThree"
     title="Architecture"
     href="/docs/architecture"
     description="The layering rule: harness may import the loop, the loop never imports the harness"
   />
-  <Card
-    title="Core"
+  <DocCard
+    icon="IconPackage"
+    title="@uji-ai/core"
     href="/docs/core"
     description="Agent loop, harness, session storage, tools, and the provider StreamFn"
   />
-  <Card
+  <DocCard
+    icon="IconPlan"
     title="Roadmap"
     href="/docs/roadmap"
     description="What the not-built-yet rows above turn into, and in what order"
   />
 </Cards>
 
-<Callout type="info" title="These docs are the settled subset">
-  [`blueprint.md`](https://github.com/Itsnotaka/june/blob/main/blueprint.md) at the repo root is the
-  running design journal: brain dump, open questions, dated decisions, and reference comparisons. It
-  records intent. These pages record only what the source supports. When the two disagree, the
-  source wins and the page is wrong.
+## Packages
+
+<Cards>
+  <DocCard
+    icon="IconCodeBrackets"
+    title="@uji-ai/schema"
+    href="/docs/schema"
+    description="Neutral Message, Model, Tool, and Skill contracts"
+  />
+  <DocCard
+    icon="IconSparkle"
+    title="@uji-ai/ai"
+    href="/docs/ai"
+    description="Providers, credentials, OAuth, and Models.streamSimple"
+  />
+  <DocCard
+    icon="IconPlugin1"
+    title="@uji-ai/plugin"
+    href="/docs/plugin"
+    description="definePlugin. The host lives in core"
+  />
+  <DocCard
+    icon="IconChart1"
+    title="@uji-ai/telemetry"
+    href="/docs/telemetry"
+    description="Context-carried spans. No exporter yet"
+  />
+  <DocCard
+    icon="IconComponents"
+    title="@uji-ai/ui"
+    href="/docs/ui"
+    description="Shared Base UI primitives"
+  />
+  <DocCard
+    icon="IconConsole"
+    title="@uji-ai/tui"
+    href="/docs/tui"
+    description="The uji terminal client"
+  />
+</Cards>
+
+<Callout type="info" title="Where the design lives">
+  The [design record](/docs/design) states the chosen session model, the SDK contracts, the
+  invariants, and the build order, with the reasoning attached. Package pages record only what the
+  source supports. When a page and the source disagree, the source wins and the page is wrong.
 </Callout>

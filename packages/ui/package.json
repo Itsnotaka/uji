@@ -1,5 +1,5 @@
 {
-  "name": "@june/ui",
+  "name": "@uji-ai/ui",
   "private": true,
   "description": "Raw-source Base UI primitives styled with StyleX and themed by consumers.",
   "type": "module",
@@ -14,6 +14,7 @@
     "./styles.css": "./src/index.css"
   },
   "scripts": {
+    "clean": "rm -rf node_modules .turbo",
     "check:tokens": "node scripts/sync-platform-tokens.mjs --check",
     "sync:tokens": "node scripts/sync-platform-tokens.mjs",
     "typecheck": "pnpm check:tokens && tsc --noEmit"

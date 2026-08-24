@@ -31,6 +31,31 @@ void describe("chat keymap", () => {
     },
   });
 
+  /**
+   * No shipped binding is a bare printable key, so the tests about a key
+   * reaching the composer bind one on purpose.
+   */
+  const PRINTABLE_KEYBINDS: Readonly<Record<ChatCommand, string>> = {
+    ...CHAT_KEYBINDS,
+    "chat.commands.open": "?",
+  };
+
+  const register = (keybinds?: Readonly<Record<ChatCommand, string>>): void => {
+    const commands = Object.fromEntries(
+      Object.keys(CHAT_KEYBINDS).map((name) => [name, spec(name as ChatCommand)]),
+    ) as { readonly [K in ChatCommand]: ChatCommandSpec };
+    dispose = registerChatLayer(keymap, {
+      enabled: () => enabled,
+      commands,
+      ...(keybinds === undefined ? {} : { keybinds }),
+    });
+  };
+
+  const rebindToPrintableKey = (): void => {
+    dispose();
+    register(PRINTABLE_KEYBINDS);
+  };
+
   before(async () => {
     // Legacy encoding cannot tell ctrl+p from ctrl+shift+p, and sends ctrl+enter
     // as a bare return. The Kitty protocol is what a modern terminal
@@ -48,10 +73,7 @@ void describe("chat keymap", () => {
     input = new TextareaRenderable(setup.renderer, { id: "input", width: "100%", height: 3 });
     setup.renderer.root.add(input);
     input.focus();
-    const commands = Object.fromEntries(
-      Object.keys(CHAT_KEYBINDS).map((name) => [name, spec(name as ChatCommand)]),
-    ) as { readonly [K in ChatCommand]: ChatCommandSpec };
-    dispose = registerChatLayer(keymap, { enabled: () => enabled, commands });
+    register();
   });
 
   afterEach(() => {
@@ -89,7 +111,31 @@ void describe("chat keymap", () => {
     assert.deepEqual(ran, ["chat.model.next", "chat.model.previous"]);
   });
 
+  void test("every shipped binding takes a modifier, so typing is never a shortcut", () => {
+    for (const binding of Object.values(CHAT_KEYBINDS)) {
+      for (const key of binding.split(",")) {
+        assert.ok(key.includes("+") || key.length > 1, `${key} is a bare printable key`);
+      }
+    }
+  });
+
+  void test("a question mark reaches the composer instead of opening the palette", () => {
+    setup.mockInput.pressKey("?");
+
+    assert.deepEqual(ran, []);
+    assert.equal(input.plainText, "?");
+  });
+
+  void test("the palette opens with a draft in the composer", () => {
+    input.insertText("draft");
+    setup.mockInput.pressKey("k", { ctrl: true });
+
+    assert.deepEqual(ran, ["chat.commands.open"]);
+    assert.equal(input.plainText, "draft");
+  });
+
   void test("a declining command hands the key back to the composer", () => {
+    rebindToPrintableKey();
     declined.add("chat.commands.open");
     setup.mockInput.pressKey("?");
 
@@ -98,10 +144,9 @@ void describe("chat keymap", () => {
   });
 
   void test("a disabled command hands the key back without running", () => {
+    rebindToPrintableKey();
     editable = false;
     setup.mockInput.pressKey("g", { ctrl: true });
-    // `?` has no editability gate of its own in the real wiring, but here every
-    // command shares one, so the whole set steps aside.
     setup.mockInput.pressKey("?");
 
     assert.deepEqual(ran, []);
@@ -109,6 +154,7 @@ void describe("chat keymap", () => {
   });
 
   void test("a disabled layer leaves every key alone", () => {
+    rebindToPrintableKey();
     enabled = false;
     setup.mockInput.pressEscape();
     setup.mockInput.pressKey("?");

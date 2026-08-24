@@ -1,8 +1,11 @@
 {
-  "name": "june",
+  "name": "uji",
   "private": true,
   "type": "module",
   "scripts": {
+    "build:cli": "pnpm --dir packages/tui build:binary",
+    "dev": "pnpm --dir packages/demo/desktop dev",
+    "clean": "turbo run clean && rm -rf node_modules .turbo",
     "format": "oxfmt --check",
     "format:fix": "oxfmt .",
     "lint": "oxlint .",
@@ -12,10 +15,10 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "oxfmt": "^0.63.0",
-    "oxlint": "^1.78.0",
+    "oxlint": "^1.79.0",
     "oxlint-tsgolint": "^7.0.2001",
     "turbo": "^2.10.9",
     "typescript": "^7.0.2"
   },
-  "packageManager": "pnpm@11.21.0"
+  "packageManager": "pnpm@11.22.0"
 }

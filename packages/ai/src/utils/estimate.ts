@@ -12,7 +12,7 @@ import type {
   TextContent,
   Tool,
   Usage,
-} from "@june/schema";
+} from "@uji-ai/schema";
 
 export interface ContextUsageEstimate {
   /** Estimated total context tokens. */

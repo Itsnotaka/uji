@@ -1,19 +1,20 @@
 ---
 title: Agent loop
-description: Run June's provider-neutral Message loop with tools and hosts
+description: Run Uji's provider-neutral Message loop with tools and hosts
+icon: IconArrowsRepeat
 ---
 
 The agent loop drives model turns, tool batches, steering, and follow-up messages. It has no session,
 storage, provider catalog, or credential dependency.
 
-`agent-loop.ts` and `types.ts` define the canonical implementation. The conformance suite lives in
+`agent-loop.ts` and `types.ts` define the implementation. The conformance suite lives in
 `packages/core/test/upstream/agent-loop.test.ts`.
 
 ## Message contract
 
 The loop carries `AgentMessage`. Without declaration merging, that is the neutral `Message` union:
 
-```ts
+```ts title="Message"
 type Message = UserMessage | AssistantMessage | ToolResultMessage;
 ```
 
@@ -25,7 +26,7 @@ encode those values at request time; the loop never stores or interprets a provi
 
 Use `agentLoop` when you want an async event stream:
 
-```ts
+```ts title="agentLoop"
 const events = agentLoop(prompts, context, config, signal, streamFn);
 
 for await (const event of events) handleEvent(event);
@@ -34,7 +35,7 @@ const newMessages = await events.result();
 
 Use `runAgentLoop` when another component owns event delivery:
 
-```ts
+```ts title="runAgentLoop"
 const newMessages = await runAgentLoop(prompts, context, config, emit, signal, streamFn);
 ```
 
@@ -84,9 +85,9 @@ model turn unless every finalized result requests termination.
 and coerces provider arguments before calling `execute`. `prepareArguments` is an optional compatibility seam
 for raw arguments that must be normalized before schema validation.
 
-```ts
+```ts title="echo-tool.ts"
 import { Type } from "typebox";
-import { toolResultContent } from "@june/core";
+import { toolResultContent } from "@uji-ai/core";
 
 const echoParameters = Type.Object({ value: Type.String() });
 
@@ -117,7 +118,7 @@ The loop emits:
 - `message_start`, `message_update`, and `message_end`;
 - `tool_execution_start`, `tool_execution_update`, and `tool_execution_end`.
 
-`message_update.assistantMessageEvent` is the canonical provider event (`text_*`, `thinking_*`, or
+`message_update.assistantMessageEvent` is the provider event (`text_*`, `thinking_*`, or
 `toolcall_*`). Clients should render the event they understand and ignore unsupported content.
 
 Every event sink call is awaited. A rejected sink or configuration callback interrupts the low-level loop; it
@@ -125,8 +126,8 @@ is not converted into a synthetic provider error.
 
 ## Stream ownership
 
-Pass a `StreamFn` explicitly from the host. A process-wide fallback is also available through
-`setDefaultStreamFn` for low-level integrations that intentionally own one global model runtime.
+Pass a `StreamFn` explicitly from the host to every low-level loop call. Core has no process-wide model
+runtime or fallback registry.
 
 See [Stream function](./stream-fn.mdx) for `Models.streamSimple` wiring and [Harness](./harness.mdx) for durable
 execution.

@@ -3,15 +3,19 @@ import process from "node:process";
 import { gt, valid } from "semver";
 import packageMetadata from "../package.json" with { type: "json" };
 
-const LATEST_RELEASE_URL = "https://api.github.com/repos/Itsnotaka/uji/releases/latest";
-const RELEASES_URL = "https://github.com/Itsnotaka/uji/releases/latest";
+export const REPO = "Itsnotaka/uji";
+const LATEST_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
+const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
 
 export const VERSION = packageMetadata.version;
 
-export interface UpdateNotice {
+export interface ReleaseInfo {
+  /** Semver without the leading `v`. */
   version: string;
   url: string;
 }
+
+export type UpdateNotice = ReleaseInfo;
 
 export function isNewerVersion(candidate: string, current: string): boolean {
   const candidateVersion = valid(candidate.trim());
@@ -21,19 +25,21 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   );
 }
 
-export async function checkForUpdate(
+export function githubHeaders(): Record<string, string> {
+  return {
+    accept: "application/vnd.github+json",
+    "User-Agent": `uji/${VERSION}`,
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
+
+/** The newest published release, or `undefined` when GitHub cannot be reached or answers oddly. */
+export async function fetchLatestRelease(
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
-): Promise<UpdateNotice | undefined> {
-  if (process.env.UJI_OFFLINE !== undefined || process.env.UJI_SKIP_VERSION_CHECK !== undefined) {
-    return undefined;
-  }
+): Promise<ReleaseInfo | undefined> {
   try {
     const response = await fetchFn(LATEST_RELEASE_URL, {
-      headers: {
-        accept: "application/vnd.github+json",
-        "User-Agent": `uji/${VERSION}`,
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
+      headers: githubHeaders(),
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) return undefined;
@@ -47,15 +53,27 @@ export async function checkForUpdate(
       return undefined;
     }
     const version = valid(data.tag_name.trim().replace(/^v/u, ""));
-    if (version === null || !isNewerVersion(version, VERSION)) return undefined;
+    if (version === null) return undefined;
     const url =
       "html_url" in data &&
       typeof data.html_url === "string" &&
-      data.html_url.startsWith("https://github.com/Itsnotaka/uji/releases/")
+      data.html_url.startsWith(`https://github.com/${REPO}/releases/`)
         ? data.html_url
         : RELEASES_URL;
     return { version, url };
   } catch {
     return undefined;
   }
+}
+
+/** A newer release than the running build, unless the user opted out of network checks. */
+export async function checkForUpdate(
+  fetchFn: typeof globalThis.fetch = globalThis.fetch,
+): Promise<UpdateNotice | undefined> {
+  if (process.env.UJI_OFFLINE !== undefined || process.env.UJI_SKIP_VERSION_CHECK !== undefined) {
+    return undefined;
+  }
+  const latest = await fetchLatestRelease(fetchFn);
+  if (latest === undefined || !isNewerVersion(latest.version, VERSION)) return undefined;
+  return latest;
 }

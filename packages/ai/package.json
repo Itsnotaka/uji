@@ -1,19 +1,35 @@
 {
-  "name": "@june/ai",
+  "name": "@uji-ai/ai",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./auth/context": "./src/auth/context.ts",
+    "./auth/helpers": "./src/auth/helpers.ts",
+    "./auth/oauth/openai-codex": "./src/auth/oauth/openai-codex.ts",
+    "./auth/store": "./src/auth/store.ts",
+    "./models": "./src/models.ts",
+    "./providers/openai-codex": "./src/providers/openai-codex.ts",
+    "./session-resources": "./src/session-resources.ts",
+    "./types": "./src/types.ts",
+    "./utils/event-stream": "./src/utils/event-stream.ts",
+    "./utils/overflow": "./src/utils/overflow.ts",
+    "./utils/retry": "./src/utils/retry.ts",
+    "./utils/text": "./src/utils/text.ts",
+    "./utils/uuid": "./src/utils/uuid.ts",
+    "./utils/validation": "./src/utils/validation.ts"
   },
   "scripts": {
+    "clean": "rm -rf node_modules .turbo",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts && vitest --run",
     "test:upstream": "vitest --run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.91.1",
-    "@june/schema": "workspace:*",
-    "@june/telemetry": "workspace:*",
+    "@google/genai": "1.52.0",
+    "@uji-ai/schema": "workspace:*",
+    "@uji-ai/telemetry": "workspace:*",
     "openai": "6.40.0",
     "partial-json": "0.1.7",
     "typebox": "1.3.7"

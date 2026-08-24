@@ -1,17 +1,18 @@
 ---
 title: Principles
-description: The constraints that keep June's loop, harness, providers, and clients composable
+description: The constraints that keep Uji's loop, harness, providers, and clients composable
+icon: IconShieldCheck
 ---
 
-These are the settled rules. `blueprint.md` records open questions and dated decisions; this page states the
-constraints the current source follows.
+These are the settled rules. The [design record](/docs/design) argues the session model and carries the open
+questions; this page states the constraints the current source follows.
 
-## 1. June owns its runtime
+## 1. Uji owns its runtime
 
-**June does not import another agent runtime as its implementation.**
+**Uji does not import another agent runtime as its implementation.**
 
 The loop, durable harness, provider adapters, storage backend, tools, and clients live in this workspace. Source
-files retain attribution where code was ported. Public contracts and documentation use June concepts.
+files retain attribution where code was ported. Public contracts and documentation use Uji concepts.
 
 ## 2. Core does not know the harness
 
@@ -25,7 +26,7 @@ change the low-level loop contract.
 
 **Core, sessions, providers, and clients exchange `Message`, never a provider wire item.**
 
-The canonical union is `UserMessage | AssistantMessage | ToolResultMessage`. Assistant content is text,
+The union is `UserMessage | AssistantMessage | ToolResultMessage`. Assistant content is text,
 thinking, or tool calls; tool results contain text or images. Provider adapters encode at request time and decode
 their event streams before the loop sees them. Sessions store the neutral values unchanged.
 

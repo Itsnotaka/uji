@@ -1,7 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { cloneElement, type ComponentProps, type ReactElement } from "react";
 
-import { mergeStyleProps, type XStyle } from "@june/ui/style";
+import { mergeStyleProps, type XStyle } from "@uji-ai/ui/style";
 
 const styles = stylex.create({
   root: {

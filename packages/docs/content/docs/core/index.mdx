@@ -1,15 +1,14 @@
 ---
-title: "@june/core"
+title: "@uji-ai/core"
 description: "The agent runtime: a standalone in-memory loop and a durable session-backed harness built on top of it"
+icon: IconPackage
 ---
 
-import { File, Files, Folder } from "fumadocs-ui/components/files";
-
-`@june/core` is the runtime that drives an assistant through turns and tool calls. It ships two
+`@uji-ai/core` is the runtime that drives an assistant through turns and tool calls. It ships two
 compositions of the same machinery. `runAgentLoop` is the loop itself: you inject a stream function,
 a tool list, and an event sink, and it returns the new messages when the run ends. It holds
 everything in memory and writes nothing. `AgentHarness` wraps that loop in a durable session: it
-takes any `SessionStorage`, and `SqliteSessionStorage` is the only implementation that ships.
+takes any `SessionStorage`, and `SqliteSessionRepo` supplies the SQLite implementation that ships.
 Every run is bracketed by `operation_started` / `operation_finished` records, every tool call commits
 a `tool_started` intent before the tool executes, and every message the loop emits is appended as a
 write-once entry. The loop knows nothing about the harness: `agent-loop.ts` imports its public contracts and
@@ -34,9 +33,9 @@ neutral AI utilities, and the harness composes it through `runAgentLoopContinue`
 
 ## The loop
 
-```ts
-import { createModels, FileCredentialStore, openaiProvider } from "@june/ai";
-import { createReadOnlyTools, runAgentLoop } from "@june/core";
+```ts title="run-loop.ts"
+import { createModels, FileCredentialStore, openaiProvider } from "@uji-ai/ai";
+import { createReadOnlyTools, runAgentLoop } from "@uji-ai/core";
 
 const models = createModels({ credentials: new FileCredentialStore() });
 const provider = openaiProvider();
@@ -82,11 +81,17 @@ assistant item and tool result. It does not return your prior history back to yo
 
 ## The harness
 
-```ts
-import { AgentHarness, createCodingTools, SqliteSessionRepo } from "@june/core";
-import { createModels, FileCredentialStore, openaiProvider } from "@june/ai";
+```ts title="run-harness.ts"
+import {
+  AgentHarness,
+  inlinePlugin,
+  SqliteSessionRepo,
+  systemPromptPlugin,
+  toolsFsPlugin,
+} from "@uji-ai/core";
+import { createModels, FileCredentialStore, openaiProvider } from "@uji-ai/ai";
 
-const repo = new SqliteSessionRepo("./.june/sessions.db");
+const repo = new SqliteSessionRepo("./.uji/sessions.db");
 const session = await repo.create();
 const models = createModels({ credentials: new FileCredentialStore() });
 const provider = openaiProvider();
@@ -98,8 +103,12 @@ const { harness, suspended } = await AgentHarness.create({
   session,
   streamFn: (requestedModel, context, options) =>
     models.streamSimple(requestedModel, context, options),
-  systemPrompt: "You are a coding agent.",
-  tools: createCodingTools(process.cwd()),
+  // The harness owns no prompt or tools; plugins contribute everything the model sees.
+  plugins: [
+    inlinePlugin(systemPromptPlugin("You are a coding agent.")),
+    inlinePlugin(toolsFsPlugin()),
+  ],
+  env: { cwd: process.cwd() },
   model,
 });
 
@@ -111,156 +120,193 @@ const result = await harness.prompt("Summarize package.json.");
 if (result.ok) {
   console.log(result.value.kind); // "completed" | "aborted" | "failed"
 } else {
-  console.log(result.error._tag); // "LaneBusy" | "Closed"
+  console.log(result.error._tag); // "HeadBusy" | "Closed"
 }
 ```
 
 <Callout type="warn">
 `result.ok === true` does not mean the run succeeded. A run that failed inside the provider or the
 harness still resolves as `Result.ok` carrying `{ kind: "failed", error }`; only the precondition
-errors `LaneBusy`, `NoActiveRun`, `NothingToResume`, and `Closed` arrive as `Result.err`, and
+errors `HeadBusy`, `NoActiveRun`, `NothingToResume`, and `Closed` arrive as `Result.err`, and
 storage failures throw `SessionError` instead. The three channels and the exact `error.code` values
 are spelled out on [the harness page](./harness.mdx#lifecycle-api).
 </Callout>
 
 ## Source layout
 
-<Files>
-  <Folder name="src" defaultOpen>
-    <File name="index.ts" />
-    <File name="agent-loop.ts" />
-    <File name="types.ts" />
-    <File name="stream-fn.ts" />
-    <Folder name="utils">
-      <File name="tool-result.ts" />
-    </Folder>
-    <Folder name="harness" defaultOpen>
-      <File name="agent-harness.ts" />
-      <File name="result.ts" />
-      <Folder name="session" defaultOpen>
-        <File name="types.ts" />
-        <File name="sqlite.ts" />
-        <File name="sql.ts" />
-      </Folder>
-    </Folder>
-    <Folder name="tools">
-      <File name="index.ts" />
-      <File name="read.ts" />
-      <File name="bash.ts" />
-      <File name="edit.ts" />
-      <File name="edit-diff.ts" />
-      <File name="write.ts" />
-      <File name="grep.ts" />
-      <File name="find.ts" />
-      <File name="ls.ts" />
-      <Folder name="support">
-        <File name="truncate.ts" />
-        <File name="file-mutation-queue.ts" />
-        <File name="image.ts" />
-        <File name="path-utils.ts" />
-        <File name="shell.ts" />
-        <File name="output-accumulator.ts" />
-        <File name="tool-result-images.ts" />
-      </Folder>
-    </Folder>
-  </Folder>
-</Files>
+```files
+src
+├── index.ts
+├── agent-loop.ts
+├── types.ts
+├── skills.ts
+├── workspace-trust.ts
+├── utils
+│   └── tool-result.ts
+├── harness
+│   ├── agent-harness.ts
+│   ├── result.ts
+│   ├── context.ts
+│   ├── hooks.ts
+│   ├── compaction
+│   │   └── compaction.ts
+│   └── session
+│       ├── types.ts
+│       ├── store.ts
+│       ├── sqlite.ts
+│       └── sql.ts
+├── plugins
+│   ├── index.ts
+│   ├── types.ts
+│   ├── host.ts
+│   ├── api.ts
+│   ├── registry.ts
+│   ├── scope.ts
+│   ├── storage.ts
+│   ├── sources.ts
+│   ├── inline.ts
+│   └── builtin
+│       ├── system-prompt.ts
+│       ├── context-files.ts
+│       ├── skills.ts
+│       └── tools-fs.ts
+└── tools
+    ├── index.ts
+    ├── read.ts
+    ├── bash.ts
+    ├── edit.ts
+    ├── edit-diff.ts
+    ├── write.ts
+    ├── grep.ts
+    ├── find.ts
+    ├── ls.ts
+    └── support
+        ├── truncate.ts
+        ├── file-mutation-queue.ts
+        ├── image.ts
+        ├── path-utils.ts
+        ├── shell.ts
+        ├── output-accumulator.ts
+        └── tool-result-images.ts
+```
 
-| File                            | Role                                                                                                                                                |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/index.ts`                  | The only public entry point; re-exports every symbol below.                                                                                         |
-| `src/agent-loop.ts`             | The standalone loop: turns, tool batches, steering and follow-up drains, event emission.                                                            |
-| `src/types.ts`                  | Provider-neutral loop contracts over the canonical `Message` model.                                                                                 |
-| `src/utils/tool-result.ts`      | Text/parts helpers shared by the loop and built-in tools.                                                                                           |
-| `src/stream-fn.ts`              | Optional process-wide fallback for low-level callers that omit `StreamFn`.                                                                          |
-| `src/harness/agent-harness.ts`  | The durable composition: run records, tool intents, queues, abort, resume.                                                                          |
-| `src/harness/result.ts`         | `Result` union and the `TaggedError` class factory.                                                                                                 |
-| `src/harness/session/types.ts`  | The storage contract: entries, records, lanes, `SessionStorage`, `SessionRepo`. A lane is a string on the wire; `AgentHarness` pins it to `"main"`. |
-| `src/harness/session/sqlite.ts` | The `node:sqlite` backend, one database file per repo, fenced writer lease.                                                                         |
-| `src/harness/session/sql.ts`    | Internal tagged-template query builder used by the backend.                                                                                         |
-| `src/tools/index.ts`            | Tool factories and the three preset bundles.                                                                                                        |
-| `src/tools/*.ts`                | The seven built-in tools: read, bash, edit, write, grep, find, ls.                                                                                  |
-| `src/tools/support/`            | Shared truncation, per-file mutation queue, image detection/normalization, path resolution, shell, and output buffering.                            |
+| File                           | Role                                                                                     |
+| ------------------------------ | ---------------------------------------------------------------------------------------- |
+| `src/index.ts`                 | Main public entry; re-exports the loop, harness, plugins, skills, compaction, and tools. |
+| `src/agent-loop.ts`            | The standalone loop: turns, tool batches, steering and follow-up drains, event emission. |
+| `src/types.ts`                 | Provider-neutral loop contracts over the `Message` model.                                |
+| `src/skills.ts`                | Skill catalog types used by the builtin skills plugin.                                   |
+| `src/workspace-trust.ts`       | Workspace trust store the harness consults before running tools.                         |
+| `src/harness/agent-harness.ts` | The durable composition: run records, tool intents, queues, abort, resume.               |
+| `src/harness/compaction/`      | Session compaction when the context window fills.                                        |
+| `src/harness/hooks.ts`         | The hook contract: which hooks exist, what each sees and returns, how results combine.   |
+| `src/harness/session/`         | Storage contract, SQLite backend, and claim SQL.                                         |
+| `src/plugins/`                 | The plugin contract, host, registries, scope, storage, loaders, and the four builtins.   |
+| `src/tools/`                   | Seven coding tools, preset bundles, and effect seams.                                    |
 
-`edit-diff.ts`, `path-utils.ts`, `shell.ts`, and `output-accumulator.ts` are not re-exported from
-`src/index.ts`. The `exports` map declares `.` and nothing else, so there is no subpath to import
-them through either: they are internal to the package.
+The `exports` map also declares `./harness`, `./plugins/system-prompt`, `./plugins/types`,
+`./session/sqlite`, `./session/types`, and `./types`. Tool support files under `src/tools/support/`
+are not on that map.
 
 ## Public surface
 
-Everything is exported from `@june/core`. Only the symbols you actually name in application code are
+Everything is exported from `@uji-ai/core`. Only the symbols you actually name in application code are
 listed here; the per-topic pages cover the full type sets.
 
-| Group           | Named by callers                                                                                                                                                                                                                                                  | Page                                     |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| Loop            | `agentLoop`, `agentLoopContinue`, `EventStream`, `runAgentLoop`, `runAgentLoopContinue`, `AgentContext`, `AgentLoopConfig`, `AgentTool`, `AgentToolResult`, `AgentEvent`, `AgentEventSink`, `StreamFn`, `ThinkingLevel`, `ToolExecutionMode`, `QueueMode`         | [Agent loop](./agent-loop.mdx)           |
-| Harness         | `AgentHarness`, `AgentHarnessOptions`, `HarnessTool`, `HarnessState`, `HarnessListener`, `RunOutcome`, `SuspendedOperation`, `LaneBusy`, `NoActiveRun`, `NothingToResume`, `Closed`, `Result`, `TaggedError`                                                      | [Harness](./harness.mdx)                 |
-| Session storage | `SqliteSessionRepo`, `SqliteSessionRepoOptions`, `SessionStorage`, `SessionRepo`, `SessionSearch`, `Entry`, `MessageEntry`, `ProvisionedEntry`, `LaneRecord`, `ToolStartedRecord`, `LogItem`, `SessionError`, `newId`                                             | [Session storage](./session-storage.mdx) |
-| Stream fallback | `setDefaultStreamFn`                                                                                                                                                                                                                                              | [Stream function](./stream-fn.mdx)       |
-| Tools           | `createTool`, `createCodingTools`, `createReadOnlyTools`, `createAllTools`, `allToolNames`, `ToolName`, `ToolsOptions`, the seven `create*Tool` factories, `withFileMutationQueue`, `normalizeToolResultImages`, `ImageProcessor`, `truncateHead`, `truncateTail` | [Tools](./tools.mdx)                     |
+| Group           | Named by callers                                                                                                                                                                                                                                                                    | Page                                     |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| Loop            | `agentLoop`, `agentLoopContinue`, `EventStream`, `runAgentLoop`, `runAgentLoopContinue`, `AgentContext`, `AgentLoopConfig`, `AgentTool`, `AgentToolResult`, `AgentEvent`, `AgentEventSink`, `StreamFn`, `ThinkingLevel`, `ToolExecutionMode`, `QueueMode`                           | [Agent loop](./agent-loop.mdx)           |
+| Harness         | `AgentHarness`, `AgentHarnessOptions`, `HarnessTool`, `HarnessState`, `HarnessListener`, `RunOutcome`, `SuspendedOperation`, `HeadBusy`, `NoActiveRun`, `NothingToResume`, `Closed`, `Result`, `TaggedError`                                                                        | [Harness](./harness.mdx)                 |
+| Session storage | `SqliteSessionRepo`, `SqliteSessionRepoOptions`, `SessionStorage`, `SessionRepo`, `SessionSearch`, `Entry`, `MessageEntry`, `ProvisionedEntry`, `SessionRecord`, `ToolStartedRecord`, `LogItem`, `SessionError`, `newId`                                                            | [Session storage](./session-storage.mdx) |
+| Stream function | Explicit `StreamFn` arguments on loop and harness construction                                                                                                                                                                                                                      | [Stream function](./stream-fn.mdx)       |
+| Plugins         | `definePlugin`, `inlinePlugin`, `toolsPlugin`, `LoadedPlugin`, `SessionApi`, `PluginSetting`, `systemPromptPlugin`, `contextFilesPlugin`, `skillsPlugin`, `toolsFsPlugin`, `resolvePlugins`, `watchPluginDirectories`, `PluginHost` (`@uji-ai/plugin` re-exports the author subset) | [Plugins](/docs/plugin)                  |
+| Tools           | `createTool`, `createCodingTools`, `createReadOnlyTools`, `createAllTools`, `allToolNames`, `ToolName`, `ToolsOptions`, the seven `create*Tool` factories, `withFileMutationQueue`, `normalizeToolResultImages`, `ImageProcessor`, `truncateHead`, `truncateTail`                   | [Tools](./tools.mdx)                     |
 
-`SqliteSessionStorage` is also exported, but it is constructed by `SqliteSessionRepo`, not by you.
+`SqliteSessionRepo` constructs the SQLite storage handle for you.
 
 ## Install and import
 
-`@june/core` is a private workspace package. It is not published, and it has no build step: its
+`@uji-ai/core` is a private workspace package. It is not published, and it has no build step: its
 `exports` map points directly at the TypeScript source.
 
 ```json title="packages/core/package.json"
 {
-  "name": "@june/core",
+  "name": "@uji-ai/core",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./harness": "./src/harness/agent-harness.ts",
+    "./plugins/system-prompt": "./src/plugins/builtin/system-prompt.ts",
+    "./plugins/types": "./src/plugins/types.ts",
+    "./session/sqlite": "./src/harness/session/sqlite.ts",
+    "./session/types": "./src/harness/session/types.ts",
+    "./types": "./src/types.ts"
   }
 }
 ```
 
-Depend on it from another workspace package with `"@june/core": "workspace:*"`, then import from the
+Depend on it from another workspace package with `"@uji-ai/core": "workspace:*"`, then import from the
 package name. Two consequences follow from the missing build step:
 
-| Requirement             | Reason                                                                                                                                   |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Node 24 or newer        | The runtime executes the `.ts` sources directly; there is no emitted JavaScript to fall back on.                                         |
-| `node:sqlite` available | `SqliteSessionRepo` imports `DatabaseSync` from `node:sqlite` at module load. Importing `@june/core` pulls it in through `src/index.ts`. |
+| Requirement             | Reason                                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Node 24 or newer        | The runtime executes the `.ts` sources directly; there is no emitted JavaScript to fall back on.                                           |
+| `node:sqlite` available | `SqliteSessionRepo` imports `DatabaseSync` from `node:sqlite` at module load. Importing `@uji-ai/core` pulls it in through `src/index.ts`. |
 
 The package's own scripts are `node --test test/*.test.ts` and `tsc --noEmit`. Neither produces
 artifacts.
 
 <Callout type="warn" title="Not built yet">
-  There is no in-memory or JSONL session backend. `SqliteSessionStorage`, constructed for you by
-  `SqliteSessionRepo`, is the only implementation of `SessionStorage`, so a test that wants the
-  harness goes through SQLite. `new SqliteSessionRepo(":memory:")` keeps it off disk.
+  There is no in-memory or JSONL session backend. The handle constructed by `SqliteSessionRepo` is
+  the only implementation of `SessionStorage`, so a test that wants the harness goes through SQLite.
+  `new SqliteSessionRepo(":memory:")` keeps it off disk.
 </Callout>
 
 ## Where to next
 
 <Cards>
-  <Card
+  <DocCard
+    icon="IconArrowsRepeat"
     title="Agent loop"
     href="/docs/core/agent-loop"
     description="Turns, tool batches, stop reasons, and the config hooks"
   />
-  <Card
+  <DocCard
+    icon="IconSettingsGear1"
     title="Harness"
     href="/docs/core/harness"
     description="Run records, the tool-call effect sandwich, queues, abort, resume"
   />
-  <Card
+  <DocCard
+    icon="IconStorage"
     title="Session storage"
     href="/docs/core/session-storage"
-    description="Entries, records, lanes, the seq counter, and the SQLite backend"
+    description="Entries, records, heads, the seq counter, and the SQLite backend"
   />
-  <Card
+  <DocCard
+    icon="IconStreaming"
     title="Stream function"
     href="/docs/core/stream-fn"
-    description="Binding an @june/ai provider to the StreamFn contract"
+    description="Binding an @uji-ai/ai provider to the StreamFn contract"
   />
-  <Card
+  <DocCard
+    icon="IconHammer"
     title="Tools"
     href="/docs/core/tools"
     description="The seven built-in tools, their options, and the preset bundles"
+  />
+  <DocCard
+    icon="IconPlugin1"
+    title="Plugins"
+    href="/docs/plugin"
+    description="definePlugin. PluginHost and the builtins live here"
+  />
+  <DocCard
+    icon="IconBookSimple"
+    title="Recipes"
+    href="/docs/core/recipes"
+    description="Transcript, steer, abort, resume, gate a tool, reopen sessions"
   />
 </Cards>
 

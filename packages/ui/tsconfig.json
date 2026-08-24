@@ -7,7 +7,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "paths": {
-      "@june/ui/*": ["./src/*"]
+      "@uji-ai/ui/*": ["./src/*"]
     }
   },
   "include": ["src"]

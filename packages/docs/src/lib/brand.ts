@@ -1,15 +1,15 @@
 /**
- * The June brand system, in one place.
+ * Product brand tokens for the /branding reference page.
  *
- * Every value here is also emitted as a CSS custom property in `global.css`.
- * This module is what /branding reads, so the page can never drift from the
- * tokens the site actually renders with.
+ * Site chrome uses native Fumadocs tokens. This module is the source of
+ * swatch hexes, type steps, and voice copy that page renders. It is not
+ * required to match CSS custom properties.
  */
 
 export interface Swatch {
   /** Display name. */
   name: string;
-  /** Semantic token name in Grok Bot's compiled StyleX theme. */
+  /** Semantic token name in Uji's shared interface palette. */
   source: string;
   /** The role this colour plays in the interface. */
   role: string;
@@ -93,7 +93,7 @@ export const palette: Swatch[] = [
 export interface TypeStep {
   token: string;
   usage: string;
-  face: "Inter" | "Berkeley Mono";
+  face: "Inter" | "Newsreader" | "Berkeley Mono";
   /** Rendered size, in px, at the desktop breakpoint. */
   size: string;
   lineHeight: string;
@@ -102,47 +102,48 @@ export interface TypeStep {
 }
 
 /**
- * Two faces, split by what the text is rather than how big it is. Inter sets
- * anything a person wrote as prose; Berkeley Mono sets anything a machine
- * produced or a person will copy — and labels, which is what keeps hierarchy
- * legible without stacking Inter weights.
+ * Marketing hierarchy is pulled from scale, case, and spacing rather than
+ * weight: headings sit at regular weight over serif prose. Inter sets anything
+ * a person wrote as headings and interface text; Newsreader sets marketing
+ * paragraphs; Berkeley Mono sets anything a machine produced or a person will
+ * copy — plus labels.
  */
 export const typeScale: TypeStep[] = [
   {
     token: "display",
     usage: "Home statement",
     face: "Inter",
-    size: "40 → 68",
-    lineHeight: "1.03",
-    weight: "600",
-    tracking: "-0.035em",
-  },
-  {
-    token: "title",
-    usage: "Page title",
-    face: "Inter",
-    size: "32",
-    lineHeight: "1.14",
-    weight: "600",
-    tracking: "-0.028em",
+    size: "32 → 44",
+    lineHeight: "1.15",
+    weight: "400",
+    tracking: "-0.02em",
   },
   {
     token: "section",
-    usage: "h2",
+    usage: "Section heading",
     face: "Inter",
     size: "24",
-    lineHeight: "1.22",
-    weight: "600",
+    lineHeight: "1.25",
+    weight: "400",
     tracking: "-0.022em",
   },
   {
     token: "subsection",
-    usage: "h3",
+    usage: "h3, rule lines",
     face: "Inter",
-    size: "19",
-    lineHeight: "1.35",
-    weight: "600",
-    tracking: "-0.014em",
+    size: "17",
+    lineHeight: "1.4",
+    weight: "500",
+    tracking: "-0.01em",
+  },
+  {
+    token: "prose",
+    usage: "Marketing paragraphs",
+    face: "Newsreader",
+    size: "17",
+    lineHeight: "1.65",
+    weight: "400",
+    tracking: "0",
   },
   {
     token: "body",
@@ -208,7 +209,7 @@ export const voice: VoicePrinciple[] = [
 ];
 
 /**
- * Central Icons is the set June draws with, on the web and in the Electron
+ * Central Icons is the set Uji draws with, on the web and in the Electron
  * client. Lucide is still in the tree because `fumadocs-ui` depends on it
  * directly — its own chrome (search, chevrons, callouts, the theme switch) is
  * Lucide and cannot be swapped without forking the package.

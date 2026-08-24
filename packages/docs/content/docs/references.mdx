@@ -1,0 +1,28 @@
+---
+title: References
+description: The upstream projects and external reading behind the design record
+icon: IconBridge
+---
+
+Code provenance is per-file: every ported file carries a `Based on <link>` header, and the root
+[`THIRD-PARTY-NOTICES.md`](https://github.com/Itsnotaka/uji/blob/main/THIRD-PARTY-NOTICES.md) lists
+the projects those headers point at. This page is the reading list.
+
+## Upstream
+
+- [pi](https://github.com/earendil-works/pi). The upstream for the loop and the durability
+  mechanics. Its agent documentation lives under `packages/agent/docs` on the `dev` branch; `main`
+  lags it.
+- [OpenCode, `v2` branch](https://github.com/anomalyco/opencode/tree/v2). The SDK shape and the
+  admission vocabulary (`steer`/`queue`, `wait`, opaque cursors) follow this branch, served at
+  v2.opencode.ai. The published [SDK docs](https://opencode.ai/docs/sdk/) describe stable V1; do
+  not confuse the two.
+
+## Reading
+
+- [How we built the Linear agent](https://linear.app/now/how-we-built-linear-agent). The
+  product shape behind the ACL open question in the design record.
+- [Flue framework docs](https://flueframework.com/docs/). Durable `step.do`-style tool
+  memoization.
+- [dgzhuya: agent modules overview](https://www.dgzhuya.com/modules/ch01-overview).
+- [books.antinomie.org/pi](https://books.antinomie.org/pi/). A long-form walkthrough of pi.

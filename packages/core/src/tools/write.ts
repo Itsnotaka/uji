@@ -1,5 +1,5 @@
 /**
- * Write tool ported from pi's harness write tool, adapted to June's AgentTool
+ * Write tool ported from pi's harness write tool, adapted to Uji's AgentTool
  * contract and direct filesystem access (pi routes writes through its
  * ExecutionEnv effects boundary).
  *

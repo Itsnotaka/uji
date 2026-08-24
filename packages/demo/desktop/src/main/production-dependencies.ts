@@ -10,8 +10,9 @@ import type { UjiHostDependencies } from "./uji-host.ts";
 
 export function createProductionDependencies(
   openExternal: (url: string) => Promise<void>,
+  credentialPath?: string,
 ): UjiHostDependencies {
-  const credentials = new FileCredentialStore();
+  const credentials = new FileCredentialStore(credentialPath);
   const models = createModels({ credentials, authContext: defaultProviderAuthContext() });
   const providerDefaults = openaiCodexProvider();
   const defaultOAuth = providerDefaults.auth.oauth;
@@ -35,6 +36,7 @@ export function createProductionDependencies(
 
   return {
     model,
+    models: models.getModels(provider.id),
     initialAgents: demoAgentDrafts,
     thinkingLevel: "medium",
     createStreamFn: () => (requestedModel, context, options) =>
@@ -75,6 +77,9 @@ export function createProductionDependencies(
           }
         },
       });
+    },
+    async logout() {
+      await models.logout(provider.id);
     },
   };
 }

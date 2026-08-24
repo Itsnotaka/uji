@@ -1,3 +1,23 @@
 {
-  "pages": ["index", "quickstart", "architecture", "principles", "core", "host-sdk", "roadmap"]
+  "pages": [
+    "index",
+    "---Getting started---",
+    "quickstart",
+    "architecture",
+    "principles",
+    "---Packages---",
+    "schema",
+    "ai",
+    "core",
+    "plugin",
+    "telemetry",
+    "ui",
+    "tui",
+    "---Host---",
+    "host-sdk",
+    "---Project---",
+    "design",
+    "roadmap",
+    "references"
+  ]
 }

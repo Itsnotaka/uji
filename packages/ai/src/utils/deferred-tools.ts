@@ -4,7 +4,7 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/src/utils/deferred-tools.ts
  * Synced with pi 7ebf9087e.
  */
-import type { Context, Tool } from "@june/schema";
+import type { Context, Tool } from "@uji-ai/schema";
 
 type ToolNameNormalizer = (name: string) => string;
 

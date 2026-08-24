@@ -2,8 +2,8 @@
  * Pure formatting and parsing helpers shared by the TUI and print mode.
  * Nothing here touches a renderer, so every function is unit-testable.
  */
-import { toJsonValue, type Entry, type ThinkingLevel } from "@uji-ai/core";
-import type { JsonValue, Message, UserMessage } from "@uji-ai/schema";
+import { toJsonValue, type ThinkingLevel } from "@uji-ai/core";
+import type { JsonValue, Message } from "@uji-ai/schema";
 import { parsePatch, type StructuredPatch } from "diff";
 import { GLYPHS, SPINNER_FRAMES, SPINNER_INTERVAL_MS } from "./constants.ts";
 import { displayWidth, truncateDisplay } from "./width.ts";
@@ -392,195 +392,6 @@ export function oneLine(text: string): string {
   return text.replaceAll("\r", "").replaceAll("\n", "⏎").trim();
 }
 
-export interface TranscriptUserPart {
-  kind: "user";
-  entryId: string;
-  parentId: string | null;
-  content: UserMessage["content"];
-}
-
-export type TranscriptTurnPart =
-  | TranscriptUserPart
-  | { kind: "assistant"; text: string }
-  | { kind: "thinking"; text: string }
-  | {
-      kind: "tool";
-      callId: string;
-      toolName: string;
-      args: unknown;
-      output?: string;
-      details?: unknown;
-      isError?: boolean;
-    }
-  | { kind: "note"; text: string }
-  | { kind: "compaction"; summary: string; tokensBefore: number };
-
-export type TranscriptTurnOutcome = "completed" | "aborted" | "failed";
-
-/** One durable visual owner per conversation turn. */
-export type TranscriptItem =
-  | {
-      kind: "turn";
-      id: string;
-      entryIds: string[];
-      parts: TranscriptTurnPart[];
-      outcome: TranscriptTurnOutcome;
-    }
-  | { kind: "note"; entryIds: string[]; text: string }
-  | {
-      kind: "compaction";
-      entryIds: string[];
-      summary: string;
-      tokensBefore: number;
-    };
-
-/**
- * Turn a stored branch (oldest first) into transcript items. Tool calls and
- * their outputs are paired by tool-call id so a restored tool renders as one card.
- */
-export function transcriptFromEntries(entries: readonly Entry[]): TranscriptItem[] {
-  const items: TranscriptItem[] = [];
-  const tools = new Map<string, Extract<TranscriptTurnPart, { kind: "tool" }>>();
-  let turn: Extract<TranscriptItem, { kind: "turn" }> | undefined;
-
-  const ensureTurn = (id: string): Extract<TranscriptItem, { kind: "turn" }> => {
-    if (turn !== undefined) return turn;
-    turn = { kind: "turn", id, entryIds: [], parts: [], outcome: "completed" };
-    items.push(turn);
-    return turn;
-  };
-
-  const addEntry = (owner: Extract<TranscriptItem, { kind: "turn" }>, id: string): void => {
-    if (!owner.entryIds.includes(id)) owner.entryIds.push(id);
-  };
-
-  for (const entry of entries) {
-    if (entry.type === "model_change" || entry.type === "thinking_level_change") {
-      continue;
-    }
-    if (entry.type === "compaction") {
-      const preview = previewLines(entry.summary, 40);
-      const checkpoint = {
-        kind: "compaction",
-        summary:
-          preview.omitted === 0
-            ? preview.text
-            : `${preview.text}\n${omittedLabel(preview.omitted)}`,
-        tokensBefore: entry.tokensBefore,
-      } as const;
-      if (turn === undefined) items.push({ ...checkpoint, entryIds: [entry.id] });
-      else {
-        addEntry(turn, entry.id);
-        turn.parts.push(checkpoint);
-      }
-      continue;
-    }
-    if (entry.type === "custom") {
-      const data = isRecord(entry.data) ? entry.data : undefined;
-      const providerId = data?.["providerId"];
-      const cwd = data?.["cwd"];
-      if (entry.customType === "provider_change" && typeof providerId === "string") {
-        items.push({ kind: "note", entryIds: [entry.id], text: `Provider → ${providerId}` });
-        turn = undefined;
-        tools.clear();
-      } else if (entry.customType === "cwd_change" && typeof cwd === "string") {
-        items.push({ kind: "note", entryIds: [entry.id], text: `Directory → ${cwd}` });
-        turn = undefined;
-        tools.clear();
-      }
-      continue;
-    }
-    if (entry.type !== "message") continue;
-    const message = entry.message;
-    if (message.role === "user") {
-      turn = {
-        kind: "turn",
-        id: entry.id,
-        entryIds: [entry.id],
-        outcome: "completed",
-        parts: [
-          {
-            kind: "user",
-            entryId: entry.id,
-            parentId: entry.parentId,
-            content: message.content,
-          },
-        ],
-      };
-      items.push(turn);
-      tools.clear();
-    } else if (message.role === "assistant") {
-      const outcome: TranscriptTurnOutcome =
-        message.stopReason === "aborted"
-          ? "aborted"
-          : message.stopReason === "error" || message.errorMessage !== undefined
-            ? "failed"
-            : "completed";
-      const hasVisibleContent = message.content.some(
-        (part) =>
-          part.type === "toolCall" ||
-          (part.type === "text" && part.text !== "") ||
-          (part.type === "thinking" && part.thinking !== ""),
-      );
-      if (!hasVisibleContent && outcome === "completed") {
-        continue;
-      }
-      const owner = ensureTurn(entry.id);
-      addEntry(owner, entry.id);
-      owner.outcome = outcome;
-      for (const part of message.content) {
-        if (part.type === "text") {
-          if (part.text !== "") {
-            owner.parts.push({ kind: "assistant", text: part.text });
-          }
-        } else if (part.type === "thinking") {
-          if (part.thinking !== "") {
-            owner.parts.push({ kind: "thinking", text: part.thinking });
-          }
-        } else {
-          const tool = {
-            kind: "tool" as const,
-            callId: part.id,
-            toolName: part.name,
-            args: part.arguments,
-          };
-          tools.set(part.id, tool);
-          owner.parts.push(tool);
-        }
-      }
-      if (message.stopReason !== "aborted" && message.errorMessage !== undefined) {
-        owner.parts.push({ kind: "note", text: `Error: ${message.errorMessage}` });
-      }
-    } else {
-      const owner = ensureTurn(entry.id);
-      addEntry(owner, entry.id);
-      const output = partsText(message.content);
-      const tool = tools.get(message.toolCallId);
-      if (tool === undefined) {
-        owner.parts.push({
-          kind: "tool",
-          callId: message.toolCallId,
-          toolName: message.toolName,
-          args: undefined,
-          output,
-          details: message.details,
-          isError: message.isError,
-        });
-      } else {
-        tool.output = output;
-        tool.details = message.details;
-        tool.isError = message.isError;
-      }
-    }
-  }
-  return items;
-}
-
-/** Locate the top-level visual owner for a durable entry. */
-export function transcriptItemIndex(items: readonly TranscriptItem[], entryId: string): number {
-  return items.findIndex((item) => item.entryIds.includes(entryId));
-}
-
 /** Composer metadata. Run state is retained for shell behavior, not rendered. */
 export interface PowerlineState {
   runState: "idle" | "working" | "running tool" | "compacting" | "resuming";
@@ -589,18 +400,74 @@ export interface PowerlineState {
   dirty: boolean;
   model: string;
   effort?: ThinkingLevel;
-  /** Priority processing is on. */
-  fast: boolean;
+  /** Status badges from plugin settings (e.g. "fast"), rendered beside the thinking level. */
+  statuses: readonly string[];
   queued: number;
   /** Tokens reported by the last settled assistant turn. */
   tokens?: number;
   /** Estimated share of the model's context window in use, whole percent. */
   pct?: number;
+  /** When the last run settled, epoch ms. Drives the idle clock addon. */
+  stoppedAt?: number;
+  /** Provider prompt-cache lifetime, ms. Absent hides the cache countdown. */
+  cacheTtlMs?: number;
 }
 
 export interface PowerlineSegment {
   text: string;
-  tone: "workspace" | "model" | "effort" | "queue" | "usage";
+  tone: "workspace" | "model" | "effort" | "queue" | "usage" | "clock";
+}
+
+/**
+ * Default prompt-cache lifetimes for the built-in providers. Anthropic's
+ * cache lives five minutes past the last read (one hour is an opt-in TTL the
+ * harness does not request); OpenAI documents five to ten minutes of
+ * inactivity, so the countdown shows the honest lower bound.
+ */
+const PROVIDER_CACHE_TTLS_MS: Record<string, number> = {
+  anthropic: 5 * 60_000,
+  openai: 5 * 60_000,
+  "openai-codex": 5 * 60_000,
+};
+
+export function providerCacheTtlMs(provider: string): number | undefined {
+  return PROVIDER_CACHE_TTLS_MS[provider];
+}
+
+/** `42_000` → `42s`, `258_000` → `4m18s`, `3_720_000` → `1h02m`. */
+export function clockDuration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${String(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  if (minutes < 60) {
+    return restSeconds === 0
+      ? `${String(minutes)}m`
+      : `${String(minutes)}m${String(restSeconds).padStart(2, "0")}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes === 0
+    ? `${String(hours)}h`
+    : `${String(hours)}h${String(restMinutes).padStart(2, "0")}m`;
+}
+
+/**
+ * The idle clock, the powerline's first addon segment: how long since the
+ * last run settled and how much of the provider's prompt cache that leaves.
+ * Anthropic-style caches refresh on every read, so the countdown restarts
+ * from each stop; once it runs out the next turn re-writes the prefix.
+ */
+export function turnClockSegment(state: PowerlineState, now: number): PowerlineSegment | undefined {
+  if (state.runState !== "idle" || state.stoppedAt === undefined) return undefined;
+  const idle = now - state.stoppedAt;
+  const cache =
+    state.cacheTtlMs === undefined
+      ? ""
+      : idle >= state.cacheTtlMs
+        ? " · cache cold"
+        : ` · cache ${clockDuration(state.cacheTtlMs - idle)}`;
+  return { text: `idle ${clockDuration(idle)}${cache}`, tone: "clock" };
 }
 
 export function shortId(id: string): string {
@@ -616,12 +483,11 @@ function formatTokens(tokens: number): string {
   return `${(tokens / 1_000_000).toFixed(1)}m`;
 }
 
-export function powerlineSegments(state: PowerlineState): PowerlineSegment[] {
+export function powerlineSegments(state: PowerlineState, now = Date.now()): PowerlineSegment[] {
   const branch = state.branch === undefined ? "" : ` ${state.branch}${state.dirty ? "*" : ""}`;
+  const badges = [...(state.effort === undefined ? [] : [state.effort]), ...state.statuses];
   const effort: PowerlineSegment[] =
-    state.effort === undefined
-      ? []
-      : [{ text: `${state.effort}${state.fast ? " fast" : ""}`, tone: "effort" }];
+    badges.length === 0 ? [] : [{ text: badges.join(" "), tone: "effort" }];
   const usage: PowerlineSegment[] = [];
   if (state.tokens !== undefined && state.tokens > 0) {
     usage.push({
@@ -629,11 +495,13 @@ export function powerlineSegments(state: PowerlineState): PowerlineSegment[] {
       tone: "usage",
     });
   }
+  const clock = turnClockSegment(state, now);
   const segments: PowerlineSegment[] = [
     { text: `${state.workspace}${branch}`, tone: "workspace" },
     { text: state.model, tone: "model" },
     ...effort,
     ...usage,
+    ...(clock === undefined ? [] : [clock]),
   ];
   if (state.queued > 0) {
     segments.push({ text: `${String(state.queued)} queued`, tone: "queue" });
@@ -651,7 +519,7 @@ export function fitPowerlineSegments(
   maxWidth: number,
 ): PowerlineSegment[] {
   let kept = [...segments];
-  const droppable: PowerlineSegment["tone"][] = ["usage", "workspace", "queue", "effort"];
+  const droppable: PowerlineSegment["tone"][] = ["clock", "usage", "workspace", "queue", "effort"];
   for (const tone of droppable) {
     if (displayWidth(joinSegments(kept)) <= maxWidth) break;
     kept = kept.filter((segment) => segment.tone !== tone);

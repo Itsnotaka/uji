@@ -6,7 +6,7 @@
  * Synced with pi 7ebf9087e.
  */
 
-// June divergence: pi's page carries the pi logo; June has no SVG mark yet,
+// Uji divergence: pi's page carries the pi logo; Uji has no SVG mark yet,
 // so the logo slot renders a neutral glyph instead.
 const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><circle cx="400" cy="400" r="220" fill="none" stroke="#fff" stroke-width="48"/></svg>`;
 

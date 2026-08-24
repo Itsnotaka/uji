@@ -8,23 +8,31 @@ const outputPath = join(packageRoot, "src/platform-tokens.css");
 const check = process.argv.includes("--check");
 
 const sourceText = await readFile(sourcePath, "utf8");
-const declarations = [];
-const tokenPattern = /"(--june-[^"]+)"\s*:\s*("(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?),/g;
+const declaredTokens = sourceText.match(/"--uji-[^"]+"\s*:/g) ?? [];
+if (declaredTokens.length === 0) throw new Error("No literal Uji tokens found");
 
-for (const match of sourceText.matchAll(tokenPattern)) {
-  const [, name, encodedValue] = match;
-  const value = encodedValue.startsWith('"') ? JSON.parse(encodedValue) : encodedValue;
-  declarations.push(`  ${name}: ${value};`);
+const tokenPattern =
+  /"(?<name>--uji-[^"]+)"\s*:\s*(?:"(?<doubleQuoted>[^"\\]*)"|'(?<singleQuoted>[^'\\]*)'|(?<number>-?\d+(?:\.\d+)?)),/g;
+const declarations = [...sourceText.matchAll(tokenPattern)].map(({ groups }) => {
+  if (groups === undefined) throw new Error("Token parser invariant failed");
+  const { name, doubleQuoted, singleQuoted, number } = groups;
+  const value = doubleQuoted ?? singleQuoted ?? number;
+  if (name === undefined || value === undefined) throw new Error("Token parser invariant failed");
+  return `  ${name}: ${value};`;
+});
+
+if (declarations.length !== declaredTokens.length) {
+  throw new Error(
+    `Unsupported token literal: extracted ${declarations.length} of ${declaredTokens.length} Uji tokens`,
+  );
 }
 
-if (declarations.length === 0) throw new Error("No literal June tokens found");
-
-const generated = `/* Generated from platform-tokens.stylex.ts. Run pnpm --filter @june/ui sync:tokens. */\n:root {\n  color-scheme: light dark;\n${declarations.join("\n")}\n}\n`;
+const generated = `/* Generated from platform-tokens.stylex.ts. Run pnpm --filter @uji-ai/ui sync:tokens. */\n:root {\n  color-scheme: light dark;\n${declarations.join("\n")}\n}\n`;
 
 if (check) {
   const current = await readFile(outputPath, "utf8");
   if (current !== generated) {
-    throw new Error("platform-tokens.css is stale; run pnpm --filter @june/ui sync:tokens");
+    throw new Error("platform-tokens.css is stale; run pnpm --filter @uji-ai/ui sync:tokens");
   }
 } else {
   await writeFile(outputPath, generated);

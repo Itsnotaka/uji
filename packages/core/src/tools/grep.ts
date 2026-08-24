@@ -1,9 +1,9 @@
 /**
- * Grep tool ported from pi's tools/grep.ts, adapted to June's AgentTool
+ * Grep tool ported from pi's tools/grep.ts, adapted to Uji's AgentTool
  * contract (no TUI rendering, plain JSON Schema parameters, string content).
  *
- * June deviation: pi obtains ripgrep via a managed download (ensureTool);
- * June spawns `rg` from PATH and fails with a clear error when it is missing.
+ * Uji deviation: pi obtains ripgrep via a managed download (ensureTool);
+ * Uji spawns `rg` from PATH and fails with a clear error when it is missing.
  *
  * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/grep.ts
  */

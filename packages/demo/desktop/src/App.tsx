@@ -1,19 +1,31 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FormEvent,
-  type KeyboardEvent,
-} from "react";
+import { Button } from "@uji-ai/ui";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import type { Agent, AgentId } from "./agents.ts";
-import type { UjiDesktopEvent, UjiSnapshot } from "./desktop-api.ts";
-import { messageText } from "./messages.ts";
+import type { AgentDraft, AgentId } from "./agents.ts";
+import { AgentDetails, CreateAgentDialog } from "./components/agent-details.tsx";
+import { ConversationWorkspace } from "./components/conversation-workspace.tsx";
+import type { Notice } from "./components/notices.tsx";
+import { SettingsDialog, type ThemePreference } from "./components/settings-dialog.tsx";
+import { Sidebar } from "./components/sidebar.tsx";
+import type { OptimisticMessage } from "./components/transcript.tsx";
+import type {
+  LiveToolEvent,
+  RuntimeSettingsChange,
+  UjiDesktopEvent,
+  UjiSnapshot,
+} from "./desktop-api.ts";
+
+interface LiveState {
+  stopping: boolean;
+  streamingText: string;
+  thinkingText: string;
+  tools: Record<string, LiveToolEvent>;
+}
 
 type ReadyView = UjiSnapshot & {
-  notice?: string;
-  streamingText: string;
+  loading: boolean;
+  notices: readonly Notice[];
+  rendererLive: LiveState;
 };
 
 type AppState =
@@ -21,25 +33,41 @@ type AppState =
   | { kind: "error"; message: string }
   | { kind: "ready"; view: ReadyView };
 
-type PendingAction = "login" | "new-chat" | "select" | "send";
-
-type OptimisticMessage = {
-  body: string;
-  id: string;
-  timestamp: number;
-};
-
-type Turn = OptimisticMessage & {
-  fromUser: boolean;
-};
-
 export function App() {
   const [state, setState] = useState<AppState>({ kind: "loading" });
-  const [pending, setPending] = useState<PendingAction>();
+  const [pendingAction, setPendingAction] = useState<string>();
   const [draft, setDraft] = useState("");
   const [optimisticMessage, setOptimisticMessage] = useState<OptimisticMessage>();
-  const deltaBuffer = useRef("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [createAgentOpen, setCreateAgentOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [theme, setTheme] = useState<ThemePreference>(readTheme);
+  const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  const [detailsWidth, setDetailsWidth] = useState(readDetailsWidth);
+  const textBuffer = useRef(new Map<string, string>());
+  const thinkingBuffer = useRef(new Map<string, string>());
   const deltaFrame = useRef<number | undefined>(undefined);
+  const noticeCount = useRef(0);
+  const actionQueue = useRef<Promise<void>>(Promise.resolve());
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("uji.theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem("uji.sidebar-width", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("uji.sidebar-collapsed", String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("uji.details-width", String(detailsWidth));
+  }, [detailsWidth]);
 
   useEffect(() => {
     let active = true;
@@ -47,49 +75,105 @@ export function App() {
     function cancelDeltaFrame(): void {
       if (deltaFrame.current !== undefined) cancelAnimationFrame(deltaFrame.current);
       deltaFrame.current = undefined;
-      deltaBuffer.current = "";
+      textBuffer.current.clear();
+      thinkingBuffer.current.clear();
     }
 
     function flushDeltas(): void {
       deltaFrame.current = undefined;
-      const text = deltaBuffer.current;
-      deltaBuffer.current = "";
-      if (text === "" || !active) return;
-      updateReady(setState, (view) => ({
-        ...view,
-        running: true,
-        streamingText: view.streamingText + text,
-      }));
+      const textBySession = textBuffer.current;
+      const thinkingBySession = thinkingBuffer.current;
+      textBuffer.current = new Map();
+      thinkingBuffer.current = new Map();
+      if (!active) return;
+      updateReady(setState, (view) => {
+        const sessionId = view.activeSessionId;
+        if (sessionId === null) return view;
+        const text = textBySession.get(sessionId) ?? "";
+        const thinking = thinkingBySession.get(sessionId) ?? "";
+        if (text === "" && thinking === "") return view;
+        return {
+          ...view,
+          running: true,
+          rendererLive: {
+            ...view.rendererLive,
+            streamingText: view.rendererLive.streamingText + text,
+            thinkingText: view.rendererLive.thinkingText + thinking,
+          },
+        };
+      });
+    }
+
+    function bufferDelta(sessionId: string, kind: "text" | "thinking", text: string): void {
+      const buffer = kind === "text" ? textBuffer.current : thinkingBuffer.current;
+      buffer.set(sessionId, (buffer.get(sessionId) ?? "") + text);
+      deltaFrame.current ??= requestAnimationFrame(flushDeltas);
     }
 
     function handleEvent(event: UjiDesktopEvent): void {
       if (!active) return;
       switch (event.type) {
         case "delta":
-          deltaBuffer.current += event.text;
-          if (deltaFrame.current === undefined) {
-            deltaFrame.current = requestAnimationFrame(flushDeltas);
-          }
+          bufferDelta(event.sessionId, "text", event.text);
+          return;
+        case "thinking-delta":
+          bufferDelta(event.sessionId, "thinking", event.text);
+          return;
+        case "tool":
+          updateReady(setState, (view) =>
+            view.activeSessionId === event.sessionId
+              ? {
+                  ...view,
+                  rendererLive: {
+                    ...view.rendererLive,
+                    tools: { ...view.rendererLive.tools, [event.tool.callId]: event.tool },
+                  },
+                }
+              : view,
+          );
           return;
         case "running":
-          if (!event.running && deltaFrame.current !== undefined) {
-            cancelAnimationFrame(deltaFrame.current);
-            flushDeltas();
-          }
-          updateReady(setState, (view) => ({
-            ...view,
-            running: event.running,
-            streamingText: event.running && !view.running ? "" : view.streamingText,
-          }));
+          if (!event.running && deltaFrame.current !== undefined) flushDeltas();
+          updateReady(setState, (view) => {
+            const conversations = view.conversations.map((conversation) =>
+              conversation.id === event.sessionId
+                ? { ...conversation, running: event.running }
+                : conversation,
+            );
+            if (view.activeSessionId !== event.sessionId) return { ...view, conversations };
+            return {
+              ...view,
+              conversations,
+              running: event.running,
+              rendererLive: event.running
+                ? {
+                    ...(view.running ? view.rendererLive : emptyLiveState()),
+                    stopping: false,
+                  }
+                : { ...view.rendererLive, stopping: false },
+            };
+          });
           return;
         case "status":
+          pushNotice(event.message, "info");
+          return;
         case "error":
-          updateReady(setState, (view) => ({ ...view, notice: event.message }));
+          updateReady(setState, (view) =>
+            event.sessionId === undefined || event.sessionId === view.activeSessionId
+              ? withNotice(view, makeNotice(event.message, "error"))
+              : view,
+          );
           return;
         case "snapshot":
-          cancelDeltaFrame();
-          setOptimisticMessage(undefined);
-          setState({ kind: "ready", view: toReadyView(event.snapshot) });
+          if (!event.snapshot.running) cancelDeltaFrame();
+          setState((current) => ({
+            kind: "ready",
+            view: mergeSnapshot(
+              current.kind === "ready" ? current.view : undefined,
+              event.snapshot,
+            ),
+          }));
+          if (!event.snapshot.running) setOptimisticMessage(undefined);
           return;
         default: {
           const exhaustive: never = event;
@@ -115,62 +199,272 @@ export function App() {
     };
   }, []);
 
-  async function runAction(
-    action: Exclude<PendingAction, "send">,
-    request: () => Promise<UjiSnapshot>,
-  ): Promise<void> {
-    setPending(action);
-    clearNotice(setState);
-    try {
-      const snapshot = await request();
-      setState({ kind: "ready", view: toReadyView(snapshot) });
-    } catch (error) {
-      setNotice(setState, errorMessage(error));
+  useEffect(() => {
+    function shortcut(event: KeyboardEvent): void {
+      const dialogOpen = settingsOpen || createAgentOpen;
+      if (event.key === "Escape" && !dialogOpen && state.kind === "ready" && state.view.running) {
+        event.preventDefault();
+        abort();
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const key = event.key.toLocaleLowerCase();
+      if (key === ",") {
+        event.preventDefault();
+        setSettingsOpen(true);
+        return;
+      }
+      if (key === "k") {
+        event.preventDefault();
+        const input = document.querySelector<HTMLInputElement>("#conversation-search");
+        if (input !== null) input.focus();
+        else {
+          document.querySelector<HTMLButtonElement>("#conversation-search-trigger")?.click();
+          requestAnimationFrame(() =>
+            document.querySelector<HTMLInputElement>("#conversation-search")?.focus(),
+          );
+        }
+        return;
+      }
+      if (key === "b") {
+        event.preventDefault();
+        setSidebarCollapsed((current) => !current);
+        return;
+      }
+      if (key === "i" || key === "l") {
+        event.preventDefault();
+        focusComposer();
+        return;
+      }
+      if (key === "n") {
+        event.preventDefault();
+        startNewChat();
+        return;
+      }
+      const index = Number(key) - 1;
+      if (
+        Number.isInteger(index) &&
+        index >= 0 &&
+        state.kind === "ready" &&
+        state.view.conversations[index] !== undefined
+      ) {
+        event.preventDefault();
+        selectConversation(state.view.conversations[index].id);
+      }
     }
-    setPending(undefined);
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  });
+
+  function makeNotice(message: string, tone: Notice["tone"], action?: Notice["action"]): Notice {
+    noticeCount.current += 1;
+    return {
+      id: `notice-${noticeCount.current}`,
+      message,
+      tone,
+      ...(action === undefined ? {} : { action }),
+    };
+  }
+
+  function pushNotice(message: string, tone: Notice["tone"], action?: Notice["action"]): void {
+    const notice = makeNotice(message, tone, action);
+    updateReady(setState, (view) => withNotice(view, notice));
+    if (tone === "info") window.setTimeout(() => dismissNotice(notice.id), 4_000);
+  }
+
+  function dismissNotice(id: string): void {
+    updateReady(setState, (view) => ({
+      ...view,
+      notices: view.notices.filter((notice) => notice.id !== id),
+    }));
+  }
+
+  /**
+   * Actions run one at a time so the host never interleaves session switches, but a queued click
+   * is never dropped: the next action starts as soon as the previous one settles.
+   */
+  async function runAction(
+    name: string,
+    request: () => Promise<UjiSnapshot>,
+    options: { closeDetails?: boolean; closeSettings?: boolean } = {},
+  ): Promise<boolean> {
+    const run = actionQueue.current.then(async () => {
+      setPendingAction(name);
+      try {
+        const snapshot = await request();
+        setState((current) => ({
+          kind: "ready",
+          view: mergeSnapshot(current.kind === "ready" ? current.view : undefined, snapshot),
+        }));
+        if (options.closeDetails === true) setDetailsOpen(false);
+        if (options.closeSettings === true) setSettingsOpen(false);
+        return true;
+      } catch (error) {
+        pushNotice(errorMessage(error), "error");
+        return false;
+      } finally {
+        setPendingAction(undefined);
+      }
+    });
+    actionQueue.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** Pulls the host's view back after an optimistic switch failed. */
+  function resync(): void {
+    void window.uji
+      .initialize()
+      .then((snapshot) => {
+        setState((current) => ({
+          kind: "ready",
+          view: mergeSnapshot(current.kind === "ready" ? current.view : undefined, snapshot),
+        }));
+      })
+      .catch(() => undefined);
   }
 
   function selectAgent(agentId: AgentId): void {
-    if (state.kind !== "ready") return;
-    if (state.view.activeAgentId === agentId || state.view.running || pending !== undefined) return;
-    void runAction("select", () => window.uji.selectAgent(agentId));
+    if (state.kind !== "ready" || state.view.activeAgentId === agentId) return;
+    updateReady(setState, (view) => ({
+      ...openingView(view),
+      activeAgentId: agentId,
+      activeSessionId: null,
+    }));
+    void runAction("select-agent", () => window.uji.selectAgent(agentId)).then((ok) => {
+      if (!ok) resync();
+    });
   }
 
-  function startNewChat(): void {
+  function selectConversation(sessionId: string): void {
+    if (state.kind !== "ready" || state.view.activeSessionId === sessionId) return;
+    const target = state.view.conversations.find((conversation) => conversation.id === sessionId);
+    if (target === undefined) return;
+    // Stays not-running until the host answers, so mergeSnapshot adopts the host's live text
+    // when the target conversation is mid-reply.
+    updateReady(setState, (view) => ({
+      ...openingView(view),
+      activeAgentId: target.agentId,
+      activeSessionId: sessionId,
+    }));
+    void runAction("select-conversation", () => window.uji.selectConversation(sessionId)).then(
+      (ok) => {
+        if (!ok) resync();
+      },
+    );
+  }
+
+  function startNewChat(agentId?: AgentId): void {
     if (state.kind !== "ready") return;
-    const agentId = state.view.activeAgentId;
-    if (agentId === null || state.view.running || pending !== undefined) return;
-    void runAction("new-chat", () => window.uji.newChat(agentId));
+    const target = agentId ?? state.view.activeAgentId;
+    if (target === null) return;
+    setDraft("");
+    updateReady(setState, (view) => ({
+      ...openingView(view),
+      activeAgentId: target,
+      activeSessionId: null,
+      loading: false,
+    }));
+    focusComposer();
+    void runAction("new-chat", () => window.uji.newChat(target)).then((ok) => {
+      if (!ok) resync();
+    });
   }
 
   function login(): void {
-    if (pending !== undefined) return;
-    void runAction("login", () => window.uji.login());
+    void runAction("login", () => window.uji.login()).then((ok) => {
+      if (ok) focusComposer();
+    });
   }
 
-  function abort(): void {
-    void window.uji.abort().catch((error: unknown) => setNotice(setState, errorMessage(error)));
+  function logout(): void {
+    void runAction("logout", () => window.uji.logout());
+  }
+
+  function createAgent(agent: AgentDraft): void {
+    void runAction("create-agent", async () => {
+      const created = await window.uji.createAgent(agent);
+      const agentId = created.activeAgentId;
+      return agentId === null ? created : await window.uji.newChat(agentId);
+    }).then((ok) => {
+      if (!ok) return;
+      setCreateAgentOpen(false);
+      setDraft("");
+      pushNotice(`${agent.name} is ready. Say hello.`, "info");
+      focusComposer();
+    });
+  }
+
+  function saveAgent(agentId: AgentId, changes: AgentDraft): void {
+    void runAction("save-agent", () => window.uji.updateAgent(agentId, changes)).then((ok) => {
+      if (ok) pushNotice(`Saved ${changes.name}.`, "info");
+    });
+  }
+
+  function deleteAgent(agentId: AgentId): void {
+    void runAction("delete-agent", () => window.uji.deleteAgent(agentId), {
+      closeDetails: true,
+    });
+  }
+
+  function renameConversation(sessionId: string, name: string): void {
+    void runAction("rename-conversation", () =>
+      window.uji.renameConversation(sessionId, name),
+    ).then((ok) => {
+      if (ok) pushNotice("Chat renamed.", "info");
+    });
+  }
+
+  function updateRuntime(change: RuntimeSettingsChange): void {
+    void runAction("runtime", () => window.uji.updateRuntimeSettings(change));
   }
 
   async function sendMessage(body: string): Promise<void> {
-    if (state.kind !== "ready" || pending !== undefined) return;
+    if (state.kind !== "ready") return;
     const text = body.trim();
-    if (text === "" || state.view.activeAgentId === null || !state.view.auth.signedIn) return;
-
-    const message = { body: text, id: `pending-${Date.now()}`, timestamp: Date.now() };
+    if (text === "" || state.view.activeAgentId === null) return;
+    if (!state.view.auth.signedIn) {
+      pushNotice("Connect ChatGPT before sending.", "error");
+      return;
+    }
     setDraft("");
-    setOptimisticMessage(message);
-    setPending("send");
-    clearNotice(setState);
+    setOptimisticMessage({ body: text, id: `pending-${Date.now()}` });
     try {
       const snapshot = await window.uji.send(text);
-      setState({ kind: "ready", view: toReadyView(snapshot) });
+      setState((current) => ({
+        kind: "ready",
+        view: mergeSnapshot(current.kind === "ready" ? current.view : undefined, snapshot),
+      }));
+      setOptimisticMessage(undefined);
     } catch (error) {
-      setDraft(text);
-      setNotice(setState, errorMessage(error));
+      setOptimisticMessage(undefined);
+      setDraft((current) => (current === "" ? text : current));
+      pushNotice(errorMessage(error), "error", {
+        label: "Retry",
+        run: () => void sendMessage(text),
+      });
     }
-    setOptimisticMessage(undefined);
-    setPending(undefined);
+  }
+
+  function abort(): void {
+    if (state.kind !== "ready" || !state.view.running || state.view.rendererLive.stopping) return;
+    updateReady(setState, (view) => ({
+      ...view,
+      rendererLive: { ...view.rendererLive, stopping: true },
+    }));
+    void window.uji.abort().catch((error: unknown) => {
+      updateReady(setState, (view) => ({
+        ...view,
+        rendererLive: { ...view.rendererLive, stopping: false },
+      }));
+      pushNotice(errorMessage(error), "error");
+    });
+  }
+
+  function cancelQueued(entryId: string): void {
+    void runAction("cancel-queued", () => window.uji.cancelQueued(entryId));
   }
 
   if (state.kind === "loading") return <LoadingScreen />;
@@ -186,266 +480,114 @@ export function App() {
 
   const view = state.view;
   const activeAgent = view.agents.find((agent) => agent.id === view.activeAgentId);
-  const busy = pending !== undefined;
+  const activeConversation = view.conversations.find(
+    (conversation) => conversation.id === view.activeSessionId,
+  );
 
   return (
     <div className="app-shell">
-      <Titlebar
+      <Sidebar
+        accountLabel={view.auth.label}
         activeAgentId={view.activeAgentId}
+        activeSessionId={view.activeSessionId}
         agents={view.agents}
-        disabled={view.running || busy}
+        collapsed={sidebarCollapsed}
+        conversations={view.conversations}
+        onCreateAgent={() => setCreateAgentOpen(true)}
         onNewChat={startNewChat}
-        onSelect={selectAgent}
+        onResize={setSidebarWidth}
+        onSelectConversation={selectConversation}
+        onSettings={() => setSettingsOpen(true)}
+        query={query}
+        setQuery={setQuery}
+        signedIn={view.auth.signedIn}
+        width={sidebarWidth}
       />
 
-      {activeAgent === undefined ? (
-        <StatusMessage message="No assistants are available." />
-      ) : (
-        <Conversation
-          agent={activeAgent}
-          draft={draft}
-          messages={view.messages}
-          notice={view.notice}
-          onAbort={abort}
-          onDraftChange={setDraft}
+      <div className="workspace-stage" data-details-open={detailsOpen || undefined}>
+        {activeAgent === undefined ? (
+          <StatusScreen
+            action="Create assistant"
+            message="Create an assistant to start a Core-backed conversation."
+            onAction={() => setCreateAgentOpen(true)}
+          />
+        ) : (
+          <ConversationWorkspace
+            agent={activeAgent}
+            connecting={pendingAction === "login"}
+            detailsOpen={detailsOpen}
+            draft={draft}
+            liveThinking={view.rendererLive.thinkingText}
+            liveTools={Object.values(view.rendererLive.tools)}
+            loading={view.loading}
+            notices={view.notices}
+            onAbort={abort}
+            onCancelQueued={cancelQueued}
+            onConnect={login}
+            onDetails={() => setDetailsOpen((current) => !current)}
+            onDismissNotice={dismissNotice}
+            onDraftChange={setDraft}
+            onNewChat={startNewChat}
+            onRuntimeChange={updateRuntime}
+            onSelectAgent={selectAgent}
+            onSend={(message) => void sendMessage(message)}
+            snapshot={view}
+            stopping={view.rendererLive.stopping}
+            streamingText={view.rendererLive.streamingText}
+            waiting={pendingAction === "runtime"}
+            {...(activeConversation === undefined ? {} : { conversation: activeConversation })}
+            {...(optimisticMessage === undefined ? {} : { optimisticMessage })}
+          />
+        )}
+        {detailsOpen && activeAgent !== undefined && (
+          <AgentDetails
+            agent={activeAgent}
+            key={`${activeAgent.id}:${view.activeSessionId ?? "new"}`}
+            onClose={() => setDetailsOpen(false)}
+            onDelete={() => deleteAgent(activeAgent.id)}
+            onRenameConversation={(name) => {
+              if (view.activeSessionId !== null) renameConversation(view.activeSessionId, name);
+            }}
+            onResize={setDetailsWidth}
+            onSave={(changes) => saveAgent(activeAgent.id, changes)}
+            pending={pendingAction === "save-agent" || pendingAction === "delete-agent"}
+            snapshot={view}
+            width={detailsWidth}
+            {...(activeConversation === undefined ? {} : { conversation: activeConversation })}
+          />
+        )}
+      </div>
+
+      {settingsOpen && (
+        <SettingsDialog
           onLogin={login}
-          onSend={(body) => void sendMessage(body)}
-          optimisticMessage={optimisticMessage}
-          pending={pending}
-          running={view.running}
-          signedIn={view.auth.signedIn}
-          streamingText={view.streamingText}
+          onLogout={logout}
+          onOpenChange={setSettingsOpen}
+          onRuntimeChange={updateRuntime}
+          onThemeChange={setTheme}
+          open
+          pendingAction={pendingAction}
+          snapshot={view}
+          theme={theme}
+        />
+      )}
+      {createAgentOpen && (
+        <CreateAgentDialog
+          onCreate={createAgent}
+          onOpenChange={setCreateAgentOpen}
+          open
+          pending={pendingAction === "create-agent"}
         />
       )}
     </div>
   );
 }
 
-function Titlebar({
-  activeAgentId,
-  agents,
-  disabled,
-  onNewChat,
-  onSelect,
-}: {
-  activeAgentId: AgentId | null;
-  agents: readonly Agent[];
-  disabled: boolean;
-  onNewChat: () => void;
-  onSelect: (agentId: AgentId) => void;
-}) {
-  return (
-    <header className="titlebar">
-      <strong className="wordmark">Uji</strong>
-      <nav aria-label="Assistants" className="agent-strip">
-        {agents.map((agent) => (
-          <button
-            aria-pressed={agent.id === activeAgentId}
-            className="agent-option"
-            disabled={disabled && agent.id !== activeAgentId}
-            key={agent.id}
-            onClick={() => onSelect(agent.id)}
-            type="button"
-          >
-            <AgentAvatar agent={agent} />
-            <span>{agent.name}</span>
-          </button>
-        ))}
-      </nav>
-      {activeAgentId !== null && (
-        <button
-          aria-label="New chat"
-          className="icon-button new-chat"
-          disabled={disabled}
-          onClick={onNewChat}
-          title="New chat"
-          type="button"
-        >
-          <PlusIcon />
-        </button>
-      )}
-    </header>
-  );
-}
-
-function Conversation({
-  agent,
-  draft,
-  messages,
-  notice,
-  optimisticMessage,
-  pending,
-  running,
-  signedIn,
-  streamingText,
-  onAbort,
-  onDraftChange,
-  onLogin,
-  onSend,
-}: {
-  agent: Agent;
-  draft: string;
-  messages: UjiSnapshot["messages"];
-  notice?: string;
-  optimisticMessage?: OptimisticMessage;
-  pending?: PendingAction;
-  running: boolean;
-  signedIn: boolean;
-  streamingText: string;
-  onAbort: () => void;
-  onDraftChange: (draft: string) => void;
-  onLogin: () => void;
-  onSend: (body: string) => void;
-}) {
-  const scroller = useRef<HTMLDivElement>(null);
-  const pinned = useRef(true);
-  const turns = toTurns(messages, optimisticMessage);
-  const streaming = running || streamingText !== "";
-
-  useLayoutEffect(() => {
-    if (!pinned.current) return;
-    const node = scroller.current;
-    if (node !== null) node.scrollTop = node.scrollHeight;
-  }, [turns.length, streamingText]);
-
-  function submit(event: FormEvent<HTMLFormElement>): void {
-    event.preventDefault();
-    onSend(draft);
-    pinned.current = true;
-  }
-
-  function submitOnEnter(event: KeyboardEvent<HTMLTextAreaElement>): void {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    event.currentTarget.form?.requestSubmit();
-  }
-
-  const canSend = signedIn && !running && pending === undefined && draft.trim() !== "";
-
-  return (
-    <main className="conversation">
-      <div
-        className="messages"
-        onScroll={(event) => {
-          const node = event.currentTarget;
-          pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 72;
-        }}
-        ref={scroller}
-      >
-        <div aria-label={`Conversation with ${agent.name}`} className="message-column" role="log">
-          {turns.length === 0 && !streaming ? (
-            <div className="empty-chat">
-              <AgentAvatar agent={agent} large />
-              <h1>{agent.name}</h1>
-              {agent.role !== "" && <p>{agent.role}</p>}
-            </div>
-          ) : (
-            turns.map((turn) => <Message key={turn.id} turn={turn} />)
-          )}
-          {streaming && (
-            <div className="message assistant-message streaming-message">
-              <AgentAvatar agent={agent} />
-              <div className="message-body">
-                {streamingText === "" ? <TypingIndicator /> : streamingText}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="composer-dock">
-        <div className="composer-column">
-          {notice !== undefined && (
-            <p className="notice" role="status">
-              {notice}
-            </p>
-          )}
-          {!signedIn && (
-            <button
-              className="connect-button"
-              disabled={pending !== undefined}
-              onClick={onLogin}
-              type="button"
-            >
-              {pending === "login" ? "Waiting for browser…" : "Connect ChatGPT to start"}
-            </button>
-          )}
-          <form className="composer" onSubmit={submit}>
-            <textarea
-              aria-label={`Message ${agent.name}`}
-              autoFocus
-              disabled={!signedIn || running || pending !== undefined}
-              onChange={(event) => onDraftChange(event.target.value)}
-              onKeyDown={submitOnEnter}
-              placeholder={signedIn ? `Message ${agent.name}` : "Connect ChatGPT to send a message"}
-              rows={1}
-              value={draft}
-            />
-            {running ? (
-              <button
-                aria-label="Stop response"
-                className="composer-action stop-button"
-                onClick={onAbort}
-                type="button"
-              >
-                <StopIcon />
-              </button>
-            ) : (
-              <button
-                aria-label="Send message"
-                className="composer-action send-button"
-                disabled={!canSend}
-                type="submit"
-              >
-                <ArrowIcon />
-              </button>
-            )}
-          </form>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-function Message({ turn }: { turn: Turn }) {
-  return (
-    <div className={`message ${turn.fromUser ? "user-message" : "assistant-message"}`}>
-      {!turn.fromUser && <span className="assistant-mark">U</span>}
-      <div className="message-body">{turn.body}</div>
-    </div>
-  );
-}
-
-function AgentAvatar({ agent, large = false }: { agent: Agent; large?: boolean }) {
-  return (
-    <span
-      className={large ? "agent-avatar agent-avatar-large" : "agent-avatar"}
-      data-tone={agent.avatar}
-    >
-      {agent.name.trim().charAt(0).toLocaleUpperCase() || "?"}
-    </span>
-  );
-}
-
-function TypingIndicator() {
-  return (
-    <span aria-label="Thinking" className="typing-indicator" role="status">
-      <i />
-      <i />
-      <i />
-    </span>
-  );
-}
-
 function LoadingScreen() {
   return (
-    <div className="app-shell">
-      <header className="titlebar">
-        <strong className="wordmark">Uji</strong>
-      </header>
-      <div className="status-screen" role="status">
-        <span className="loading-dot" />
-      </div>
+    <div className="loading-shell">
+      <strong>Uji</strong>
+      <span aria-label="Loading" className="loading-dot" role="status" />
     </div>
   );
 }
@@ -461,64 +603,68 @@ function StatusScreen({
 }) {
   return (
     <main className="status-screen">
+      <span className="status-mark">U</span>
+      <h1>Uji</h1>
       <p>{message}</p>
-      <button className="primary-button" onClick={onAction} type="button">
-        {action}
-      </button>
+      <Button onClick={onAction}>{action}</Button>
     </main>
   );
 }
 
-function StatusMessage({ message }: { message: string }) {
-  return (
-    <main className="status-screen">
-      <p>{message}</p>
-    </main>
+function focusComposer(): void {
+  requestAnimationFrame(() =>
+    document.querySelector<HTMLTextAreaElement>("#message-composer")?.focus(),
   );
 }
 
-function PlusIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 16 16">
-      <path d="M8 3v10M3 8h10" />
-    </svg>
-  );
+function emptyLiveState(): LiveState {
+  return { stopping: false, streamingText: "", thinkingText: "", tools: {} };
 }
 
-function ArrowIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 16 16">
-      <path d="m4 8 4-4 4 4M8 4v8" />
-    </svg>
-  );
+/** Clears the transcript while the host opens another session, so switching feels immediate. */
+function openingView(view: ReadyView): ReadyView {
+  return {
+    ...view,
+    context: null,
+    loading: true,
+    messages: [],
+    pending: [],
+    rendererLive: emptyLiveState(),
+    running: false,
+  };
 }
 
-function StopIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 16 16">
-      <rect height="7" rx="1.5" width="7" x="4.5" y="4.5" />
-    </svg>
-  );
-}
-
-function toTurns(
-  entries: UjiSnapshot["messages"],
-  optimisticMessage: OptimisticMessage | undefined,
-): Turn[] {
-  const turns: Turn[] = [];
-  for (const entry of entries) {
-    const role = entry.message.role;
-    if (role !== "user" && role !== "assistant") continue;
-    const body = messageText(entry.message.content).trim();
-    if (body === "") continue;
-    turns.push({ id: entry.id, body, timestamp: entry.timestamp, fromUser: role === "user" });
-  }
-  if (optimisticMessage !== undefined) turns.push({ ...optimisticMessage, fromUser: true });
-  return turns;
+function withNotice(view: ReadyView, notice: Notice): ReadyView {
+  const kept = view.notices.filter((current) => current.message !== notice.message);
+  return { ...view, notices: [...kept, notice].slice(-3) };
 }
 
 function toReadyView(snapshot: UjiSnapshot): ReadyView {
-  return { ...snapshot, streamingText: "" };
+  return { ...snapshot, loading: false, notices: [], rendererLive: toLiveState(snapshot.live) };
+}
+
+function mergeSnapshot(current: ReadyView | undefined, snapshot: UjiSnapshot): ReadyView {
+  const sameRunningSession =
+    snapshot.running &&
+    current?.running === true &&
+    current.activeSessionId === snapshot.activeSessionId;
+  return {
+    ...snapshot,
+    loading: false,
+    notices: current?.notices ?? [],
+    rendererLive: sameRunningSession ? current.rendererLive : toLiveState(snapshot.live),
+  };
+}
+
+function toLiveState(live: UjiSnapshot["live"]): LiveState {
+  const tools: Record<string, LiveToolEvent> = {};
+  for (const tool of live.tools) tools[tool.callId] = tool;
+  return {
+    stopping: false,
+    streamingText: live.streamingText,
+    thinkingText: live.thinkingText,
+    tools,
+  };
 }
 
 function updateReady(
@@ -530,15 +676,27 @@ function updateReady(
   );
 }
 
-function clearNotice(setState: (update: (current: AppState) => AppState) => void): void {
-  updateReady(setState, (view) => ({ ...view, notice: undefined }));
+function readTheme(): ThemePreference {
+  const value = localStorage.getItem("uji.theme");
+  return value === "light" || value === "dark" || value === "system" ? value : "system";
 }
 
-function setNotice(
-  setState: (update: (current: AppState) => AppState) => void,
-  notice: string,
-): void {
-  updateReady(setState, (view) => ({ ...view, notice }));
+function readSidebarWidth(): number {
+  const stored = localStorage.getItem("uji.sidebar-width");
+  if (stored === null) return 280;
+  const value = Number(stored);
+  return Number.isFinite(value) ? Math.min(400, Math.max(240, value)) : 280;
+}
+
+function readSidebarCollapsed(): boolean {
+  return localStorage.getItem("uji.sidebar-collapsed") === "true";
+}
+
+function readDetailsWidth(): number {
+  const stored = localStorage.getItem("uji.details-width");
+  if (stored === null) return 320;
+  const value = Number(stored);
+  return Number.isFinite(value) ? Math.min(480, Math.max(280, value)) : 320;
 }
 
 function errorMessage(error: unknown): string {

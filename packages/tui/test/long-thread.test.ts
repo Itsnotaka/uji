@@ -59,13 +59,10 @@ void test("a long thread keeps the full screen while streaming and when done", a
     await setup.renderOnce();
 
     for (let index = 0; index < 40; index++) {
-      appendUser(ui.transcript, {
-        kind: "live",
-        content: `previous prompt ${String(index)}`,
-      });
+      appendUser(ui.transcript, `previous prompt ${String(index)}`);
     }
     const turn = new ConversationTurnBlock(ui.transcript);
-    turn.addUser({ kind: "live", content: "current prompt" });
+    turn.addUser("current prompt");
     await setup.renderOnce();
     let reasoning = "";
     for (let index = 0; index < 49; index++) {

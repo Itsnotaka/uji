@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { CliRenderEvents, KeyEvent, PasteEvent } from "@opentui/core";
 import { createTestRenderer, ManualClock } from "@opentui/core/testing";
@@ -29,7 +29,7 @@ const status: PowerlineState = {
   dirty: false,
   model: "gpt-5.6-luna",
   effort: "medium",
-  fast: false,
+  statuses: [],
   queued: 0,
 };
 
@@ -406,8 +406,11 @@ void describe("rich composer parts", () => {
   });
 
   void test("folds attachment bodies back to tags for one-line labels", () => {
-    const sent = `look at ${fileAttachmentBlock("/tmp/notes.ts", "const answer = 42;")} and @file:///tmp/other.ts`;
-    assert.equal(foldAttachments(sent), "look at [File notes.ts] and [File other.ts]");
+    const sent = `look at ${fileAttachmentBlock("/tmp/notes.ts", "const answer = 42;")} and @file:///tmp/other.ts inside @file:///tmp/pkg/`;
+    assert.equal(
+      foldAttachments(sent),
+      "look at [File notes.ts] and [File other.ts] inside [Folder pkg]",
+    );
   });
 
   void test("classifies multiline text, files, and images at the paste boundary", async () => {
@@ -464,13 +467,25 @@ void describe("rich composer parts", () => {
       const files = await discoverMentionFiles(directory);
       assert.deepEqual(
         files.map((file) => file.displayPath),
-        ["README.md", "src/index.ts"],
+        ["README.md", "src/", "src/index.ts"],
       );
       assert.deepEqual(fileMentionQuery("inspect @src/in"), {
         start: 8,
         query: "src/in",
       });
       assert.equal(fileMentionSuggestions("inspect @index", files)?.files[0]?.label, "index.ts");
+      const nested = join(directory, "src");
+      assert.deepEqual(fileMentionSuggestions("read @../README.md", files, nested)?.files[0], {
+        path: join(directory, "README.md"),
+        displayPath: "../README.md",
+        label: "README.md",
+      });
+      assert.equal(fileMentionSuggestions("read @../missing.md", files, nested)?.files.length, 0);
+      assert.deepEqual(fileMentionSuggestions("read @../src", files, nested)?.files[0], {
+        path: join(directory, "src") + sep,
+        displayPath: "./",
+        label: "src/",
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

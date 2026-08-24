@@ -2,8 +2,8 @@ import { Avatar as AvatarPrimitive } from "@base-ui/react/avatar";
 import * as stylex from "@stylexjs/stylex";
 import type * as React from "react";
 
-import { mergeStyleProps, type XStyle } from "@june/ui/style";
-import { avatarVars, colorVars, fontVars, motionVars, radiusVars } from "@june/ui/tokens.stylex";
+import { mergeStyleProps, type XStyle } from "@uji-ai/ui/style";
+import { avatarVars, colorVars, fontVars, motionVars, radiusVars } from "@uji-ai/ui/tokens.stylex";
 
 const styles = stylex.create({
   root: {
@@ -14,13 +14,13 @@ const styles = stylex.create({
     flexShrink: 0,
     overflow: "hidden",
     boxSizing: "border-box",
-    borderWidth: avatarVars["--june-avatar-ring-width"],
+    borderWidth: avatarVars["--uji-avatar-ring-width"],
     borderStyle: "solid",
-    borderColor: colorVars["--june-color-border"],
-    backgroundColor: colorVars["--june-color-avatar-background"],
-    color: colorVars["--june-color-avatar-foreground"],
-    fontFamily: fontVars["--june-font-family-ui"],
-    fontWeight: fontVars["--june-font-weight-semibold"],
+    borderColor: colorVars["--uji-color-border"],
+    backgroundColor: colorVars["--uji-color-avatar-background"],
+    color: colorVars["--uji-color-avatar-foreground"],
+    fontFamily: fontVars["--uji-font-family-ui"],
+    fontWeight: fontVars["--uji-font-weight-semibold"],
     lineHeight: 1,
     userSelect: "none",
   },
@@ -45,80 +45,80 @@ const styles = stylex.create({
 
 const sizeStyles = stylex.create({
   xs: {
-    width: avatarVars["--june-avatar-size-xs"],
-    height: avatarVars["--june-avatar-size-xs"],
-    fontSize: avatarVars["--june-avatar-font-xs"],
+    width: avatarVars["--uji-avatar-size-xs"],
+    height: avatarVars["--uji-avatar-size-xs"],
+    fontSize: avatarVars["--uji-avatar-font-xs"],
   },
   sm: {
-    width: avatarVars["--june-avatar-size-sm"],
-    height: avatarVars["--june-avatar-size-sm"],
-    fontSize: avatarVars["--june-avatar-font-sm"],
+    width: avatarVars["--uji-avatar-size-sm"],
+    height: avatarVars["--uji-avatar-size-sm"],
+    fontSize: avatarVars["--uji-avatar-font-sm"],
   },
   md: {
-    width: avatarVars["--june-avatar-size-md"],
-    height: avatarVars["--june-avatar-size-md"],
-    fontSize: avatarVars["--june-avatar-font-md"],
+    width: avatarVars["--uji-avatar-size-md"],
+    height: avatarVars["--uji-avatar-size-md"],
+    fontSize: avatarVars["--uji-avatar-font-md"],
   },
   lg: {
-    width: avatarVars["--june-avatar-size-lg"],
-    height: avatarVars["--june-avatar-size-lg"],
-    fontSize: avatarVars["--june-avatar-font-lg"],
+    width: avatarVars["--uji-avatar-size-lg"],
+    height: avatarVars["--uji-avatar-size-lg"],
+    fontSize: avatarVars["--uji-avatar-font-lg"],
   },
 });
 
 const shapeStyles = stylex.create({
-  circle: { borderRadius: radiusVars["--june-radius-pill"] },
-  rounded: { borderRadius: radiusVars["--june-radius-avatar"] },
+  circle: { borderRadius: radiusVars["--uji-radius-pill"] },
+  rounded: { borderRadius: radiusVars["--uji-radius-avatar"] },
 });
 
 const toneStyles = stylex.create({
   neutral: {
-    backgroundColor: colorVars["--june-color-avatar-background"],
-    color: colorVars["--june-color-avatar-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-background"],
+    color: colorVars["--uji-color-avatar-foreground"],
   },
   orange: {
-    backgroundColor: colorVars["--june-color-avatar-orange-background"],
-    color: colorVars["--june-color-avatar-orange-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-orange-background"],
+    color: colorVars["--uji-color-avatar-orange-foreground"],
   },
   blue: {
-    backgroundColor: colorVars["--june-color-avatar-blue-background"],
-    color: colorVars["--june-color-avatar-blue-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-blue-background"],
+    color: colorVars["--uji-color-avatar-blue-foreground"],
   },
   violet: {
-    backgroundColor: colorVars["--june-color-avatar-violet-background"],
-    color: colorVars["--june-color-avatar-violet-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-violet-background"],
+    color: colorVars["--uji-color-avatar-violet-foreground"],
   },
   green: {
-    backgroundColor: colorVars["--june-color-avatar-green-background"],
-    color: colorVars["--june-color-avatar-green-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-green-background"],
+    color: colorVars["--uji-color-avatar-green-foreground"],
   },
 });
 
 const solidToneStyles = stylex.create({
   neutral: {
     borderColor: "transparent",
-    backgroundColor: colorVars["--june-color-avatar-neutral-solid"],
-    color: colorVars["--june-color-avatar-solid-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-neutral-solid"],
+    color: colorVars["--uji-color-avatar-solid-foreground"],
   },
   orange: {
     borderColor: "transparent",
-    backgroundColor: colorVars["--june-color-avatar-orange-solid"],
-    color: colorVars["--june-color-avatar-solid-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-orange-solid"],
+    color: colorVars["--uji-color-avatar-solid-foreground"],
   },
   blue: {
     borderColor: "transparent",
-    backgroundColor: colorVars["--june-color-avatar-blue-solid"],
-    color: colorVars["--june-color-avatar-solid-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-blue-solid"],
+    color: colorVars["--uji-color-avatar-solid-foreground"],
   },
   violet: {
     borderColor: "transparent",
-    backgroundColor: colorVars["--june-color-avatar-violet-solid"],
-    color: colorVars["--june-color-avatar-solid-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-violet-solid"],
+    color: colorVars["--uji-color-avatar-solid-foreground"],
   },
   green: {
     borderColor: "transparent",
-    backgroundColor: colorVars["--june-color-avatar-green-solid"],
-    color: colorVars["--june-color-avatar-solid-foreground"],
+    backgroundColor: colorVars["--uji-color-avatar-green-solid"],
+    color: colorVars["--uji-color-avatar-solid-foreground"],
   },
 });
 
@@ -140,10 +140,10 @@ const interactiveStyles = stylex.create({
     // "box-shadow" would drop the host's own transitions.
     transitionProperty: "box-shadow, background-color, border-color, color, opacity",
     transitionDuration: {
-      default: motionVars["--june-motion-fast"],
+      default: motionVars["--uji-motion-fast"],
       "@media (prefers-reduced-motion: reduce)": "0s",
     },
-    transitionTimingFunction: motionVars["--june-motion-ease-out"],
+    transitionTimingFunction: motionVars["--uji-motion-ease-out"],
   },
 });
 

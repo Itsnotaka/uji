@@ -3,8 +3,9 @@
  * hands its `session` factory. Built-ins under `./builtin` and files under
  * `.uji/plugins` both use this and nothing else.
  *
- * Design: plugins.md. Contract from pi dev's extensions-v2 notes, runtime
- * shape from opencode v2 (`define({ id, effect(ctx) })`, a scope per plugin).
+ * Design: packages/docs/content/docs/design.mdx, "Plugins". Contract from pi
+ * dev's extensions-v2 notes, runtime shape from opencode v2
+ * (`define({ id, effect(ctx) })`, a scope per plugin).
  */
 import type { JsonValue, Skill } from "@uji-ai/schema";
 import type { HarnessEvent, HarnessTool } from "../harness/agent-harness.ts";

@@ -1,5 +1,7 @@
+import { statSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, extname, join, relative, resolve } from "node:path";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { imageInfo } from "@opentui/core";
 import type { ImageContent, UserMessage } from "@uji-ai/schema";
@@ -139,7 +141,21 @@ export async function resolveComposerPaste(value: string, cwd: string): Promise<
   };
 }
 
-/** Files offered by `@` completion. Common generated trees are skipped at the walk boundary. */
+/**
+ * A mentioned folder is a real thing the user can hand the model, so paths
+ * that name directories carry a trailing separator everywhere: in the walked
+ * list, in composer parts, and in the `@file://…/` mention the model sees.
+ * That one convention is what lets pure code tell folders from files without
+ * touching the disk.
+ */
+export function isFolderPath(path: string): boolean {
+  return path.endsWith(sep) || path.endsWith("/");
+}
+
+/**
+ * Files and folders offered by `@` completion. Common generated trees are
+ * skipped at the walk boundary.
+ */
 export async function discoverMentionFiles(cwd: string): Promise<MentionFile[]> {
   const files: MentionFile[] = [];
   const pending = [cwd];
@@ -150,12 +166,18 @@ export async function discoverMentionFiles(cwd: string): Promise<MentionFile[]> 
     for (const entry of entries) {
       if (files.length >= MAX_MENTION_FILES) break;
       const path = join(directory, entry.name);
+      const displayPath = relative(cwd, path).split("\\").join("/");
       if (entry.isDirectory()) {
-        if (!SKIPPED_DIRECTORIES.has(entry.name)) pending.push(path);
+        if (SKIPPED_DIRECTORIES.has(entry.name)) continue;
+        pending.push(path);
+        files.push({
+          path: path + sep,
+          displayPath: `${displayPath}/`,
+          label: `${entry.name}/`,
+        });
         continue;
       }
       if (!entry.isFile()) continue;
-      const displayPath = relative(cwd, path).split("\\").join("/");
       files.push({ path, displayPath, label: basename(path) });
     }
   }
@@ -175,9 +197,40 @@ export function fileMentionQuery(value: string): FileMentionQuery | undefined {
   return { start: match.index + prefix.length, query: match[2] ?? "" };
 }
 
+/**
+ * The walked list stops at cwd, so `@../core.md` or `@~/notes.md` never fuzzy
+ * matches anything. A query that is spelled as a path gets resolved directly
+ * and, when it names a real file or folder, offered first.
+ */
+export function explicitMentionFile(query: string, cwd: string): MentionFile | undefined {
+  if (query === "" || !/^(\.{1,2}[/\\]|~[/\\]|[/\\]|[A-Za-z]:[/\\])/.test(query)) {
+    return undefined;
+  }
+  const expanded = query.startsWith("~") ? join(homedir(), query.slice(2)) : query;
+  const path = resolve(cwd, expanded);
+  let info;
+  try {
+    info = statSync(path);
+  } catch {
+    return undefined;
+  }
+  const rel = relative(cwd, path).split("\\").join("/");
+  if (info.isDirectory()) {
+    // `relative` is empty when the query names cwd itself; "./" is that folder.
+    return {
+      path: path + sep,
+      displayPath: rel === "" ? "./" : `${rel}/`,
+      label: `${basename(path)}/`,
+    };
+  }
+  if (!info.isFile()) return undefined;
+  return { path, displayPath: rel, label: basename(path) };
+}
+
 export function fileMentionSuggestions(
   value: string,
   files: readonly MentionFile[],
+  cwd?: string,
 ): { query: FileMentionQuery; files: MentionFile[] } | undefined {
   const query = fileMentionQuery(value);
   if (query === undefined) return undefined;
@@ -190,6 +243,10 @@ export function fileMentionSuggestions(
             limit: MAX_MENTION_RESULTS,
           })
           .map((result) => result.obj);
+  const explicit = cwd === undefined ? undefined : explicitMentionFile(query.query, cwd);
+  if (explicit !== undefined && !matches.some((file) => file.path === explicit.path)) {
+    matches.unshift(explicit);
+  }
   return { query, files: matches };
 }
 
@@ -242,7 +299,7 @@ export function extractFileAttachments(text: string): FileAttachment[] {
 }
 
 /**
- * Only text bodies inline. Binaries would be mojibake, oversized files would
+ * Only text bodies inline. Folders have no body, binaries would be mojibake, oversized files would
  * quietly eat the context window, and a body carrying the closing tag would
  * break the wrapper for every reader downstream. Each of those falls back to
  * the plain mention, which is what the composer sent before bodies existed.
@@ -259,7 +316,7 @@ async function readAttachmentText(path: string): Promise<string | undefined> {
 }
 
 export function fileMarker(path: string): string {
-  return `[File ${basename(path)}]`;
+  return isFolderPath(path) ? `[Folder ${basename(path)}]` : `[File ${basename(path)}]`;
 }
 
 /**

@@ -1,8 +1,8 @@
 /**
- * Find tool ported from pi's tools/find.ts, adapted to June's AgentTool
+ * Find tool ported from pi's tools/find.ts, adapted to Uji's AgentTool
  * contract (no TUI rendering, plain JSON Schema parameters, string content).
  *
- * June deviation: pi lists files with a managed fd binary (ensureTool); fd is
+ * Uji deviation: pi lists files with a managed fd binary (ensureTool); fd is
  * not available here, so the file-listing layer is reimplemented with
  * `rg --files` (which respects .gitignore like fd) filtered by ripgrep's glob
  * matching. Schema and result formatting are identical to pi's find tool.
@@ -206,7 +206,7 @@ export function createFindTool(
               return;
             }
 
-            // Default implementation lists files with `rg --files` (June
+            // Default implementation lists files with `rg --files` (Uji
             // deviation: pi shells out to fd here).
             const args: string[] = ["--files", "--color=never", "--hidden"];
 

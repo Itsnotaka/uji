@@ -1,20 +1,19 @@
 ---
 title: Recipes
 description: Task-shaped answers for rendering a transcript, steering a run, aborting, resuming after a crash, gating a tool, hosting the loop in Electron, and reopening past sessions
+icon: IconBookSimple
 ---
 
-import { File, Files, Folder } from "fumadocs-ui/components/files";
-
 Every recipe here is lifted from code that runs in this repository: the terminal client in
-`packages/demo/cli` and the Electron app in `packages/demo/grok-bot`. Where a demo takes a shortcut,
+`packages/tui` and the Electron demo in `packages/demo/desktop`. Where the demo takes a shortcut,
 the recipe says so rather than copying it.
 
 ## Render a live transcript
 
 **Problem:** you have an `AgentHarness` and you want a UI that updates while the model streams.
 
-```ts
-import type { AgentEvent, AgentHarness } from "@june/core";
+```ts title="render-transcript.ts"
+import type { AgentEvent, AgentHarness } from "@uji-ai/core";
 
 export function renderTranscript(harness: AgentHarness, write: (line: string) => void): () => void {
   let streaming = "";
@@ -84,8 +83,8 @@ not keep your own buffer.
 **Problem:** the user types while the model is still working, and you need to decide where that text
 goes.
 
-```ts
-import type { AgentHarness } from "@june/core";
+```ts title="steer.ts"
+import type { AgentHarness } from "@uji-ai/core";
 
 export async function submit(harness: AgentHarness, text: string): Promise<string> {
   const message = { role: "user" as const, content: text };
@@ -96,7 +95,7 @@ export async function submit(harness: AgentHarness, text: string): Promise<strin
 
   const run = await harness.prompt(text);
   if (run.ok) return run.value.kind;
-  if (run.error._tag === "LaneBusy") {
+  if (run.error._tag === "HeadBusy") {
     const queued = await harness.nextRun(message);
     return queued.ok ? "queued for the next run" : queued.error._tag;
   }
@@ -111,7 +110,7 @@ The branch order above is driven by the tagged error each method returns, not by
 | `steer(input)`    | a run is active  | `NoActiveRun` |
 | `followUp(input)` | a run is active  | `NoActiveRun` |
 | `nextRun(input)`  | none             | `Closed` only |
-| `prompt(input)`   | no run is active | `LaneBusy`    |
+| `prompt(input)`   | no run is active | `HeadBusy`    |
 
 All three queues commit a `queue_enqueued` record before returning, so an item survives a crash and
 is consumed exactly once. When each one drains, and what `steeringMode` / `followUpMode` do to that,
@@ -119,7 +118,7 @@ is on [the harness page](./harness.mdx#the-three-queues).
 
 <Callout type="warn">
   Do not branch on `harness.state.isStreaming` to choose between `prompt` and `steer`. `isStreaming`
-  tracks `agent_start` and `agent_end`, while the `LaneBusy` / `NoActiveRun` preconditions track the
+  tracks `agent_start` and `agent_end`, while the `HeadBusy` / `NoActiveRun` preconditions track the
   active run, which is registered slightly earlier. The returned tagged error is the authoritative
   answer; the code above uses it as the branch condition instead of the flag.
 </Callout>
@@ -128,8 +127,8 @@ is on [the harness page](./harness.mdx#the-three-queues).
 
 **Problem:** the user pressed escape and you need the run to end and to know how it ended.
 
-```ts
-import type { AgentHarness, RunResult } from "@june/core";
+```ts title="stop.ts"
+import type { AgentHarness, RunResult } from "@uji-ai/core";
 
 export async function stop(harness: AgentHarness, run: Promise<RunResult>): Promise<string> {
   const requested = await harness.abort();
@@ -143,12 +142,15 @@ export async function stop(harness: AgentHarness, run: Promise<RunResult>): Prom
 }
 ```
 
-`abort()` commits an `abort_requested` record and only then calls `AbortController.abort()`, so a
-settled abort implies the cancellation is already durable. The loop does not poll the signal between
+`abort()` signals the active operation before committing `abort_requested`, so a storage failure can
+reject the request but cannot prevent cancellation. The loop does not poll the signal between
 turns: the run ends because the injected `StreamFn` returns `stopReason: "aborted"`, which the
 harness maps to `RunOutcome { kind: "aborted", leafId }`. A tool batch already in flight finishes:
 sequential mode stops after the running tool settles, parallel mode stops preparing new calls but
 still awaits every call it already started.
+
+Use `close()` for terminal shutdown. It performs this cancellation itself, is safe to call more than
+once, waits for settlement, and disposes every harness-owned resource.
 
 `waitForIdle()` returns the in-flight prompt/run `Promise<RunResult>` or resolves to `void`
 immediately when the harness is idle. Keeping the `prompt()` promise, as above, is usually clearer
@@ -158,17 +160,25 @@ because its result cannot be `void`.
 
 **Problem:** the process died mid-run and you want the next launch to pick up where it stopped.
 
-```ts
-import { AgentHarness, SqliteSessionRepo, createReadOnlyTools } from "@june/core";
-import type { AgentHarness as Harness, HarnessTool, StreamFn } from "@june/core";
+```ts title="resume.ts"
+import {
+  AgentHarness,
+  inlinePlugin,
+  SqliteSessionRepo,
+  systemPromptPlugin,
+  toolsFsPlugin,
+} from "@uji-ai/core";
+import type { AgentHarness as Harness, StreamFn } from "@uji-ai/core";
+import type { Api, Model } from "@uji-ai/schema";
 
-const tools: HarnessTool[] = createReadOnlyTools(process.cwd()).map((tool) => ({
-  ...tool,
-  replay: "safe" as const,
-}));
+// Read-only tools only; `tools-fs` already marks read, grep, find, and ls as replay "safe".
+const plugins = [
+  inlinePlugin(systemPromptPlugin("You are a coding agent.")),
+  inlinePlugin(toolsFsPlugin({ disable: ["bash", "edit", "write"] })),
+];
 
-export async function openAndRecover(streamFn: StreamFn): Promise<Harness> {
-  const repo = new SqliteSessionRepo("./.june/sessions.db");
+export async function openAndRecover(streamFn: StreamFn, model: Model<Api>): Promise<Harness> {
+  const repo = new SqliteSessionRepo("./.uji/sessions.db");
   const sessions = await repo.list();
   const latest = sessions.at(-1);
   const session = latest === undefined ? await repo.create() : await repo.open(latest.id);
@@ -176,8 +186,9 @@ export async function openAndRecover(streamFn: StreamFn): Promise<Harness> {
   const { harness, suspended } = await AgentHarness.create({
     session,
     streamFn,
-    systemPrompt: "You are a coding agent.",
-    tools,
+    plugins,
+    env: { cwd: process.cwd() },
+    model,
   });
 
   for (const operation of suspended) {
@@ -195,7 +206,7 @@ export async function openAndRecover(streamFn: StreamFn): Promise<Harness> {
 
 `AgentHarness.create` reports suspended operations but never resumes one. It derives them from the
 absence of an `operation_finished` record naming an `operation_started`, and each
-`SuspendedOperation` carries `{ lane, id, startedAt, prompt }` so you can show the user what is about
+`SuspendedOperation` carries `{ head, id, startedAt, prompt }` so you can show the user what is about
 to continue. Calling `resume()` is your decision.
 
 `resume()` does three things in order: it appends any prompt entry the crash left uncommitted, it
@@ -204,10 +215,10 @@ continues the loop from the durable branch. If the branch's last message is neit
 nor a `ToolResultMessage`, there is nothing to continue and the operation is closed as
 `completed`.
 
-| `replay`  | Set by                                                                                  | What resume does                                                                                                                      |
-| --------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `"safe"`  | `HarnessTool.replay = "safe"`, and the tool must still be registered in `options.tools` | Re-executes `tool.execute(toolCallId, effectiveArgs)` with the persisted arguments and writes the output under the reserved entry id. |
-| `"never"` | The default when a tool omits `replay`                                                  | Writes a synthetic result under the reserved entry id and does not run anything.                                                      |
+| `replay`  | Set by                                                                             | What resume does                                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `"safe"`  | `HarnessTool.replay = "safe"`, and an active plugin must still contribute the tool | Re-executes `tool.execute(toolCallId, effectiveArgs)` with the persisted arguments and writes the output under the reserved entry id. |
+| `"never"` | The default when a tool omits `replay`                                             | Writes a synthetic result under the reserved entry id and does not run anything.                                                      |
 
 The user of a `"never"` tool sees this exact tool result in the transcript, and the model sees it too:
 
@@ -222,159 +233,88 @@ Error: tool call "bash" was interrupted before completing and was not replayed. 
   Render replayed results from the branch, not from the event stream.
 </Callout>
 
-`packages/demo/cli/src/run.ts` marks `read`, `grep`, `find`, and `ls` as `"safe"` and leaves `bash`,
+`packages/tui/src/run.ts` marks `read`, `grep`, `find`, and `ls` as `"safe"` and leaves `bash`,
 `edit`, and `write` at `"never"`: the read-only tools have no effect worth deduplicating, the
 mutating ones do.
 
-## Gate a tool behind approval
+## Ask a conversational question from a plugin
 
-**Problem:** a tool must not run until a human says yes.
+The coding host has one gate: workspace trust. After trust, its filesystem and shell tools run
+without per-tool approval prompts.
 
-```ts
-import { runAgentLoop, toolResultContent } from "@june/core";
-import type { AgentLoopConfig, AgentMessage, AgentTool, StreamFn } from "@june/core";
-import type { Api, Model } from "@june/ai";
-import { Type } from "typebox";
-
-const deployParameters = Type.Object({
-  environment: Type.Union([Type.Literal("staging"), Type.Literal("production")]),
-});
-
-const deploy: AgentTool<typeof deployParameters, undefined> = {
-  name: "deploy",
-  label: "Deploy",
-  description: "Deploy the current commit to an environment",
-  parameters: deployParameters,
-  execute: async (_toolCallId, params) => ({
-    content: toolResultContent(`Deployed to ${params.environment}`),
-    details: undefined,
-  }),
-};
-
-export async function run(
-  streamFn: StreamFn,
-  model: Model<Api>,
-  askOperator: (toolName: string, args: unknown) => Promise<boolean>,
-): Promise<AgentMessage[]> {
-  const config: AgentLoopConfig = {
-    model,
-    convertToLlm: (messages) =>
-      messages.filter(
-        (message) =>
-          message.role === "user" || message.role === "assistant" || message.role === "toolResult",
-      ),
-    beforeToolCall: async ({ toolCall, args }) => {
-      if (toolCall.name !== "deploy") return undefined;
-      const approved = await askOperator(toolCall.name, args);
-      if (approved) return undefined;
-      return { block: true, reason: "The operator declined this deployment." };
-    },
-  };
-
-  return runAgentLoop(
-    [{ role: "user", content: "Ship the current commit to production.", timestamp: Date.now() }],
-    {
-      systemPrompt: "You are a release agent.",
-      messages: [],
-      tools: [deploy],
-    },
-    config,
-    () => {},
-    undefined,
-    streamFn,
-  );
-}
-```
-
-Returning `{ block: true, reason }` makes the loop skip `execute` entirely and synthesize an error
-tool result whose content is your `reason`; the model reads it as `Error: The operator declined this
-deployment.` and can react. The loop still emits `tool_execution_start` before consulting the hook
-and `tool_execution_end` after blocking, so a UI that draws tool cards from events draws a card for
-a blocked call too. Adding `terminate: true` alongside `block` sets `terminate` on the synthesized
-result, but the loop stops early only when _every_ finalized result in the batch carries it: one
-blocked call among several does not end the batch.
-
-The split of responsibility is the point: `beforeToolCall` is an async function in core that returns
-a verdict, and `askOperator` is whatever your UI does to obtain that verdict: an Electron dialog, a
-Slack button, a readline prompt. Core never renders and never decides; it asks and waits.
-
-<Callout type="warn" title="Not built yet">
-  `AgentHarnessOptions` has no `beforeToolCall` field. The harness installs its own `beforeToolCall`
-  to commit the `tool_started` intent record, and it does not forward one from you. Under
-  `AgentHarness`, put the approval check inside the tool's `execute` and throw when it is declined;
-  the loop converts the throw into an error tool result.
-</Callout>
+Plugins can still ask ordinary conversation questions through `SessionApi.ask`. The reference
+implementation lives in `packages/plugin/examples/question.ts`: it registers a model-visible
+`question` tool, asks the attached client to render a choice, and returns the selected label as the
+tool result. It is deliberately not preinstalled by the TUI; load it through normal plugin discovery
+when a host wants that capability.
 
 ## Keep the loop out of a renderer process
 
 **Problem:** you are building a desktop app and the agent needs Node APIs, a database file, and
 credentials that must not be reachable from web content.
 
-`packages/demo/grok-bot` puts runtime ownership in the Electron main process. The renderer holds no harness,
+`packages/demo/desktop` puts runtime ownership in the Electron main process. The renderer holds no harness,
 session, credential store, or provider; it calls eight preload operations and listens to one event channel.
 
-<Files>
-  <Folder name="src" defaultOpen>
-    <Folder name="main" defaultOpen>
-      <File name="index.ts" />
-      <File name="june-host.ts" />
-      <File name="production-dependencies.ts" />
-    </Folder>
-    <Folder name="preload" defaultOpen>
-      <File name="index.ts" />
-    </Folder>
-    <File name="desktop-api.ts" />
-  </Folder>
-</Files>
+```files
+src
+├── main
+│   ├── index.ts
+│   ├── uji-host.ts
+│   └── production-dependencies.ts
+├── preload
+│   └── index.ts
+└── desktop-api.ts
+```
 
-| File                                  | Owns                                                                                                                                                                                  |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/main/june-host.ts`               | `SqliteSessionRepo`, active session and harness lifecycle, agent profiles, snapshots, and a narrowed event projection. Provider/auth behavior arrives through `JuneHostDependencies`. |
-| `src/main/production-dependencies.ts` | The demo's concrete `openai-codex` provider, `FileCredentialStore`, browser OAuth interaction, and provider stream factory.                                                           |
-| `src/main/index.ts`                   | The `BrowserWindow` (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`), the `ipcMain.handle` registrations, and `window.webContents.send("june:event", …)`.        |
-| `src/preload/index.ts`                | One `contextBridge.exposeInMainWorld("june", api)` call implementing `JuneDesktopApi` over `ipcRenderer`.                                                                             |
-| `src/desktop-api.ts`                  | The shared types: `JuneDesktopApi`, `JuneSnapshot`, `JuneDesktopEvent`, `AuthStatus`. Both processes import this file, so the boundary is typed on both sides.                        |
+| File                                  | Owns                                                                                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/main/uji-host.ts`                | `SqliteSessionRepo`, active session and harness lifecycle, agent profiles, snapshots, and a narrowed event projection. Provider/auth behavior arrives through `UjiHostDependencies`. |
+| `src/main/production-dependencies.ts` | The demo's concrete `openai-codex` provider, `FileCredentialStore`, browser OAuth interaction, and provider stream factory.                                                          |
+| `src/main/index.ts`                   | The `BrowserWindow` (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`), the `ipcMain.handle` registrations, and `window.webContents.send("uji:event", …)`.        |
+| `src/preload/index.ts`                | One `contextBridge.exposeInMainWorld("uji", api)` call implementing `UjiDesktopApi` over `ipcRenderer`.                                                                              |
+| `src/desktop-api.ts`                  | The shared types: `UjiDesktopApi`, `UjiSnapshot`, `UjiDesktopEvent`, `AuthStatus`. Both processes import this file, so the boundary is typed on both sides.                          |
 
 ```ts title="src/main/index.ts (abridged)"
-ipcMain.handle("june:initialize", () => host.initialize());
-ipcMain.handle("june:login", () => host.login());
-ipcMain.handle("june:send", (_event, message: unknown) => {
+ipcMain.handle("uji:initialize", () => host.initialize());
+ipcMain.handle("uji:login", () => host.login());
+ipcMain.handle("uji:send", (_event, message: unknown) => {
   if (typeof message !== "string" || message.trim() === "") throw new Error("Message is empty");
   return host.send(message.trim());
 });
-ipcMain.handle("june:abort", () => host.abort());
-ipcMain.handle("june:new-chat", (_event, agentId) => host.newChat(agentId));
-ipcMain.handle("june:select-agent", (_event, agentId) => host.selectAgent(agentId));
-ipcMain.handle("june:update-agent", (_event, agentId, changes) =>
+ipcMain.handle("uji:abort", () => host.abort());
+ipcMain.handle("uji:new-chat", (_event, agentId) => host.newChat(agentId));
+ipcMain.handle("uji:select-agent", (_event, agentId) => host.selectAgent(agentId));
+ipcMain.handle("uji:update-agent", (_event, agentId, changes) =>
   host.updateAgent(agentId, changes),
 );
 ```
 
 The host converts `AgentEvent` into a small demo-local union before it crosses the bridge: only
 `agent_start` and `agent_end` (as `{ type: "running" }`), and text `message_update` deltas (as
-`{ type: "delta" }`). Everything else the renderer needs arrives as a `JuneSnapshot`, which the host
+`{ type: "delta" }`). Everything else the renderer needs arrives as a `UjiSnapshot`, which the host
 projects from `session.getBranch("main")` by keeping message entries whose role is `user` or
 `assistant` and whose text is non-empty. Snapshot-returning commands and pushed `{ type: "snapshot" }`
-events keep the renderer's steady state as "snapshot plus a live delta buffer" rather than a canonical
+events keep the renderer's steady state as "snapshot plus a live delta buffer" rather than an
 event log it has to fold itself.
 
 <Callout type="info">
-  The grok-bot host registers no tools: `AgentHarness.create` is called without `tools`, so the
-  model answers from context only. It opens the harness on demand: `initialize`, `login`, `send`,
-  and session/agent selection paths call a private `openHarness` that returns early when one already
-  exists. It closes the harness and active session before switching. `openHarness` currently
-  discards the suspended-run list returned by `AgentHarness.create`, so this is a working product
-  boundary, not a complete session SDK.
+  The desktop host contributes no tools: its only plugin is
+  `systemPromptPlugin(agent.instructions)`, so the model answers from context only. It opens the
+  harness on demand: `initialize`, `login`, `send`, and session/agent selection paths call a private
+  `openHarness` that returns early when one already exists. It closes the harness and active session
+  before switching. `openHarness` currently discards the suspended-run list returned by
+  `AgentHarness.create`, so this is a working product boundary, not a complete session SDK.
 </Callout>
 
 ## List, reopen, and search past sessions
 
 **Problem:** the user wants their history back: a session picker and a search box.
 
-```ts
-import { SqliteSessionRepo } from "@june/core";
+```ts title="list-sessions.ts"
+import { SqliteSessionRepo } from "@uji-ai/core";
 
-const repo = new SqliteSessionRepo("./.june/sessions.db");
+const repo = new SqliteSessionRepo("./.uji/sessions.db");
 
 // Oldest first, ordered by createdAt then id.
 const sessions = await repo.list();
@@ -385,7 +325,7 @@ for (const metadata of sessions) {
 const latest = sessions.at(-1);
 const session = latest === undefined ? await repo.create() : await repo.open(latest.id);
 
-// The durable transcript of the "main" lane, oldest first.
+// The durable transcript of the "main" head, oldest first.
 for (const entry of await session.getBranch("main")) {
   if (entry.type === "message") console.log(entry.message);
 }
@@ -401,8 +341,8 @@ await repo.close();
 ```
 
 One `SqliteSessionRepo` owns one database file holding every session, which is why
-`searchEntries` lives on the repo (`SessionSearch`), and returns a `sessionId` on each hit, while
-`getBranch` lives on the session (`SessionStorage`).
+`searchEntries` lives on the repo (`SessionSearch`) and returns a `sessionId` on each hit, while
+`getBranch` lives on the participant-capable `SessionStorage` handle.
 
 | Behavior                      | Value                                                                                    |
 | ----------------------------- | ---------------------------------------------------------------------------------------- |
@@ -413,21 +353,20 @@ One `SqliteSessionRepo` owns one database file holding every session, which is w
 | `open(id)` on a missing id    | Throws `SessionError` with code `"not_found"`.                                           |
 
 <Callout type="warn">
-`create()` and `open()` acquire a fenced writer lease on the session. A second open while a live
-lease is held throws `SessionError("storage", "Session already has an active writer: <id>")`. The
-lease expires after `leaseTtlMs` (default 30 seconds), and is kept fresh by a heartbeat every
-`heartbeatIntervalMs` (default 10 seconds), both settable through `SqliteSessionRepoOptions`. Storage
-failures are thrown, not returned as `Result`.
+  `create()` and `open()` return the same participant-capable session handle. They take no session
+  lease. Execution acquires a fenced claim for one run on one head; the default claim TTL is 30
+  seconds and the default heartbeat is 10 seconds, both settable through `SqliteSessionRepoOptions`.
+  Storage failures are thrown, not returned as `Result`.
 </Callout>
 
-For branching (moving the lane leaf to an older entry so the next message starts a sibling), see
-[Session storage](./session-storage.mdx). `packages/demo/cli/src/tui.ts` implements that as a `/tree`
-command over `session.findEntries()`, `session.getLeafId("main")`, and `session.moveLane("main", id)`.
+For branching (moving the head leaf to an older entry so the next message starts a sibling), see
+[Session storage](./session-storage.mdx). `packages/tui/src/tui.ts` implements that as a `/tree`
+command over `session.findEntries()`, `session.getLeafId("main")`, and `session.moveHead("main", id)`.
 
 ## Related pages
 
 - [Harness](./harness.mdx): run records, the tool-call effect sandwich, queues, abort, resume.
 - [Agent loop](./agent-loop.mdx): turns, tool batches, stop reasons, and the config hooks.
-- [Session storage](./session-storage.mdx): entries, records, lanes, the seq counter, the SQLite backend.
+- [Session storage](./session-storage.mdx): entries, records, heads, the seq counter, the SQLite backend.
 - [Tools](./tools.mdx), the seven built-in tools and their options.
-- [Stream function](./stream-fn.mdx): binding an `@june/ai` provider to the `StreamFn` contract.
+- [Stream function](./stream-fn.mdx): binding an `@uji-ai/ai` provider to the `StreamFn` contract.

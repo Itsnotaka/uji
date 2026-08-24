@@ -28,17 +28,13 @@ export interface ApiKeyCredential {
   env?: ProviderEnv;
 }
 
-/** OAuth token data returned by extension compatibility flows. */
-export interface OAuthCredentials {
+/** Stored OAuth credential. */
+export interface OAuthCredential {
+  type: "oauth";
   refresh: string;
   access: string;
   expires: number;
   [key: string]: unknown;
-}
-
-/** Stored canonical OAuth credential. */
-export interface OAuthCredential extends OAuthCredentials {
-  type: "oauth";
 }
 
 /** One type-tagged credential per provider, the shape of today's auth.json. */

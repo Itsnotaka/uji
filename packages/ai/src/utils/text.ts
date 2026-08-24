@@ -4,7 +4,7 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/src/utils/text.ts
  * Synced with pi 7ebf9087e.
  */
-import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@june/schema";
+import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@uji-ai/schema";
 
 type Content = TextContent | ImageContent | ThinkingContent | ToolCall;
 

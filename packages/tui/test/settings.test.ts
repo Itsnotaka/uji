@@ -32,6 +32,7 @@ void describe("settings", () => {
         defaultThinkingLevel: "high",
         transport: "websocket",
         compaction: { enabled: false, reserveTokens: 12_000, keepRecentTokens: 9_000 },
+        autoUpdate: false,
       });
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -62,6 +63,28 @@ void describe("settings", () => {
     try {
       await writeFile(globalPath, '{"transport":"carrier-pigeon"}\n');
       await assert.rejects(new FileSettingsStore(globalPath).read(directory), /transport must be/);
+      await writeFile(globalPath, '{"wat":true}\n');
+      await assert.rejects(
+        new FileSettingsStore(globalPath).read(directory),
+        /unknown property "wat"/,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  void test("drops a fast mode key written by an older build", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "uji-settings-"));
+    const globalPath = join(directory, "settings.json");
+    try {
+      await writeFile(globalPath, '{"fastMode":true,"transport":"sse"}\n');
+      const store = new FileSettingsStore(globalPath);
+      assert.equal("fastMode" in (await store.read(directory)), false);
+      await store.updateGlobal({ externalEditor: "nvim" });
+      assert.equal(
+        await readFile(globalPath, "utf8"),
+        '{\n  "transport": "sse",\n  "externalEditor": "nvim"\n}\n',
+      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -74,6 +97,7 @@ void describe("settings", () => {
       defaultModel: "claude-opus-4-8",
       transport: "auto" as const,
       compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
+      autoUpdate: false,
     };
 
     const catalogOrder = models.getProviders().map((provider) => provider.id);
@@ -95,6 +119,7 @@ void describe("settings", () => {
       defaultModel: "claude-opus-4-8",
       transport: "auto" as const,
       compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
+      autoUpdate: false,
     };
 
     assert.equal(

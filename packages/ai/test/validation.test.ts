@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
-import type { Tool, ToolCall } from "@june/schema";
+import type { Tool, ToolCall } from "@uji-ai/schema";
 import { validateToolArguments } from "../src/utils/validation.ts";
 
 function createToolCallWithPlainSchema(

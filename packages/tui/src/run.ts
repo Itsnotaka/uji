@@ -232,8 +232,13 @@ export async function openRunSession(
     case "new":
       return repo.create();
     case "latest": {
-      const latest = (await repo.list()).at(-1);
-      return latest === undefined ? repo.create() : repo.open(latest.id);
+      // Skip sessions that were created by a launch and never written to.
+      for (const { id } of (await repo.list()).reverse()) {
+        const session = await repo.open(id);
+        if ((await session.getLeafId("main")) !== null) return session;
+        await session.close();
+      }
+      return repo.create();
     }
     case "session":
       return repo.open(target.id);

@@ -2,8 +2,8 @@ import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog
 import * as stylex from "@stylexjs/stylex";
 import type * as React from "react";
 
-import { dialogStyles } from "@june/ui/components/ui/dialog";
-import { mergeStyleProps, type XStyle } from "@june/ui/style";
+import { dialogStyles } from "@uji-ai/ui/components/ui/dialog";
+import { mergeStyleProps, type XStyle } from "@uji-ai/ui/style";
 
 export const AlertDialog = AlertDialogPrimitive.Root;
 export const AlertDialogTrigger = AlertDialogPrimitive.Trigger;

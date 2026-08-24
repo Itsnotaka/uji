@@ -32,6 +32,8 @@ interface OptionalSettingsFile {
   transport?: Transport;
   externalEditor?: string;
   compaction?: CompactionSettingsFile;
+  /** Install a newer release when the TUI starts, instead of only saying one exists. */
+  autoUpdate?: boolean;
 }
 
 type DefaultModelSettings =
@@ -45,6 +47,7 @@ interface ResolvedOptionalSettings {
   transport: Transport;
   externalEditor?: string;
   compaction: CompactionSettings;
+  autoUpdate: boolean;
 }
 
 export type ResolvedSettings = ResolvedOptionalSettings & DefaultModelSettings;
@@ -68,6 +71,7 @@ interface UnparsedSettings {
   transport?: unknown;
   externalEditor?: unknown;
   compaction?: unknown;
+  autoUpdate?: unknown;
 }
 
 export function defaultSettingsPath(): string {
@@ -128,6 +132,10 @@ export function parseSettingsFile(value: unknown, path = "settings"): SettingsFi
     "transport",
     "externalEditor",
     "compaction",
+    "autoUpdate",
+    // Read and dropped: fast mode is session state the plugin owns. Files
+    // written by an older build lose the key on their next write.
+    "fastMode",
   ]);
   const unknown = Object.keys(object).find((key) => !allowed.has(key));
   if (unknown !== undefined) throw new Error(`${path} has unknown property "${unknown}"`);
@@ -149,6 +157,11 @@ export function parseSettingsFile(value: unknown, path = "settings"): SettingsFi
   const transport = TRANSPORTS.find((candidate) => candidate === transportValue);
   if (transportValue !== undefined && transport === undefined) {
     throw new Error(`${path}.transport must be ${TRANSPORTS.join(", ")}`);
+  }
+
+  const autoUpdate = object.autoUpdate;
+  if (autoUpdate !== undefined && typeof autoUpdate !== "boolean") {
+    throw new Error(`${path}.autoUpdate must be a boolean`);
   }
 
   let compaction: CompactionSettingsFile | undefined;
@@ -179,6 +192,7 @@ export function parseSettingsFile(value: unknown, path = "settings"): SettingsFi
     ...(transport === undefined ? {} : { transport }),
     ...(externalEditor === undefined ? {} : { externalEditor }),
     ...(compaction === undefined ? {} : { compaction }),
+    ...(autoUpdate === undefined ? {} : { autoUpdate }),
   };
   if (defaultProvider === undefined) return optional;
   return {
@@ -232,6 +246,7 @@ function mergeSettings(global: SettingsFile, project: SettingsFile): ResolvedSet
       ...global.compaction,
       ...project.compaction,
     },
+    autoUpdate: project.autoUpdate ?? global.autoUpdate ?? false,
   };
 }
 
@@ -250,11 +265,13 @@ function applySettingsPatch(current: SettingsFile, patch: SettingsPatch): Settin
     patch.compaction === undefined
       ? current.compaction
       : { ...current.compaction, ...patch.compaction };
+  const autoUpdate = patch.autoUpdate ?? current.autoUpdate;
   const optional: OptionalSettingsFile = {
     ...(defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel }),
     ...(transport === undefined ? {} : { transport }),
     ...(externalEditor === undefined ? {} : { externalEditor }),
     ...(compaction === undefined ? {} : { compaction }),
+    ...(autoUpdate === undefined ? {} : { autoUpdate }),
   };
   if (model.defaultProvider === undefined) return optional;
   return {

@@ -13,11 +13,11 @@
   "iconLibrary": "lucide",
   "rtl": false,
   "aliases": {
-    "components": "@june/ui/components",
-    "utils": "@june/ui/lib/utils",
-    "ui": "@june/ui/components/ui",
-    "lib": "@june/ui/lib",
-    "hooks": "@june/ui/hooks"
+    "components": "@uji-ai/ui/components",
+    "utils": "@uji-ai/ui/lib/utils",
+    "ui": "@uji-ai/ui/components/ui",
+    "lib": "@uji-ai/ui/lib",
+    "hooks": "@uji-ai/ui/hooks"
   },
   "menuColor": "default",
   "menuAccent": "subtle",

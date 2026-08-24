@@ -32,10 +32,26 @@ export type ConstrainedSamplingConfig =
       variants: GrammarVariants;
     };
 
+/**
+ * What a tool does, in the categories the Agent Client Protocol uses, so a
+ * client can render a tool it has never seen. Defaults to "other".
+ */
+export type ToolKind =
+  | "read"
+  | "edit"
+  | "delete"
+  | "move"
+  | "search"
+  | "execute"
+  | "fetch"
+  | "think"
+  | "other";
+
 export interface Tool<TParameters extends TSchema = TSchema> {
   name: string;
   description: string;
   parameters: TParameters;
+  kind?: ToolKind;
   constrainedSampling?: false | ConstrainedSamplingConfig;
 }
 

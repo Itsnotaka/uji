@@ -1,7 +1,7 @@
 /**
- * Bash tool ported from pi's harness bash tool, adapted to June's AgentTool
+ * Bash tool ported from pi's harness bash tool, adapted to Uji's AgentTool
  * contract. The BashOperations seam stands in for pi's ExecutionEnv shell
- * boundary (env.executeShell) until June grows an execution-env abstraction,
+ * boundary (env.executeShell) until Uji grows an execution-env abstraction,
  * so command execution can be delegated to remote systems (for example SSH).
  *
  * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/tools/bash.ts
@@ -230,7 +230,7 @@ export function createBashTool(
     ): Promise<AgentToolResult<BashToolDetails | undefined>> {
       const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
       const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
-      const output = new OutputAccumulator({ tempFilePrefix: "june-bash" });
+      const output = new OutputAccumulator({ tempFilePrefix: "uji-bash" });
       let acceptingOutput = true;
       let updateTimer: NodeJS.Timeout | undefined;
       let updateDirty = false;

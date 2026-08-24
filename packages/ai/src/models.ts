@@ -1,4 +1,5 @@
 import { lazyStream } from "./api/lazy.ts";
+import { MODEL_THINKING_LEVELS } from "@uji-ai/schema";
 import { defaultProviderAuthContext as defaultAuthContext } from "./auth/context.ts";
 import { InMemoryCredentialStore } from "./auth/credential-store.ts";
 import { type AuthResolutionOverrides, ModelsError, resolveProviderAuth } from "./auth/resolve.ts";
@@ -1012,22 +1013,12 @@ export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage
   return usage.cost;
 }
 
-const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
-
 export function getSupportedThinkingLevels<TApi extends Api>(
   model: Model<TApi>,
 ): ModelThinkingLevel[] {
   if (!model.reasoning) return ["off"];
 
-  return EXTENDED_THINKING_LEVELS.filter((level) => {
+  return MODEL_THINKING_LEVELS.filter((level) => {
     const mapped = model.thinkingLevelMap?.[level];
     if (mapped === null) return false;
     if (level === "xhigh" || level === "max") return mapped !== undefined;
@@ -1042,15 +1033,15 @@ export function clampThinkingLevel<TApi extends Api>(
   const availableLevels = getSupportedThinkingLevels(model);
   if (availableLevels.includes(level)) return level;
 
-  const requestedIndex = EXTENDED_THINKING_LEVELS.indexOf(level);
+  const requestedIndex = MODEL_THINKING_LEVELS.indexOf(level);
   if (requestedIndex === -1) return availableLevels[0] ?? "off";
 
-  for (let i = requestedIndex; i < EXTENDED_THINKING_LEVELS.length; i++) {
-    const candidate = EXTENDED_THINKING_LEVELS[i];
+  for (let i = requestedIndex; i < MODEL_THINKING_LEVELS.length; i++) {
+    const candidate = MODEL_THINKING_LEVELS[i];
     if (availableLevels.includes(candidate)) return candidate;
   }
   for (let i = requestedIndex - 1; i >= 0; i--) {
-    const candidate = EXTENDED_THINKING_LEVELS[i];
+    const candidate = MODEL_THINKING_LEVELS[i];
     if (availableLevels.includes(candidate)) return candidate;
   }
   return availableLevels[0] ?? "off";

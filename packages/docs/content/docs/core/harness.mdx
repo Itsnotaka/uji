@@ -1,12 +1,13 @@
 ---
 title: AgentHarness
 description: "The durable runtime around the agent loop: what it commits, when it commits it, and exactly what happens after a crash"
+icon: IconSettingsGear1
 ---
 
 import { Step, Steps } from "fumadocs-ui/components/steps";
 import { TypeTable } from "fumadocs-ui/components/type-table";
 
-`AgentHarness` runs the [agent loop](./agent-loop.mdx) against a [session storage](./session-storage.mdx), so that a killed process leaves a resumable trail instead of a half-finished conversation. It brackets every run with `operation_started` / `operation_finished` records, commits a `tool_started` intent record before each tool executes, and writes every message the loop produces as a write-once entry on the lane branch.
+`AgentHarness` runs the [agent loop](./agent-loop.mdx) against a [session storage](./session-storage.mdx), so that a killed process leaves a resumable trail instead of a half-finished conversation. It brackets every run with `operation_started` / `operation_finished` records, commits a `tool_started` intent record before each tool executes, and writes every message the loop produces as a write-once entry on the head branch.
 
 ## What it adds over the loop
 
@@ -23,10 +24,16 @@ You prompt a run that deletes files. The process dies while the tool is running.
 ```ts title="open.ts"
 import { join } from "node:path";
 import process from "node:process";
-import { createModels, FileCredentialStore, openaiCodexProvider } from "@june/ai";
-import { AgentHarness, createAllTools, SqliteSessionRepo, type HarnessTool } from "@june/core";
+import { createModels, FileCredentialStore, openaiCodexProvider } from "@uji-ai/ai";
+import {
+  AgentHarness,
+  inlinePlugin,
+  SqliteSessionRepo,
+  systemPromptPlugin,
+  toolsFsPlugin,
+} from "@uji-ai/core";
 
-const repo = new SqliteSessionRepo(join(process.cwd(), ".june", "sessions.db"));
+const repo = new SqliteSessionRepo(join(process.cwd(), ".uji", "sessions.db"));
 const session = await repo.create();
 
 const models = createModels({ credentials: new FileCredentialStore() });
@@ -35,18 +42,17 @@ models.setProvider(provider);
 const model = models.getModel(provider.id, "gpt-5.6-luna");
 if (model === undefined) throw new Error("model unavailable");
 
-const replaySafe = new Set(["read", "grep", "find", "ls"]);
-const tools: HarnessTool[] = createAllTools(process.cwd()).map((tool) => ({
-  ...tool,
-  replay: replaySafe.has(tool.name) ? "safe" : "never",
-}));
-
 const { harness, suspended } = await AgentHarness.create({
   session,
   streamFn: (requestedModel, context, options) =>
     models.streamSimple(requestedModel, context, options),
-  systemPrompt: "You are a coding agent.",
-  tools,
+  // Everything the model sees comes from plugins. `tools-fs` marks read, grep,
+  // find, and ls as replay "safe" and leaves bash, edit, and write at "never".
+  plugins: [
+    inlinePlugin(systemPromptPlugin("You are a coding agent.")),
+    inlinePlugin(toolsFsPlugin()),
+  ],
+  env: { cwd: process.cwd() },
   model,
 });
 
@@ -77,7 +83,7 @@ appendRecord  tool_started       runId=run_9f2c  toolCallId=call_1
 Reopen and resume:
 
 ```ts title="resume.ts"
-import { AgentHarness, SqliteSessionRepo, type AgentHarnessOptions } from "@june/core";
+import { AgentHarness, SqliteSessionRepo, type AgentHarnessOptions } from "@uji-ai/core";
 
 export async function reopen(
   repo: SqliteSessionRepo,
@@ -193,7 +199,7 @@ There are three durable positions worth naming, and `resume()` handles all three
 | After `tool_started`, before the result entry         | The intent record with `effectiveArgs` and `resultEntryId`     | Re-executes if `replay: "safe"` and the tool is still registered; otherwise appends the interruption error under `resultEntryId` |
 | After `operation_finished`                            | The full run, closed                                           | Nothing: `findOpenOperations` no longer returns it, so `resume()` fails `NothingToResume`                                        |
 
-An open operation is derived, not stored: `findOpenOperations(lane)` selects `operation_started` records whose `id` is not the `runId` of any `operation_finished` record. There is no durable program counter.
+An open operation is derived, not stored: `findOpenOperations(head)` selects `operation_started` records whose `id` is not the `runId` of any `operation_finished` record. There is no durable program counter.
 
 ## What the harness writes
 
@@ -208,30 +214,31 @@ An open operation is derived, not stored: `findOpenOperations(lane)` selects `op
 | `message_end`                                  | `appendEntry`: id resolved as provisioned queue id, else the `tool_started` `resultEntryId` matching `message.toolCallId`, else a fresh `newId("e")` |
 | `turn_end` with `message.usage !== undefined`  | `usage` record with `cause: "assistant"`                                                                                                             |
 | run end (or a thrown error)                    | `operation_finished` record with `outcome` and, when failed, `error`                                                                                 |
-| `abort()`                                      | `abort_requested` record, committed _before_ `controller.abort()` is called                                                                          |
+| `abort()`                                      | aborts the controller immediately, then commits `abort_requested`                                                                                    |
 
 Notes that follow from the table and matter in practice:
 
 - `message_start` is never persisted. Only `message_end` produces an entry. One assistant turn is one `AssistantMessage`, even when its content includes both text and tool calls.
 - The `usage` record for a turn is committed after that turn's tool results, because the loop emits `turn_end` after the tool batch. A durable assistant response without its usage record is therefore reachable; usage is a separate commit, not part of a settlement transaction.
-- `appendEntry` consumes two `seq` values (the entry and the lane move it implies); `appendRecord` consumes one.
+- `appendEntry` consumes two `seq` values (the entry and the head move it implies); `appendRecord` consumes one.
 - `attempt` counts turns within a run, not retries. There is no retry mechanism.
 - `prompt()` emits `message_start` / `message_end` for the prompt entries itself, before `runAgentLoopContinue` emits `agent_start`. Subscribers see prompt messages ahead of the run's `agent_start`.
 
 ## Lifecycle API
 
-Every method takes its precondition from harness-local state (`closed`, prompt admission, the active run), or from storage. The methods that can be refused (`prompt`, `steer`, `followUp`, `nextRun`, `abort`, `resume`) return a `Result`; `close`, `waitForIdle`, `subscribe`, and `state` do not.
+Every method takes its precondition from harness-local state (`closed`, prompt admission, the active run), or from storage. The methods that can be refused (`prompt`, `submit`, `steer`, `followUp`, `nextRun`, `abort`, `resume`) return a `Result`; `close`, `waitForIdle`, `subscribe`, and `state` do not.
 
 | Method                         | Precondition                                        | Error when it fails                                               |
 | ------------------------------ | --------------------------------------------------- | ----------------------------------------------------------------- |
 | `AgentHarness.create(options)` | none                                                | throws only on storage failure; returns `{ harness, suspended }`  |
-| `prompt(input)`                | not closed, no active run                           | `Closed`, `LaneBusy`                                              |
-| `steer(input)`                 | not closed, a run is active                         | `Closed`, `NoActiveRun`                                           |
-| `followUp(input)`              | not closed, a run is active                         | `Closed`, `NoActiveRun`                                           |
+| `prompt(input)`                | not closed, no active run                           | `Closed`, `HeadBusy`                                              |
+| `submit(input, { delivery })`  | not closed                                          | `Closed`; starts a run when idle, else queues                     |
+| `steer(input)`                 | not closed                                          | `Closed`; starts a run when idle, else queues                     |
+| `followUp(input)`              | not closed                                          | `Closed`; starts a run when idle, else queues                     |
 | `nextRun(input)`               | not closed                                          | `Closed`                                                          |
 | `abort()`                      | not closed, a run is active                         | `Closed`, `NoActiveRun`                                           |
-| `resume()`                     | not closed, no active run, an open operation exists | `Closed`, `LaneBusy`, `NothingToResume`                           |
-| `close()`                      | none                                                | sets closed, then awaits prompt admission or the active run       |
+| `resume()`                     | not closed, no active run, an open operation exists | `Closed`, `HeadBusy`, `NothingToResume`                           |
+| `close()`                      | none                                                | idempotently aborts work, disposes resources, and settles the run |
 | `waitForIdle()`                | none                                                | returns the in-flight run result, or `void` immediately when idle |
 | `subscribe(listener)`          | none                                                | returns an unsubscribe function                                   |
 | `state`                        | none                                                | getter returning `HarnessState`                                   |
@@ -239,26 +246,28 @@ Every method takes its precondition from harness-local state (`closed`, prompt a
 `input` is `string | Message | Message[]` for `prompt` and `string | Message` for the queues; a bare string becomes a timestamped `UserMessage`.
 
 <Callout type="warn">
-`Result.ok` does not mean the run succeeded. `executeRun` always resolves `Result.ok`; a provider failure lands as `{ kind: "failed", error: { code: "stream", … } }` and a thrown harness error as `{ kind: "failed", error: { code: "harness", … } }` inside the `ok` value. Only `LaneBusy`, `NoActiveRun`, `NothingToResume`, and `Closed` arrive as `Result.err`. Storage failures are thrown `SessionError`s and are not `Result`-typed at all.
+`Result.ok` does not mean the run succeeded. A provider failure lands as `{ kind: "failed", error: { code: "stream", … } }`, a thrown harness error uses code `harness`, and a fenced runner uses code `claim_lost`. Only local lifecycle preconditions such as `HeadBusy`, `NoActiveRun`, `NothingToResume`, and `Closed` arrive as `Result.err`. Other storage failures throw `SessionError`.
 </Callout>
 
-```ts
+```ts title="prompt.ts"
 const started = await harness.prompt("summarise the diff");
 if (!started.ok) {
-  if (LaneBusy.is(started.error)) await harness.steer("also mention test coverage");
+  if (HeadBusy.is(started.error)) await harness.steer("also mention test coverage");
   else throw started.error;
 } else if (started.value.kind === "failed") {
   console.error(started.value.error.code, started.value.error.message);
 }
 ```
 
-`close()` sets the closed flag and then awaits the active run to completion: it does not cancel it. It writes nothing itself, but the run it waits on still commits its own `operation_finished`, so a harness closed mid-run leaves a _closed_ operation, not the suspended one a crash would. Call `abort()` first if you want the run cut short. `close()` does not seal storage either; `session.close()` is yours to call.
+`close()` is the harness's terminal operation. It sets the closed flag synchronously, cancels pending questions, aborts prompt or compaction work even while durable admission is in flight, waits for the operation to settle, and disposes plugins, hooks, and provider session resources. Repeated calls return the same promise. It does not seal storage; `session.close()` is still yours to call after the harness closes.
 
-`abort()` commits `abort_requested` and then pulls the run's `AbortController`. The loop polls the signal only between the tool calls of a batch, never between turns, so the run ends because the injected [`StreamFn`](./stream-fn.mdx) returns `stopReason: "aborted"` on the next turn, which becomes `RunOutcome { kind: "aborted" }`.
+`abort()` pulls the operation's `AbortController` immediately, then commits `abort_requested`. Cancellation therefore does not depend on storage health: a failed record write rejects `abort()` but cannot leave the provider request or active Bash process running. The injected [`StreamFn`](./stream-fn.mdx) maps cancellation to `stopReason: "aborted"`, which becomes `RunOutcome { kind: "aborted" }`.
+
+Another process calls `session.requestAbort()`. The claimant watches durable records during the provider stream, matches the request to its run id, and pulls the same controller. The default SQLite watch cadence bounds cross-process abort detection without requiring a provider write or turn boundary.
 
 `HarnessState` exposes the concrete model, streaming status, and optional streaming text, thinking level, and error message:
 
-```ts
+```ts title="subscribe.ts"
 const { isStreaming, streamingText, model, thinkingLevel, errorMessage } = harness.state;
 
 const unsubscribe = harness.subscribe((event) => {
@@ -278,7 +287,7 @@ A queued message is a `queue_enqueued` record carrying a `ProvisionedEntry`: the
 | `followUp` | yes                    | when the agent would otherwise stop, via `getFollowUpMessages`                      | `followUpMode`, default `"one-at-a-time"` |
 | `nextRun`  | no                     | at the start of the next `prompt()`, placed ahead of the prompt                     | always `"all"`                            |
 
-Because the id exists before the content is placed, a queued message survives a crash and is consumed exactly once. `drainQueue` returns a record only if all of these hold: its `queue` matches, its `runId` matches the current run (for `steer` and `followUp`), no `queue_cancelled` record names its target id, and `session.getEntry(target.id)` is `undefined`. That last filter is the exactly-once rule: once the entry exists, the item can never be drained again, in this process or the next one.
+Because the id exists before the content is placed, a queued message survives a crash and is consumed exactly once. `drainQueue` returns a record only if all of these hold: its `queue` matches, no `queue_cancelled` record names its target id, and `session.getEntry(target.id)` is `undefined`. A record's `runId` is provenance only; an item enqueued against a run that aborted or failed stays pending and drains in the next run. That last filter is the exactly-once rule: once the entry exists, the item can never be drained again, in this process or the next one.
 
 `"one-at-a-time"` takes the first pending item per drain; `"all"` takes every pending item.
 
@@ -302,20 +311,48 @@ Because the id exists before the content is placed, a queued message survives a 
       type: "StreamFn",
       required: true,
     },
-    systemPrompt: {
-      description: "Passed straight through to the loop context on every run",
-      type: "string",
+    plugins: {
+      description:
+        "The activation list. Every tool, prompt section, skill, command, and setting the harness exposes comes from these; the harness owns none of its own. Built-ins are plugins too",
+      type: "readonly LoadedPlugin[]",
       required: true,
     },
-    tools: {
-      description: "Loop tools plus their crash-replay policy",
-      type: "HarnessTool[]",
+    env: {
+      description: "What plugins see as the workspace: { cwd }",
+      type: "PluginEnv",
+      required: true,
+    },
+    model: {
+      description: "The concrete model every run streams against; setModel() replaces it",
+      type: "Model<Api>",
+      required: true,
+    },
+    askTimeoutMs: {
+      description:
+        "How long a plugin ask waits for a client before taking the request's default (compatibility path; slice 7 makes asks durable)",
+      type: "number",
+      default: "120000",
       required: false,
     },
-    model: { description: "Forwarded to StreamFnOptions.model", type: "string", required: false },
     thinkingLevel: {
       description: "Forwarded to StreamFnOptions.thinkingLevel",
       type: "ThinkingLevel",
+      required: false,
+    },
+    retry: {
+      description: "Provider retry policy for a run",
+      type: "RetryPolicy",
+      required: false,
+    },
+    compaction: {
+      description: "Thresholds and reserve for automatic compaction",
+      type: "CompactionSettings",
+      required: false,
+    },
+    streamOptions: {
+      description:
+        "Provider request defaults applied before per-run options and before_request hooks",
+      type: "AgentHarnessStreamOptions",
       required: false,
     },
     steeringMode: {
@@ -338,11 +375,11 @@ Because the id exists before the content is placed, a queued message survives a 
   }}
 />
 
-Options are read live from the object you passed, so the harness has no setters: mutate the object you own, or construct a new harness.
+Options are read live from the object you passed. The two that change during a session have setters, `setModel` and `setCompactionSettings`; the plugin list changes through `harness.plugins.activate(list)`, which is also how a host reloads, adds, or removes plugins. Everything else: mutate the object you own, or construct a new harness.
 
 ## HarnessTool and the replay policy
 
-```ts
+```ts title="HarnessTool"
 type HarnessTool = AgentTool & { replay?: "never" | "safe" };
 ```
 
@@ -357,26 +394,26 @@ Rule of thumb: a tool is `"safe"` if running it twice is indistinguishable from 
 
 Two properties of the replay path to plan for:
 
-- A `"safe"` tool is replayed only if a tool with that `name` is still in `options.tools` at resume time. Drop the tool from the array and the intent settles with the interruption error instead.
+- A `"safe"` tool is replayed only if a tool with that `name` is still contributed by an active plugin at resume time. Remove the plugin, or the tool from it, and the intent settles with the interruption error instead.
 - The replay call receives the resumed run's `AbortSignal` but no `onUpdate`, skips `beforeToolCall` / `afterToolCall`, and emits no `AgentEvent`s. Subscribers see nothing until the loop restarts.
 
 ## Result and TaggedError
 
-```ts
+```ts title="Result"
 type Result<TValue, TError> = { ok: true; value: TValue } | { ok: false; error: TError };
 ```
 
 `Result` is both the type and a value namespace with `Result.ok(value)` and `Result.err(error)`. `TaggedError(tag)` returns an `Error` subclass carrying a readonly `_tag` plus a static `is(value)` guard; the constructor takes `{ message, ...props }` and assigns every prop onto the instance.
 
-`LaneBusy`, `NoActiveRun`, and `NothingToResume` carry `{ lane, message }`; `Closed` carries `{ message }`.
+`HeadBusy`, `NoActiveRun`, and `NothingToResume` carry `{ head, message }`; `Closed` carries `{ message }`.
 
-```ts
-import { AgentHarness, LaneBusy } from "@june/core";
+```ts title="send.ts"
+import { AgentHarness, HeadBusy } from "@uji-ai/core";
 
 export async function send(harness: AgentHarness, text: string): Promise<string> {
   const run = await harness.prompt(text);
   if (run.ok) return run.value.kind;
-  if (LaneBusy.is(run.error)) {
+  if (HeadBusy.is(run.error)) {
     const queued = await harness.steer(text);
     return queued.ok ? `steered as ${queued.value.entryId}` : "dropped";
   }
@@ -386,33 +423,22 @@ export async function send(harness: AgentHarness, text: string): Promise<string>
 
 ## Current limits
 
-The class exposes the intended lifecycle, but it does not yet enforce all of its concurrency claims.
+Local prompt admission is reserved synchronously before the first await, while cross-process execution races resolve through the head's claim CAS. The remaining limits are about provider-effect settlement, richer projections, and surfaces beyond the hard-coded main head.
 
-<Callout type="error" title="Do not treat lane admission as race-safe yet">
-  `prompt()` checks `activeRun` before it drains queues and performs several durable writes.
-  `activeRun` is set only when `executeRun()` begins. Two concurrent callers can therefore both pass
-  the check and create open operations on `"main"`. Related terminal windows affect queue, abort,
-  resume, and close. Until roadmap `GAP-C01` and `GAP-C02` are closed with harness-level race tests,
-  callers must serialize lifecycle commands.
-</Callout>
+| Limit                                                                                     | Consequence                                                                                               | Roadmap              |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | -------------------- |
+| One head, hard-coded as `"main"`                                                          | No independently scheduled subagent or thread heads                                                       | `GAP-D01`            |
+| Provider generation has a `step_attempt` record but no reserved response/usage settlement | A crash can repeat an uncertain provider call or leave response and usage durability out of sync          | `GAP-C03`            |
+| Abort can stop a tool batch before every planned call produces an output item             | Stored conversation history can contain assistant tool calls with no matching settlement                  | `GAP-C04`            |
+| Listeners are awaited serially                                                            | Throwing listeners are contained, but a slow listener can delay later listeners and the run               | `GAP-C05`            |
+| Prompt and provider response settlement span several commits                              | Run intent is durable first, but provider effects still lack one atomic settlement transition             | `GAP-C03`, `GAP-C04` |
+| No public fork, checkpoint, revert, or navigation operation                               | Storage can move a head pointer, but products cannot use a complete durable workflow                      | `GAP-D03`            |
+| No projected session snapshot or terminal-status query                                    | `watch({ afterSeq })` is reconnect-safe, but clients still rebuild views and terminal status from the log | `GAP-D04`, `GAP-D08` |
+| Queue items carry no stable run ownership                                                 | `cancelQueued()` and `pendingQueue()` cover inspection and withdrawal, but ownership is provenance only   | `GAP-D05`            |
+| No telemetry spans                                                                        | Host observability remains application-specific                                                           | `GAP-D09`            |
 
-| Limit                                                                                           | Consequence                                                                                      | Roadmap                                  |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------- |
-| One lane, hard-coded as `"main"`                                                                | No independently scheduled subagent or thread lanes                                              | `GAP-D01`                                |
-| Admission and terminal state rely on process-local `activeRun` around asynchronous storage work | Concurrent lifecycle calls can create multiple open operations or enqueue against a finished run | `GAP-C01`, `GAP-C02`                     |
-| Provider generation has a `step_attempt` record but no reserved response/usage settlement       | A crash can repeat an uncertain provider call or leave response and usage durability out of sync | `GAP-C03`                                |
-| Abort can stop a tool batch before every planned call produces an output item                   | Stored conversation history can contain assistant tool calls with no matching settlement         | `GAP-C04`                                |
-| Listeners are awaited serially and their errors escape                                          | One observer can fail the run and prevent later observers from receiving the event               | `GAP-C05`                                |
-| No test constructs `AgentHarness`                                                               | Crash recovery and concurrency behavior are not regression-protected                             | `GAP-C06`                                |
-| No atomic multi-write transition                                                                | Prompt acceptance and terminal settlement span several commits                                   | `GAP-C01`–`GAP-C04`                      |
-| No compaction or context bound                                                                  | Every message on the branch is sent on each turn                                                 | `GAP-D02`                                |
-| No public fork, checkpoint, revert, or navigation operation                                     | Storage can move a lane pointer, but products cannot use a complete durable workflow             | `GAP-D03`                                |
-| `subscribe()` is live-only                                                                      | A reconnecting client can miss the interval between reading history and subscribing              | `GAP-D04`                                |
-| No public queue cancellation                                                                    | The cancellation record is defined but cannot be written through the harness                     | `GAP-D05`                                |
-| No telemetry or retry policy                                                                    | Host observability and retry semantics remain application-specific                               | `GAP-D09` and an explicit retry decision |
-
-External harness designs are useful for discovering these pressure points, but June does not need another
-register namespace, operation names, or exact public API. The [roadmap](../roadmap.mdx) records the June-owned outcomes
+External harness designs are useful for discovering these pressure points, but Uji does not need another
+register namespace, operation names, or exact public API. The [roadmap](../roadmap.mdx) records the Uji-owned outcomes
 and the reference ideas that are adopted, deferred, or rejected.
 
 <Cards>
@@ -424,7 +450,7 @@ and the reference ideas that are adopted, deferred, or rejected.
   <Card
     title="Session storage"
     href="/docs/core/session-storage"
-    description="Entries, records, lanes, and the writer lease"
+    description="Entries, records, heads, admission, watch, and run claims"
   />
   <Card
     title="Tools"

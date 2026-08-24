@@ -2,8 +2,8 @@ import { Input as InputPrimitive } from "@base-ui/react/input";
 import * as stylex from "@stylexjs/stylex";
 import type * as React from "react";
 
-import { Button, type ButtonProps } from "@june/ui/components/ui/button";
-import { mergeStyleProps, type XStyle } from "@june/ui/style";
+import { Button, type ButtonProps } from "@uji-ai/ui/components/ui/button";
+import { mergeStyleProps, type XStyle } from "@uji-ai/ui/style";
 import {
   borderVars,
   colorVars,
@@ -12,7 +12,7 @@ import {
   fontVars,
   motionVars,
   radiusVars,
-} from "@june/ui/tokens.stylex";
+} from "@uji-ai/ui/tokens.stylex";
 
 const styles = stylex.create({
   root: {
@@ -22,70 +22,70 @@ const styles = stylex.create({
     boxSizing: "border-box",
     width: "100%",
     minWidth: 0,
-    borderWidth: borderVars["--june-border-hairline-width"],
+    borderWidth: borderVars["--uji-border-hairline-width"],
     borderStyle: "solid",
     borderColor: {
-      default: colorVars["--june-color-border"],
-      ":hover": { "@media (hover: hover)": colorVars["--june-color-border-strong"] },
-      ":focus-within": colorVars["--june-color-border-strong"],
+      default: colorVars["--uji-color-border"],
+      ":hover": { "@media (hover: hover)": colorVars["--uji-color-border-strong"] },
+      ":focus-within": colorVars["--uji-color-border-strong"],
     },
-    backgroundColor: colorVars["--june-color-field-background"],
-    boxShadow: elevationVars["--june-elevation-field"],
+    backgroundColor: colorVars["--uji-color-field-background"],
+    boxShadow: elevationVars["--uji-elevation-field"],
     // Fields never ring; :focus-within border emphasis above is the focus indicator.
     outlineStyle: "none",
     transitionProperty: "border-color",
     transitionDuration: {
-      default: motionVars["--june-motion-fast"],
+      default: motionVars["--uji-motion-fast"],
       "@media (prefers-reduced-motion: reduce)": "0s",
     },
-    transitionTimingFunction: motionVars["--june-motion-ease-out"],
+    transitionTimingFunction: motionVars["--uji-motion-ease-out"],
   },
-  md: { minHeight: controlVars["--june-control-height-md"] },
-  xl: { minHeight: controlVars["--june-control-height-xl"] },
-  rounded: { borderRadius: radiusVars["--june-radius-field"] },
-  pill: { borderRadius: radiusVars["--june-radius-pill"] },
+  md: { minHeight: controlVars["--uji-control-height-md"] },
+  xl: { minHeight: controlVars["--uji-control-height-xl"] },
+  rounded: { borderRadius: radiusVars["--uji-radius-field"] },
+  pill: { borderRadius: radiusVars["--uji-radius-pill"] },
   addon: {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
-    gap: controlVars["--june-control-gap-sm"],
-    color: colorVars["--june-color-muted-foreground"],
-    fontFamily: fontVars["--june-font-family-ui"],
-    fontSize: fontVars["--june-font-size-body"],
-    fontWeight: fontVars["--june-font-weight-medium"],
+    gap: controlVars["--uji-control-gap-sm"],
+    color: colorVars["--uji-color-muted-foreground"],
+    fontFamily: fontVars["--uji-font-family-ui"],
+    fontSize: fontVars["--uji-font-size-body"],
+    fontWeight: fontVars["--uji-font-weight-medium"],
     userSelect: "none",
   },
   inlineStart: {
     order: -1,
-    paddingInlineStart: controlVars["--june-control-padding-sm"],
+    paddingInlineStart: controlVars["--uji-control-padding-sm"],
   },
   inlineEnd: {
     order: 1,
-    paddingInlineEnd: controlVars["--june-control-padding-sm"],
+    paddingInlineEnd: controlVars["--uji-control-padding-sm"],
   },
   blockStart: {
     width: "100%",
     alignSelf: "stretch",
     justifyContent: "flex-start",
-    paddingInline: controlVars["--june-control-padding-md"],
-    paddingBlockStart: controlVars["--june-control-padding-sm"],
+    paddingInline: controlVars["--uji-control-padding-md"],
+    paddingBlockStart: controlVars["--uji-control-padding-sm"],
   },
   blockEnd: {
     width: "100%",
     alignSelf: "stretch",
     justifyContent: "flex-start",
-    paddingInline: controlVars["--june-control-padding-md"],
-    paddingBlockEnd: controlVars["--june-control-padding-sm"],
+    paddingInline: controlVars["--uji-control-padding-md"],
+    paddingBlockEnd: controlVars["--uji-control-padding-sm"],
   },
   withBlockStart: { flexDirection: "column" },
   text: {
     display: "flex",
     alignItems: "center",
-    gap: controlVars["--june-control-gap-sm"],
-    color: colorVars["--june-color-muted-foreground"],
-    fontFamily: fontVars["--june-font-family-ui"],
-    fontSize: fontVars["--june-font-size-body"],
+    gap: controlVars["--uji-control-gap-sm"],
+    color: colorVars["--uji-color-muted-foreground"],
+    fontFamily: fontVars["--uji-font-family-ui"],
+    fontSize: fontVars["--uji-font-size-body"],
   },
   control: {
     boxSizing: "border-box",
@@ -96,24 +96,24 @@ const styles = stylex.create({
     borderStyle: "none",
     borderRadius: "inherit",
     backgroundColor: "transparent",
-    color: colorVars["--june-color-foreground"],
-    fontFamily: fontVars["--june-font-family-ui"],
-    fontSize: fontVars["--june-font-size-body"],
-    fontWeight: fontVars["--june-font-weight-regular"],
-    lineHeight: fontVars["--june-leading-body"],
+    color: colorVars["--uji-color-foreground"],
+    fontFamily: fontVars["--uji-font-family-ui"],
+    fontSize: fontVars["--uji-font-size-body"],
+    fontWeight: fontVars["--uji-font-weight-regular"],
+    lineHeight: fontVars["--uji-leading-body"],
     outline: "none",
-    "::placeholder": { color: colorVars["--june-color-muted-foreground"] },
+    "::placeholder": { color: colorVars["--uji-color-muted-foreground"] },
   },
   input: {
     alignSelf: "stretch",
-    paddingInline: controlVars["--june-control-padding-md"],
+    paddingInline: controlVars["--uji-control-padding-md"],
     paddingBlock: 0,
   },
   textarea: {
-    minHeight: fontVars["--june-leading-body"],
-    maxHeight: controlVars["--june-control-textarea-max-height"],
-    paddingInline: controlVars["--june-control-padding-lg"],
-    paddingBlock: controlVars["--june-control-textarea-compact-padding"],
+    minHeight: fontVars["--uji-leading-body"],
+    maxHeight: controlVars["--uji-control-textarea-max-height"],
+    paddingInline: controlVars["--uji-control-padding-lg"],
+    paddingBlock: controlVars["--uji-control-textarea-compact-padding"],
     resize: "none",
   },
 });

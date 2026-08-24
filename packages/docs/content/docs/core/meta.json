@@ -1,5 +1,5 @@
 {
-  "title": "Core",
+  "title": "@uji-ai/core",
   "icon": "IconPackage",
   "defaultOpen": true,
   "pages": ["index", "agent-loop", "harness", "session-storage", "tools", "stream-fn", "recipes"]

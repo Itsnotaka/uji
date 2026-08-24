@@ -1,12 +1,26 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react"],
   "categories": {
     "correctness": "error"
   },
   "options": {
     "typeAware": true
   },
-  "ignorePatterns": [".agents/**", ".claude/**"],
+  "ignorePatterns": [
+    ".agents/**",
+    ".claude/**",
+    ".agent/**",
+    ".codex/**",
+    ".continue/**",
+    ".cursor/**",
+    ".gemini/**",
+    ".opencode/**",
+    ".pi/**",
+    ".roo/**",
+    ".windsurf/**",
+    "**/.otui-probe/**"
+  ],
   "overrides": [
     {
       "files": [
@@ -38,6 +52,22 @@
       "files": ["packages/schema/src/model.ts", "packages/schema/src/message.ts"],
       "rules": {
         "typescript/no-redundant-type-constituents": "off"
+      }
+    },
+    {
+      "files": ["packages/core/src/plugins/builtin/**"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/harness/**", "../../harness/*"],
+                "message": "Built-in plugins use SessionApi only. If the API is missing something, add a primitive."
+              }
+            ]
+          }
+        ]
       }
     }
   ]

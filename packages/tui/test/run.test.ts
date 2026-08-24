@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Model } from "@uji-ai/ai";
 import { AgentHarness, buildSystemPrompt, inlinePlugin, SqliteSessionRepo } from "@uji-ai/core";
+import { readFastMode } from "@uji-ai/plugin/examples/fast-mode";
 import { cliBuiltinPlugins, openRunSession, parsePluginManifest } from "../src/run.ts";
 
 const model: Model<"openai-responses"> = {
@@ -46,6 +47,7 @@ void test("keeps the question example opt-in while preinstalling fast mode", asy
       false,
     );
     assert.equal(harness.getCommands().has("fast"), true);
+    assert.equal(await readFastMode(session, model), false);
     assert.equal(harness.getSystemPrompt().startsWith(buildSystemPrompt({ cwd: directory })), true);
   } finally {
     await harness.close();
@@ -65,7 +67,15 @@ void test("opens the latest or specified session", async () => {
 
     const second = await repo.create({ id: "session-b" });
     const secondId = (await second.getMetadata()).id;
+    await second.appendEntry(
+      { id: "e1", type: "message", message: { role: "user", content: "hi", timestamp: 1 } },
+      "main",
+    );
     await second.close();
+
+    // A launch that never sent anything leaves an empty session behind; latest skips it.
+    const empty = await repo.create({ id: "session-c" });
+    await empty.close();
 
     const latest = await openRunSession(repo, { kind: "latest" });
     assert.equal((await latest.getMetadata()).id, secondId);

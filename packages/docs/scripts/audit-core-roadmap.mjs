@@ -34,12 +34,12 @@ const sqlite = read("packages/core/src/harness/session/sqlite.ts");
 const schema = read("packages/schema/src/index.ts");
 const messageSchema = read("packages/schema/src/message.ts");
 const shell = read("packages/core/src/tools/support/shell.ts");
-const desktopHost = read("packages/demo/grok-bot/src/main/june-host.ts");
-const productionDependencies = read("packages/demo/grok-bot/src/main/production-dependencies.ts");
+const desktopHost = read("packages/demo/desktop/src/main/uji-host.ts");
+const productionDependencies = read("packages/demo/desktop/src/main/production-dependencies.ts");
 
 expect(
-  roadmap.includes("This is June's roadmap, not a parity checklist"),
-  "Roadmap must state that June, not pi parity, defines the target.",
+  roadmap.includes("This is Uji's roadmap, not a parity checklist"),
+  "Roadmap must state that Uji, not pi parity, defines the target.",
 );
 expect(
   roadmap.includes("Adopt the problem") && roadmap.includes("Reject as a parity goal"),
@@ -52,7 +52,7 @@ const expectedStatuses = {
   "GAP-C03": "Partial",
   "GAP-C04": "Partial",
   "GAP-C05": "Partial",
-  "GAP-C06": "Not started",
+  "GAP-C06": "Partial",
   "GAP-C07": "Partial",
   "GAP-C08": "Exists",
   "GAP-C09": "Partial",
@@ -96,7 +96,7 @@ const allDocs = markdownFiles(docsRoot)
   .map((path) => readFileSync(path, "utf8"))
   .join("\n");
 for (const [pattern, description] of [
-  [/199 lines/i, "the old JuneHost line count"],
+  [/199 lines/i, "the old UjiHost line count"],
   [/seventeen markers/i, "the removed SDK-marker count"],
   [/five IPC methods/i, "the old desktop method count"],
   [/six functions/i, "the old preload method count"],
@@ -123,8 +123,8 @@ expect(
   "GAP-C05 source changed: re-audit listener isolation and update the roadmap.",
 );
 expect(
-  !harness.includes("cancelQueued("),
-  "GAP-D05 source changed: a queue-cancellation API exists; update the roadmap.",
+  /async cancelQueued\(entryId: string\)/.test(harness),
+  "GAP-D05 source changed: queue cancellation is gone; re-audit and update the roadmap.",
 );
 expect(
   /return `\$\{prefix\}_\$\{randomUUID\(\)\.slice\(0, 8\)\}`/.test(sessionTypes),
@@ -133,7 +133,7 @@ expect(
 expect(
   !/ResponseItem|ToolResultPart|ContentPart/.test(schema) &&
     messageSchema.includes("content: (TextContent | ImageContent)[];"),
-  "GAP-C08 source changed: re-audit the canonical Message and tool-result part contract.",
+  "GAP-C08 source changed: re-audit the Message and tool-result part contract.",
 );
 expect(
   /private readonly active = new Set<SqliteSessionStorage>\(\)/.test(sqlite) &&
@@ -153,8 +153,8 @@ const coreTestFiles = readdirSync(join(repositoryRoot, "packages/core/test"))
   .filter((name) => name.endsWith(".test.ts"))
   .map((name) => read(`packages/core/test/${name}`));
 expect(
-  !coreTestFiles.some((source) => /\bAgentHarness\b/.test(source)),
-  "GAP-C06 source changed: an AgentHarness test now exists; re-audit coverage and update the roadmap.",
+  coreTestFiles.some((source) => /\bAgentHarness\b/.test(source)),
+  "GAP-C06 source changed: AgentHarness regression coverage disappeared; update the roadmap.",
 );
 
 for (const packageName of ["protocol", "server", "client", "plugin"]) {
@@ -186,6 +186,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    `Core roadmap audit passed (${Object.keys(expectedStatuses).length} tracked gaps; June-first framing and source facts verified).`,
+    `Core roadmap audit passed (${Object.keys(expectedStatuses).length} tracked gaps; Uji-first framing and source facts verified).`,
   );
 }

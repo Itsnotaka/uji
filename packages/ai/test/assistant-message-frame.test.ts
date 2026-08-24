@@ -2,13 +2,13 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/test/assistant-message-frame.test.ts
  * Synced with pi 7ebf9087e.
  *
- * June divergence: the OpenAI Responses round-trip case (`processResponsesStream`)
+ * Uji divergence: the OpenAI Responses round-trip case (`processResponsesStream`)
  * is omitted here; it exercises `api/openai-responses-shared.ts` and belongs with
  * the adapter tests.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { AssistantMessage, AssistantMessageEvent } from "@june/schema";
+import type { AssistantMessage, AssistantMessageEvent } from "@uji-ai/schema";
 import {
   type AssistantMessageFrame,
   assistantMessageEventToFrame,

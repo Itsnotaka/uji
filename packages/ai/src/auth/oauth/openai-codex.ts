@@ -40,15 +40,15 @@ const OPENAI_CODEX_BROWSER_LOGIN_METHOD = "browser";
 const OPENAI_CODEX_DEVICE_CODE_LOGIN_METHOD = "device_code";
 const SCOPE = "openid profile email offline_access";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth";
-// June divergence: exported for June's legacy api/responses.ts, which stamps
+// Uji divergence: exported for Uji's legacy api/responses.ts, which stamps
 // the same originator on Codex requests; pi inlines "pi" at the call sites.
-export const ORIGINATOR = "june";
+export const ORIGINATOR = "uji";
 
 type OAuthToken = { access: string; refresh: string; expires: number };
 type TokenOperation = "exchange" | "refresh";
 
 function getCallbackHost(): string {
-  return getProviderEnvValue("JUNE_OAUTH_CALLBACK_HOST") || "127.0.0.1";
+  return getProviderEnvValue("UJI_OAUTH_CALLBACK_HOST") || "127.0.0.1";
 }
 
 type DeviceAuthInfo = {
@@ -412,8 +412,8 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
   });
 }
 
-// June divergence: exported (pi keeps it module-private) because June's legacy
-// index.ts re-exports it for @june/core until core migrates.
+// Uji divergence: exported (pi keeps it module-private) because Uji's legacy
+// index.ts re-exports it for @uji-ai/core until core migrates.
 export function getAccountId(accessToken: string): string | null {
   const payload = decodeJwt(accessToken);
   const auth = payload?.[JWT_CLAIM_PATH];
@@ -571,8 +571,8 @@ export const openaiCodexOAuth: OAuthAuth = {
   refresh: (credential, signal) => refreshOpenAICodexToken(credential.refresh, signal),
 
   async toAuth(credential) {
-    // June divergence: pi's codex provider reads accountId off the credential
-    // itself; June's legacy Responses adapter only sees ModelAuth, so the
+    // Uji divergence: pi's codex provider reads accountId off the credential
+    // itself; Uji's legacy Responses adapter only sees ModelAuth, so the
     // ChatGPT account header rides along here until core migrates.
     const accountId =
       typeof credential["accountId"] === "string"

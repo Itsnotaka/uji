@@ -1,7 +1,7 @@
 /**
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/test/oauth-auth.test.ts
  * Synced with pi 7ebf9087e.
- * June keeps only the anthropic and openai-codex flows; the github-copilot,
+ * Uji keeps only the anthropic and openai-codex flows; the github-copilot,
  * kimi, openrouter, and xai cases are dropped with their providers. The
  * Models.getAuth cases run through resolveProviderAuth + lazyOAuth directly.
  */
@@ -55,7 +55,7 @@ void describe("OAuthAuth adapters", () => {
   });
 
   void test("openai-codex toAuth derives the api key and account header from the access token", async () => {
-    // June divergence: pi returns only { apiKey }; June's toAuth also carries
+    // Uji divergence: pi returns only { apiKey }; Uji's toAuth also carries
     // the chatgpt-account-id header for the legacy Responses adapter.
     const access = createAccessToken("acct-1");
     const auth = await openaiCodexOAuth.toAuth({ type: "oauth", access, refresh: "r", expires: 0 });

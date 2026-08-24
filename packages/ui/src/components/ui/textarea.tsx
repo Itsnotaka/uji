@@ -1,7 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import type * as React from "react";
 
-import { mergeStyleProps, type XStyle } from "@june/ui/style";
+import { mergeStyleProps, type XStyle } from "@uji-ai/ui/style";
 import {
   borderVars,
   colorVars,
@@ -9,45 +9,43 @@ import {
   fontVars,
   motionVars,
   radiusVars,
-} from "@june/ui/tokens.stylex";
+} from "@uji-ai/ui/tokens.stylex";
 
 const styles = stylex.create({
   root: {
     boxSizing: "border-box",
     display: "block",
     width: "100%",
-    minHeight: controlVars["--june-control-textarea-min-height"],
-    paddingInline: controlVars["--june-control-padding-md"],
-    paddingBlock: controlVars["--june-control-padding-sm"],
+    minHeight: controlVars["--uji-control-textarea-min-height"],
+    paddingInline: controlVars["--uji-control-padding-lg"],
+    paddingBlock: controlVars["--uji-control-padding-sm"],
     resize: "vertical",
-    borderWidth: borderVars["--june-border-control-width"],
+    borderWidth: borderVars["--uji-border-control-width"],
     borderStyle: "solid",
-    // Fields never ring: browsers mark any input focus as :focus-visible, so an outline
-    // would flash on click. Focus is the border emphasis instead.
     borderColor: {
-      default: colorVars["--june-color-border"],
-      ":hover": { "@media (hover: hover)": colorVars["--june-color-border-strong"] },
-      ":focus": colorVars["--june-color-border-strong"],
-      "[aria-invalid=true]": colorVars["--june-color-destructive"],
+      default: colorVars["--uji-color-border"],
+      ":focus-visible": colorVars["--uji-color-ring"],
+      "[aria-invalid=true]": colorVars["--uji-color-destructive"],
     },
-    borderRadius: radiusVars["--june-radius-field"],
-    backgroundColor: {
-      default: colorVars["--june-color-field-background"],
-      ":disabled": colorVars["--june-color-field-disabled"],
+    borderRadius: radiusVars["--uji-radius-field"],
+    backgroundColor: colorVars["--uji-color-field-background"],
+    boxShadow: {
+      default: "none",
+      ":focus-visible": `0 0 0 2px ${colorVars["--uji-color-ring"]}`,
     },
-    color: colorVars["--june-color-foreground"],
-    fontFamily: fontVars["--june-font-family-ui"],
-    fontSize: fontVars["--june-font-size-body"],
-    fontWeight: fontVars["--june-font-weight-regular"],
-    lineHeight: fontVars["--june-leading-body"],
+    color: colorVars["--uji-color-foreground"],
+    fontFamily: fontVars["--uji-font-family-ui"],
+    fontSize: fontVars["--uji-font-size-body"],
+    fontWeight: fontVars["--uji-font-weight-regular"],
+    lineHeight: fontVars["--uji-leading-body"],
     outlineStyle: "none",
-    opacity: { default: 1, ":disabled": controlVars["--june-control-disabled-opacity"] },
+    opacity: { default: 1, ":disabled": controlVars["--uji-control-disabled-opacity"] },
     transitionProperty: "background-color, border-color, outline-color, opacity",
     transitionDuration: {
-      default: motionVars["--june-motion-fast"],
+      default: motionVars["--uji-motion-fast"],
       "@media (prefers-reduced-motion: reduce)": "0s",
     },
-    "::placeholder": { color: colorVars["--june-color-muted-foreground"] },
+    "::placeholder": { color: colorVars["--uji-color-muted-foreground"] },
   },
 });
 

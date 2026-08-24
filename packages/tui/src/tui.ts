@@ -10,13 +10,8 @@ import {
   TextRenderable,
 } from "@opentui/core";
 import type { CliRenderer, TextOptions } from "@opentui/core";
-import type { Entry } from "@uji-ai/core";
-import {
-  fitPowerlineSegments,
-  hintGroups,
-  powerlineSegments,
-  transcriptFromEntries,
-} from "./format.ts";
+import { transcriptFromEntries, type Entry } from "@uji-ai/core";
+import { fitPowerlineSegments, hintGroups, powerlineSegments } from "./format.ts";
 import type { PowerlineSegment, PowerlineState } from "./format.ts";
 import { TuiFocusController } from "./lifecycle.ts";
 import { InlineMenu, PickerCancelled } from "./picker.ts";
@@ -26,6 +21,7 @@ import {
   ConversationTurnBlock,
   createSubtleSyntaxStyle,
   createSyntaxStyle,
+  PendingSteeringStatus,
   renderItems,
 } from "./transcript.ts";
 import type { Transcript } from "./transcript.ts";
@@ -68,9 +64,10 @@ export interface Ui {
   closeInlineMenus?: () => void;
   authenticating: boolean;
   activeTurn?: ConversationTurnBlock;
+  steeringStatus: PendingSteeringStatus;
   /**
-   * Entry ids the transcript already shows, from a rebuild or from live
-   * harness events. The session observer skips head moves that land here.
+   * Entry ids seen by exactly one side of the live-render/session-watch pair.
+   * The second side removes the id, regardless of which side ran first.
    */
   renderedEntries: Set<string>;
 }
@@ -150,6 +147,7 @@ function powerlineColor(theme: CliTheme, tone: PowerlineSegment["tone"]): string
     case "queue":
       return theme.warning;
     case "usage":
+    case "clock":
       return theme.dim;
   }
 }
@@ -388,6 +386,7 @@ export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
     inputMode: "chat",
     selecting: false,
     authenticating: false,
+    steeringStatus: new PendingSteeringStatus(transcript),
     renderedEntries: new Set(),
   };
 }
@@ -412,13 +411,13 @@ export function replaceTranscript(
   options: { openLastTurn?: boolean } = {},
 ): void {
   ui.activeTurn = undefined;
+  ui.steeringStatus.clear();
   for (const child of ui.scroll.getChildren()) {
     ui.scroll.remove(child);
     child.destroyRecursively();
   }
   ui.activeTurn = renderItems(ui.transcript, transcriptFromEntries(entries), options);
-  ui.renderedEntries = new Set(entries.map((entry) => entry.id));
-  ui.scroll.scrollTo({ x: 0, y: ui.scroll.scrollHeight });
+  ui.renderedEntries.clear();
 }
 
 /**
@@ -521,6 +520,8 @@ export class ComposerStatus {
   private readonly theme: CliTheme;
   private readonly isFocused: () => boolean;
   private readonly state: PowerlineState;
+  /** Armed only while the idle clock is on screen; rescheduled by repaint. */
+  private tick: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     renderer: CliRenderer,
@@ -556,5 +557,22 @@ export class ComposerStatus {
       theme,
       this.isFocused() ? theme.promptBorderFocused : theme.promptBorder,
     );
+    // The idle clock is the one segment that changes without an event; keep
+    // it live with a self-rescheduling tick that dies with the segment.
+    if (this.tick !== undefined) clearTimeout(this.tick);
+    this.tick = undefined;
+    if (this.state.runState === "idle" && this.state.stoppedAt !== undefined) {
+      const timer = setTimeout(() => {
+        this.repaint();
+        this.renderer.requestRender();
+      }, 1000);
+      timer.unref?.();
+      this.tick = timer;
+    }
   };
+
+  dispose(): void {
+    if (this.tick !== undefined) clearTimeout(this.tick);
+    this.tick = undefined;
+  }
 }

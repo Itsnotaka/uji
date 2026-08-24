@@ -1,11 +1,12 @@
 ---
 title: Quickstart
 description: Clone the workspace, log in to a provider, get a streaming run in the terminal, then embed the same loop in your own code
+icon: IconRocket
 ---
 
 import { Step, Steps } from "fumadocs-ui/components/steps";
 
-This page goes from a fresh clone to a streaming agent run, then to calling the same machinery from your own code. Every command and flag below is read from `packages/demo/cli/src`. That CLI is a demo composition, not a product: it is the shortest readable example of wiring `@june/ai` credentials into `@june/core`'s harness.
+This page goes from a fresh clone to a streaming agent run, then to calling the same machinery from your own code. Every command and flag below is read from the terminal client in `packages/tui/src`.
 
 ## Requirements
 
@@ -18,7 +19,7 @@ This page goes from a fresh clone to a streaming agent run, then to calling the 
 | bun            | 1.3.14  | `mise.toml`                                                  | Nothing on this page. No package script invokes it                    |
 | ripgrep (`rg`) | any     | not pinned                                                   | The `grep` and `find` tools shell out to `rg` on `PATH`               |
 
-Nothing on this page needs a build step. `@june/schema`, `@june/ai`, and `@june/core` each set `"exports": { ".": "./src/index.ts" }` and ship no compiled output, so `pnpm start` runs `tsx --experimental-ffi src/index.ts`. (The docs site and the demo apps under `packages/demo/` do have their own `build` scripts; the CLI does not.) The session store is `node:sqlite`. The TUI needs `node:ffi`, which is why the pin is 26 and the script passes `--experimental-ffi`.
+Nothing on this page needs a build step. `@uji-ai/schema`, `@uji-ai/ai`, and `@uji-ai/core` each set `"exports": { ".": "./src/index.ts" }` and ship no compiled output, so `pnpm start` runs `tsx --experimental-ffi src/index.ts`. (The docs site and the demo apps under `packages/demo/` do have their own `build` scripts; the CLI does not.) The session store is `node:sqlite`. The TUI needs `node:ffi`, which is why the pin is 26 and the script passes `--experimental-ffi`.
 
 ## Set up
 
@@ -26,9 +27,9 @@ Nothing on this page needs a build step. `@june/schema`, `@june/ai`, and `@june/
 <Step>
 ### Clone and install the toolchain
 
-```bash
-git clone https://github.com/Itsnotaka/june.git
-cd june
+```bash title="Terminal"
+git clone https://github.com/Itsnotaka/uji.git
+cd uji
 mise install
 ```
 
@@ -37,7 +38,7 @@ mise install
 <Step>
 ### Install workspace dependencies
 
-```bash
+```bash title="Terminal"
 pnpm install
 ```
 
@@ -46,7 +47,7 @@ pnpm install
 <Step>
 ### Verify the tree
 
-```bash
+```bash title="Terminal"
 pnpm check
 ```
 
@@ -57,7 +58,7 @@ pnpm check
 
 ## Log in
 
-The CLI lives in `packages/demo/cli`. From that directory, `pnpm start` runs `tsx --experimental-ffi src/index.ts`. Three subcommands are matched on the first argument, before any flag parsing.
+The CLI lives in `packages/tui`. From that directory, `pnpm start` runs `tsx --experimental-ffi src/index.ts`. Three subcommands are matched on the first argument, before any flag parsing.
 
 | Command                        | Effect                                                                              |
 | ------------------------------ | ----------------------------------------------------------------------------------- |
@@ -88,7 +89,7 @@ The callback server races a `manual_code` prompt, so you can instead paste the a
 
 **Device code login** is the headless path: no local port is opened. It posts to the device-auth endpoint, prints `Visit https://auth.openai.com/codex/device and enter code: <code>`, then polls for up to 15 minutes at the server-supplied interval (backing off 5 seconds on HTTP 429) until the authorization code comes back.
 
-Either way the credential is written through `FileCredentialStore` to `$JUNE_HOME/auth.json`, defaulting to `~/.june/auth.json`, created mode `0600` inside a `0700` directory.
+Either way the credential is written through `FileCredentialStore` to `$UJI_HOME/auth.json`, defaulting to `~/.uji/auth.json`, created mode `0600` inside a `0700` directory.
 
 <Callout title="OAuth refresh is automatic">
   Auth is re-resolved on every provider call. When the stored access token has under five minutes of
@@ -113,11 +114,15 @@ The CLI has three modes and picks between them with no flag of its own:
 | stdout is not a TTY and no positional argument                                               | Usage text, exit code 1 |
 | Otherwise                                                                                    | Full-screen TUI         |
 
-```bash
-cd packages/demo/cli
+```bash title="packages/tui"
+cd packages/tui
 
 # full-screen TUI, including the login funnel if nothing is stored
 pnpm start
+
+# resume the newest session, or a specific session by ID
+pnpm start --resume
+pnpm start --resume <session-id>
 
 # one non-interactive run; deltas stream to stdout
 pnpm start -p "summarize the files in packages/core/src"
@@ -128,25 +133,51 @@ pnpm start -p --resume "now list what changed"
 
 ### Flags
 
-| Flag               | Alias | Effect                                                   |
-| ------------------ | ----- | -------------------------------------------------------- |
-| `--print`          | `-p`  | Non-interactive run: stream to stdout and exit           |
-| `--resume`         | `-c`  | Open the newest existing session instead of creating one |
-| `--provider <id>`  | none  | Force a provider instead of auto-selecting               |
-| `--model <id>`     | none  | Model passed to the harness                              |
-| `--effort <level>` | none  | Thinking level passed to the harness                     |
+| Flag                      | Alias | Effect                                                       |
+| ------------------------- | ----- | ------------------------------------------------------------ |
+| `--print`                 | `-p`  | Non-interactive run: stream to stdout and exit               |
+| `--resume [<session-id>]` | `-c`  | In the TUI, open the newest session or the specified session |
+| `--provider <id>`         | none  | Override the provider saved from the latest run              |
+| `--model <id>`            | none  | Override the model saved from the latest run                 |
+| `--effort <level>`        | none  | Thinking level passed to the harness                         |
 
-Anything that is not a recognized flag is collected as positional text and joined with single spaces to build the prompt. There is no `--help`; the usage block only prints on the two failure paths in the table above.
+In print mode, anything that is not a recognized flag is joined with single spaces to build the prompt. In the TUI, the single positional value supplied with `--resume` is the session ID. `--help` prints the usage block.
 
 ### Defaults and environment overrides
 
-| Setting          | Resolution order                                                       | Effective default                       |
-| ---------------- | ---------------------------------------------------------------------- | --------------------------------------- |
-| Provider         | `--provider`, else the first registered provider whose auth resolves   | `openai-codex`, then `openai`           |
-| Model            | `--model`, then `JUNE_MODEL`, then the CLI's provider-specific default | `gpt-5.6-luna` for the OpenAI providers |
-| Thinking level   | `--effort`, then `JUNE_EFFORT`, then the CLI default                   | `medium`                                |
-| Credential file  | `$JUNE_HOME/auth.json`                                                 | `~/.june/auth.json`                     |
-| Session database | fixed: `<cwd>/.june/sessions.db`                                       | not configurable                        |
+| Setting          | Resolution order                                                                           | Effective default                       |
+| ---------------- | ------------------------------------------------------------------------------------------ | --------------------------------------- |
+| Provider         | `--provider`, project setting, global setting, then the first provider whose auth resolves | `openai-codex` on first run             |
+| Model            | `--model`, `UJI_MODEL`, project setting, global setting, then the provider default         | `gpt-5.6-luna` for the OpenAI providers |
+| Thinking level   | `--effort`, `UJI_EFFORT`, project setting, global setting, then the CLI default            | `medium`                                |
+| Fast mode        | saved session selection for the current provider, then off                                 | off                                     |
+| Global settings  | `$UJI_HOME/settings.json`                                                                  | `~/.uji/settings.json`                  |
+| Project settings | fixed: `<cwd>/.uji/settings.json`; loaded only after trust and merged over global settings | none                                    |
+| Credential file  | `$UJI_HOME/auth.json`                                                                      | `~/.uji/auth.json`                      |
+| Session database | fixed: `<cwd>/.uji/sessions.db`                                                            | not configurable                        |
+
+Global and project files use the same shape. Nested compaction fields merge independently:
+
+```json title=".uji/settings.json"
+{
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-luna",
+  "defaultThinkingLevel": "medium",
+  "transport": "auto",
+  "externalEditor": "nvim",
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
+  }
+}
+```
+
+The CLI updates global provider, model, and thinking defaults when they change or a run starts.
+Fast mode is not one of them: `/fast` is session state the plugin owns, saved against the provider
+it was selected for. If a configured
+provider has no credential, the CLI tries the other registered providers. If a
+configured provider or model no longer exists, the CLI uses its cold-start default.
 
 <Callout title="--effort is validated">
   Accepted levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. Any other value
@@ -155,22 +186,28 @@ Anything that is not a recognized flag is collected as positional text and joine
 
 ### Sessions on disk
 
-One SQLite file, `<cwd>/.june/sessions.db`, holds every session started from that directory. Without `--resume` each invocation creates a new session. With `--resume` the CLI opens the last entry of `repo.list()`, which is ordered by creation time, so it is the newest session, not the one you last typed in, if those differ. If that directory has no session yet, `--resume` falls back to creating one.
+One SQLite file, `<cwd>/.uji/sessions.db`, holds every session started from that directory. Without `--resume` each invocation creates a new session. Bare `--resume` opens the last entry of `repo.list()`, which is ordered by creation time, so it is the newest session, not the one you last typed in, if those differ. If that directory has no session yet, bare `--resume` falls back to creating one. In the TUI, `--resume <session-id>` opens that exact session. Print mode keeps text after bare `--resume` as the prompt.
 
-Opening a session claims a fenced, expiring writer lease. A second process opening the same session while the lease is live throws `SessionError("storage", "Session already has an active writer: <id>")`. Reads are unaffected by the lease.
+Opening a session grants reads and participant admission. It does not claim the session. In the TUI, `/resume` attaches normally even when another process runs the `"main"` head, so the transcript stays live and the composer remains enabled. A run acquires its own fenced, expiring head claim when execution starts.
 
 If a previous run crashed mid-flight, `AgentHarness.create` reports it in `suspended` and resumes nothing on its own. Both CLI modes then call `harness.resume()` explicitly, which re-appends missing prompt entries and settles unfinished tool intents by each tool's replay policy. The CLI marks `read`, `grep`, `find`, and `ls` as `replay: "safe"` and `bash`, `edit`, and `write` as `replay: "never"`.
 
 ### Inside the TUI
 
-| Key or command     | Effect                                                                                                |
-| ------------------ | ----------------------------------------------------------------------------------------------------- |
-| `enter`            | Send. While a run is streaming the text is queued with `harness.steer` instead of starting a run      |
-| `esc`              | `harness.abort()` on the active run                                                                   |
-| `ctrl+c`           | While streaming, the first press aborts; otherwise it closes the harness and the repo, then exits     |
-| `/tree`            | Print the entry tree with the current lane leaf marked                                                |
-| `/tree <entry-id>` | Move the lane leaf; the next message branches from there. `/tree root` starts a new branch from empty |
-| `/search <text>`   | Full-text search over entry payloads, 10 hits. Queries under three characters return nothing          |
+| Key or command | Effect                                                                             |
+| -------------- | ---------------------------------------------------------------------------------- |
+| `enter`        | Send; while streaming, queue a steering message                                    |
+| `ctrl+enter`   | Queue a follow-up message                                                          |
+| `ctrl+q`       | Review queued messages                                                             |
+| `ctrl+p`       | Cycle models; `ctrl+shift+p` cycles backward                                       |
+| `shift+tab`    | Cycle thinking levels supported by the current model                               |
+| `ctrl+g`       | Edit the current draft in the configured external editor                           |
+| `esc`          | Abort the active run                                                               |
+| `ctrl+c`       | Abort active work, close the harness and repository, then exit                     |
+| `/settings`    | Replace the composer with model, thinking, auto-compaction, and transport settings |
+| `/fast`        | Toggle fast inference for this session and provider; absent when unsupported       |
+| `/resume`      | Select a chat; concurrent runs stay visible and the composer remains writable      |
+| `/tree`        | Select the branch point for the next message                                       |
 
 ## Embed it
 
@@ -183,9 +220,9 @@ host registers providers in `Models` and injects `Models.streamSimple` as its `S
 
 ```ts title="minimal.ts"
 import process from "node:process";
-import { createModels, FileCredentialStore, openaiCodexProvider } from "@june/ai";
-import { runAgentLoop, toolResultContent } from "@june/core";
-import type { AgentTool } from "@june/core";
+import { createModels, FileCredentialStore, openaiCodexProvider } from "@uji-ai/ai";
+import { runAgentLoop, toolResultContent } from "@uji-ai/core";
+import type { AgentTool } from "@uji-ai/core";
 import { Type } from "typebox";
 
 const models = createModels({ credentials: new FileCredentialStore() });
@@ -233,7 +270,7 @@ const newItems = await runAgentLoop(
 console.log(`\n${String(newItems.length)} new items`);
 ```
 
-Run it with `node minimal.ts` from a workspace package that depends on both `@june/core` and `@june/ai`.
+Run it with `node minimal.ts` from a workspace package that depends on both `@uji-ai/core` and `@uji-ai/ai`.
 
 Three contracts hold that file together:
 
@@ -250,11 +287,11 @@ Three contracts hold that file together:
 ```ts title="durable.ts"
 import { join } from "node:path";
 import process from "node:process";
-import { createModels, FileCredentialStore, openaiCodexProvider } from "@june/ai";
-import { AgentHarness, createReadOnlyTools, SqliteSessionRepo } from "@june/core";
-import type { HarnessTool } from "@june/core";
+import { createModels, FileCredentialStore, openaiCodexProvider } from "@uji-ai/ai";
+import { AgentHarness, createReadOnlyTools, SqliteSessionRepo } from "@uji-ai/core";
+import type { HarnessTool } from "@uji-ai/core";
 
-const repo = new SqliteSessionRepo(join(process.cwd(), ".june", "sessions.db"));
+const repo = new SqliteSessionRepo(join(process.cwd(), ".uji", "sessions.db"));
 const session = await repo.create();
 const models = createModels({ credentials: new FileCredentialStore() });
 const provider = openaiCodexProvider();
@@ -271,7 +308,7 @@ const { harness, suspended } = await AgentHarness.create({
   session,
   streamFn: (requestedModel, context, options) =>
     models.streamSimple(requestedModel, context, options),
-  systemPrompt: "You are june. Answer questions about files in the working directory.",
+  systemPrompt: "You are uji. Answer questions about files in the working directory.",
   tools,
   model,
   thinkingLevel: "medium",
@@ -300,11 +337,11 @@ await repo.close();
 
 `createReadOnlyTools` returns `read`, `grep`, `find`, and `ls`. `HarnessTool` is an `AgentTool` plus one field, `replay`, which decides what happens to a tool call that was durably started but never settled. `replay` defaults to `"never"`, and a `"never"` call settles on resume with a message saying it was interrupted and not replayed.
 
-Which method you may call depends on the lane state, and the tagged error tells you which rule you broke:
+Which method you may call depends on the head state, and the tagged error tells you which rule you broke:
 
 | Method                             | Precondition                          | Error when violated           |
 | ---------------------------------- | ------------------------------------- | ----------------------------- |
-| `prompt(input)`                    | No run is active                      | `LaneBusy`                    |
+| `prompt(input)`                    | No run is active                      | `HeadBusy`                    |
 | `steer(input)` / `followUp(input)` | A run is active                       | `NoActiveRun`                 |
 | `nextRun(input)`                   | None. Drained by the next `prompt()`  | never rejects on precondition |
 | `abort()`                          | A run is active                       | `NoActiveRun`                 |

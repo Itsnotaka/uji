@@ -1,4 +1,5 @@
-import type { ThinkingLevel, ThinkingLevelMap } from "../src/types.ts";
+import { MODEL_THINKING_LEVELS } from "@uji-ai/schema";
+import type { ThinkingLevelMap } from "../src/types.ts";
 
 export type ModelsDevReasoningOption =
   | { type: "toggle" }
@@ -9,15 +10,6 @@ export type ModelsDevReasoningOption =
       >;
     }
   | { type: "budget_tokens"; min?: number; max?: number };
-
-const THINKING_LEVELS: readonly ThinkingLevel[] = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
 
 /**
  * Converts models.dev verified effort values into Pi's selectable thinking levels.
@@ -31,11 +23,16 @@ export function getEffortThinkingLevelMap(
   if (effortValues.length === 0) return undefined;
 
   const supported = new Set(effortValues);
-  if (!THINKING_LEVELS.some((level) => supported.has(level)) && !supported.has("none"))
+  if (
+    !MODEL_THINKING_LEVELS.some((level) => level !== "off" && supported.has(level)) &&
+    !supported.has("none")
+  ) {
     return undefined;
+  }
 
   const map: ThinkingLevelMap = { off: supported.has("none") ? "none" : null };
-  for (const level of THINKING_LEVELS) {
+  for (const level of MODEL_THINKING_LEVELS) {
+    if (level === "off") continue;
     map[level] = supported.has(level) ? level : null;
   }
   return map;

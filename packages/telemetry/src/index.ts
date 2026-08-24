@@ -1,5 +1,5 @@
 /**
- * Telemetry carried on a Context. June has no telemetry exporter yet; this is
+ * Telemetry carried on a Context. Uji has no telemetry exporter yet; this is
  * the smallest contract the harness needs so every call site can already
  * thread a telemetry parent through `Context`. An OpenTelemetry-backed
  * implementation replaces NOOP_TELEMETRY_CONTEXT later without touching call

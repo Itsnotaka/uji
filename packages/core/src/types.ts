@@ -13,12 +13,13 @@ import type {
   ImageContent,
   Message,
   Model,
+  ModelThinkingLevel,
   SimpleStreamOptions,
   TextContent,
   Tool,
   ToolResultMessage,
   Usage,
-} from "@june/ai";
+} from "@uji-ai/ai";
 import type { Static, TSchema } from "typebox";
 
 /**
@@ -150,7 +151,7 @@ export interface AgentLoopTurnUpdate {
   thinkingLevel?: ThinkingLevel;
 }
 
-export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
+export type PrepareNextTurnContext = ShouldStopAfterTurnContext;
 
 export interface AgentLoopConfig extends SimpleStreamOptions {
   model: Model<any>;
@@ -305,11 +306,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 }
 
 /**
- * Thinking/reasoning level for models that support it.
+ * Thinking/reasoning level for models that support it, including "off".
+ * Derived from @uji-ai/schema's MODEL_THINKING_LEVELS tuple — the
+ * ordered runtime list and both unions live there, not here.
  * Note: "xhigh" and "max" are only supported by selected model families. Use model
  * thinking-level metadata from @earendil-works/pi-ai to detect support for a concrete model.
  */
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ThinkingLevel = ModelThinkingLevel;
 
 /**
  * Extensible interface for custom app messages.

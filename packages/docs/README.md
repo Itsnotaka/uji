@@ -36,22 +36,22 @@ Read the [Introduction](https://fumadocs.dev/docs/mdx) for further details.
 
 ## Deploying
 
-Vercel project: `interface-co/june-docs`, with **Root Directory** set to
+Vercel project: `interface-co/uji-docs`, with **Root Directory** set to
 `packages/docs`. `vercel.json` carries three settings, and each is load-bearing
 (the file is JSON, so the reasoning lives here):
 
 - **`installCommand`** — `pnpm install --filter docs... --frozen-lockfile`.
   `docs` declares no `workspace:` dependencies, so `docs...` resolves to `docs`
   alone. Without the filter Vercel installs all eight workspace packages, which
-  pulls Electron 42 and `electron-builder` down for `packages/demo/grok-bot` on
+  pulls Electron 42 and `electron-builder` down for `packages/demo/desktop` on
   a build that never touches it.
 - **`buildCommand`** — `pnpm build`, this package's own `next build`.
 - **`ignoreCommand`** — `git diff --quiet HEAD^ HEAD -- .`, run from this
   directory. Exit 0 means "nothing here changed, skip the build", so a commit
-  that only touches `@june/core` does not redeploy the site. On a shallow clone
+  that only touches `@uji-ai/core` does not redeploy the site. On a shallow clone
   with no `HEAD^` it exits non-zero, which fails safe by building.
 
-`@june/core` cannot reach the client bundle: it is not in this package's
+`@uji-ai/core` cannot reach the client bundle: it is not in this package's
 dependency graph at all. The install filter is about install time and build
 minutes, not bundle size.
 

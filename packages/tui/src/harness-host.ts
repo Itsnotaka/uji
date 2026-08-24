@@ -32,7 +32,7 @@ export interface HostedHarnessState {
  * its own runner without pretending to be the whole class.
  */
 export interface HostedHarness {
-  readonly session: Pick<SessionStorage, "appendEntry" | "appendEntries" | "close">;
+  readonly session: Pick<SessionStorage, "appendEntries" | "close">;
   readonly state: HostedHarnessState;
   close: AgentHarness["close"];
   abort: AgentHarness["abort"];
@@ -49,6 +49,16 @@ export type HarnessBinding<THarness extends HostedHarness = AgentHarness> = (
   cwd: string,
 ) => () => void;
 
+export interface HarnessBindingOptions<THarness extends HostedHarness = AgentHarness> {
+  /**
+   * What the binding actually depends on. A replacement yielding the same key
+   * keeps the standing subscription instead of tearing it down and starting a
+   * new one, so a session observer survives a model, thinking level, or
+   * directory change made on the same session.
+   */
+  dependsOn?: (harness: THarness, cwd: string) => unknown;
+}
+
 /** Structurally `typeof createHarness`, widened over the runner and runtime the host owns. */
 export type CreateHostedHarness<
   THarness extends HostedHarness = AgentHarness,
@@ -64,7 +74,15 @@ type AuthorizeWorkspace = (path: string) => Promise<string>;
 
 interface BindingRecord<THarness extends HostedHarness> {
   bind: HarnessBinding<THarness>;
+  dependsOn?: (harness: THarness, cwd: string) => unknown;
+  key: unknown;
   unsubscribe: () => void;
+}
+
+/** A binding's next subscription, or its unchanged key when the standing one is kept. */
+interface PreparedBinding {
+  key: unknown;
+  unsubscribe?: () => void;
 }
 
 interface HostedSession<THarness extends HostedHarness, TRuntime extends HostedRuntime> {
@@ -85,6 +103,12 @@ export interface HarnessHostOptions<
   createHarness: CreateHostedHarness<THarness, TRuntime>;
   statDirectory?: StatDirectory;
   authorizeWorkspace?: AuthorizeWorkspace;
+  /**
+   * Called with the entries a transition is about to write, before they reach
+   * the session. A client claims them here, drawing them itself instead of
+   * rebuilding its view when the resulting head move arrives.
+   */
+  beforeAppend?: (entries: readonly ProvisionedEntry[]) => void;
 }
 
 /**
@@ -102,6 +126,7 @@ export class HarnessHost<
   private readonly makeHarness: CreateHostedHarness<THarness, TRuntime>;
   private readonly statDirectory: StatDirectory;
   private readonly authorizeWorkspace: AuthorizeWorkspace;
+  private readonly beforeAppend: (entries: readonly ProvisionedEntry[]) => void;
   private readonly bindings = new Set<BindingRecord<THarness>>();
   private readonly background = new Map<string, HostedSession<THarness, TRuntime>>();
   private readonly closing = new Map<string, Promise<void>>();
@@ -117,6 +142,7 @@ export class HarnessHost<
     this.makeHarness = options.createHarness;
     this.statDirectory = options.statDirectory ?? stat;
     this.authorizeWorkspace = options.authorizeWorkspace ?? Promise.resolve.bind(Promise);
+    this.beforeAppend = options.beforeAppend ?? (() => undefined);
   }
 
   get harness(): THarness {
@@ -135,9 +161,11 @@ export class HarnessHost<
     return this.currentSessionId;
   }
 
-  bind(bind: HarnessBinding<THarness>): () => void {
+  bind(bind: HarnessBinding<THarness>, options: HarnessBindingOptions<THarness> = {}): () => void {
     const record: BindingRecord<THarness> = {
       bind,
+      ...(options.dependsOn === undefined ? {} : { dependsOn: options.dependsOn }),
+      key: options.dependsOn?.(this.currentHarness, this.currentCwd),
       unsubscribe: bind(this.currentHarness, this.currentCwd),
     };
     this.bindings.add(record);
@@ -163,7 +191,7 @@ export class HarnessHost<
       effort: previous.state.thinkingLevel,
       cwd: this.currentCwd,
     });
-    let prepared: Map<BindingRecord<THarness>, () => void>;
+    let prepared: Map<BindingRecord<THarness>, PreparedBinding>;
     try {
       this.assertOpen();
       prepared = this.prepareBindings(created.harness, this.currentCwd);
@@ -184,7 +212,7 @@ export class HarnessHost<
       if (previousModel !== nextModel) {
         changes.push({ type: "model_change", id: newId("e"), modelId: nextModel });
       }
-      await previous.session.appendEntries(changes, "main");
+      await this.recordTransition(previous.session, changes);
       this.assertOpen();
     } catch (error) {
       this.discardPrepared(prepared);
@@ -217,7 +245,7 @@ export class HarnessHost<
       effort: previous.state.thinkingLevel,
       cwd: nextCwd,
     });
-    let prepared: Map<BindingRecord<THarness>, () => void>;
+    let prepared: Map<BindingRecord<THarness>, PreparedBinding>;
     try {
       this.assertOpen();
       prepared = this.prepareBindings(created.harness, nextCwd);
@@ -226,15 +254,14 @@ export class HarnessHost<
       throw error;
     }
     try {
-      await previous.session.appendEntry(
+      await this.recordTransition(previous.session, [
         {
           type: "custom",
           id: newId("e"),
           customType: "cwd_change",
           data: { cwd: nextCwd },
         },
-        "main",
-      );
+      ]);
       this.assertOpen();
     } catch (error) {
       this.discardPrepared(prepared);
@@ -261,7 +288,7 @@ export class HarnessHost<
       effort: nextLevel,
       cwd: this.currentCwd,
     });
-    let prepared: Map<BindingRecord<THarness>, () => void>;
+    let prepared: Map<BindingRecord<THarness>, PreparedBinding>;
     try {
       this.assertOpen();
       prepared = this.prepareBindings(created.harness, this.currentCwd);
@@ -270,14 +297,13 @@ export class HarnessHost<
       throw error;
     }
     try {
-      await previous.session.appendEntry(
+      await this.recordTransition(previous.session, [
         {
           type: "thinking_level_change",
           id: newId("e"),
           thinkingLevel: nextLevel,
         },
-        "main",
-      );
+      ]);
       this.assertOpen();
     } catch (error) {
       this.discardPrepared(prepared);
@@ -353,7 +379,7 @@ export class HarnessHost<
       };
     }
 
-    let prepared: Map<BindingRecord<THarness>, () => void>;
+    let prepared: Map<BindingRecord<THarness>, PreparedBinding>;
     try {
       prepared = this.prepareBindings(destination.harness, destination.cwd);
     } catch (error) {
@@ -443,6 +469,16 @@ export class HarnessHost<
     return transition;
   }
 
+  /** Offer the entries to the client, then write them, so nothing lands unclaimed. */
+  private async recordTransition(
+    session: THarness["session"],
+    entries: readonly ProvisionedEntry[],
+  ): Promise<void> {
+    if (entries.length === 0) return;
+    this.beforeAppend(entries);
+    await session.appendEntries(entries, "main");
+  }
+
   private assertOpen(): void {
     if (this.closed) throw new Error("Harness host is closed");
   }
@@ -457,10 +493,17 @@ export class HarnessHost<
   private prepareBindings(
     harness: THarness,
     cwd: string,
-  ): Map<BindingRecord<THarness>, () => void> {
-    const prepared = new Map<BindingRecord<THarness>, () => void>();
+  ): Map<BindingRecord<THarness>, PreparedBinding> {
+    const prepared = new Map<BindingRecord<THarness>, PreparedBinding>();
     try {
-      for (const record of this.bindings) prepared.set(record, record.bind(harness, cwd));
+      for (const record of this.bindings) {
+        const key = record.dependsOn?.(harness, cwd);
+        if (record.dependsOn !== undefined && key === record.key) {
+          prepared.set(record, { key });
+          continue;
+        }
+        prepared.set(record, { key, unsubscribe: record.bind(harness, cwd) });
+      }
       return prepared;
     } catch (error) {
       this.discardPrepared(prepared);
@@ -468,22 +511,26 @@ export class HarnessHost<
     }
   }
 
-  private discardPrepared(prepared: Map<BindingRecord<THarness>, () => void>): void {
-    for (const unsubscribe of prepared.values()) unsubscribe();
+  private discardPrepared(prepared: Map<BindingRecord<THarness>, PreparedBinding>): void {
+    for (const binding of prepared.values()) binding.unsubscribe?.();
   }
 
   private commitReplacement(
     harness: THarness,
     runtime: TRuntime,
     cwd: string,
-    prepared: Map<BindingRecord<THarness>, () => void>,
+    prepared: Map<BindingRecord<THarness>, PreparedBinding>,
   ): void {
     this.currentHarness = harness;
     this.currentRuntime = runtime;
     this.currentCwd = cwd;
     for (const record of this.bindings) {
+      const next = prepared.get(record);
+      // No new subscription means the binding's key held: leave it running.
+      if (next?.unsubscribe === undefined) continue;
       const previous = record.unsubscribe;
-      record.unsubscribe = prepared.get(record) ?? (() => undefined);
+      record.unsubscribe = next.unsubscribe;
+      record.key = next.key;
       previous();
     }
   }

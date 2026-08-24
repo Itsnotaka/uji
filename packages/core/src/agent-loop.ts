@@ -6,14 +6,9 @@
  * Synced with pi d4edf066f.
  */
 
-import {
-  type AssistantMessage,
-  type Context,
-  EventStream,
-  type ToolResultMessage,
-  validateToolArguments,
-} from "@june/ai";
-import { getDefaultStreamFn } from "./stream-fn.ts";
+import type { AssistantMessage, Context, ToolResultMessage } from "@uji-ai/ai/types";
+import { EventStream } from "@uji-ai/ai/utils/event-stream";
+import { validateToolArguments } from "@uji-ai/ai/utils/validation";
 import type {
   AgentContext,
   AgentEvent,
@@ -116,14 +111,7 @@ export async function runAgentLoop(
     await emit({ type: "message_end", message: prompt });
   }
 
-  await runLoop(
-    currentContext,
-    newMessages,
-    config,
-    signal,
-    emit,
-    streamFn ?? getDefaultStreamFn(),
-  );
+  await runLoop(currentContext, newMessages, config, signal, emit, streamFn);
   return newMessages;
 }
 
@@ -148,14 +136,7 @@ export async function runAgentLoopContinue(
   await emit({ type: "agent_start" });
   await emit({ type: "turn_start" });
 
-  await runLoop(
-    currentContext,
-    newMessages,
-    config,
-    signal,
-    emit,
-    streamFn ?? getDefaultStreamFn(),
-  );
+  await runLoop(currentContext, newMessages, config, signal, emit, streamFn);
   return newMessages;
 }
 

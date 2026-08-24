@@ -3,7 +3,7 @@
  *
  * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/utils/paths.ts
  * and https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/tools/path-utils.ts
- * (June resolves read-path variants locally where pi asks its ExecutionEnv).
+ * (Uji resolves read-path variants locally where pi asks its ExecutionEnv).
  */
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";

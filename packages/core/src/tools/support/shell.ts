@@ -4,10 +4,10 @@
  * concerns.
  *
  * Deviations from pi:
- * - getShellEnv no longer prepends pi's managed bin directory to PATH (June
+ * - getShellEnv no longer prepends pi's managed bin directory to PATH (Uji
  *   has no equivalent of pi's getBinDir); it returns a copy of process.env.
  * - pi coding-agent's detached-child pid registry is not ported: it feeds a
- *   SIGHUP/SIGTERM handler June does not have (pi-agent-core's bash has no
+ *   SIGHUP/SIGTERM handler Uji does not have (pi-agent-core's bash has no
  *   tracking either).
  * - pi's spawnProcess/spawnProcessSync cross-spawn wrappers are not ported
  *   (the bash tool spawns the shell directly).
@@ -138,7 +138,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 
 /**
  * Environment for spawned shells. Simplified from pi: pi prepends its managed
- * bin directory to PATH here; June has no managed bin directory, so this is a
+ * bin directory to PATH here; Uji has no managed bin directory, so this is a
  * plain copy of the current process environment.
  */
 export function getShellEnv(): NodeJS.ProcessEnv {

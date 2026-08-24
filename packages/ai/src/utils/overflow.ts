@@ -4,7 +4,7 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/src/utils/overflow.ts
  * Synced with pi 7ebf9087e.
  */
-import type { AssistantMessage } from "@june/schema";
+import type { AssistantMessage } from "@uji-ai/schema";
 
 /**
  * Regex patterns to detect context overflow errors from different providers.

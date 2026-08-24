@@ -3,9 +3,10 @@
   "version": "0.0.14",
   "private": true,
   "scripts": {
+    "clean": "rm -rf node_modules .turbo .next",
     "build": "next build",
     "audit:core-roadmap": "node scripts/audit-core-roadmap.mjs",
-    "colors:audit": "node scripts/audit-grok-colors.mjs",
+    "colors:audit": "node scripts/audit-uji-colors.mjs",
     "dev": "next dev",
     "start": "next start",
     "types:check": "next typegen && tsc --noEmit"

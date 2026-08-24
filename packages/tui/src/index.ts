@@ -40,6 +40,28 @@ async function logout(id: string | undefined): Promise<void> {
   console.log(`Logged out of ${provider.name}.`);
 }
 
+async function update(args: readonly string[]): Promise<void> {
+  const { checkForUpdate } = await import("./version.ts");
+  const { describeUpdateOutcome, selfUpdate } = await import("./update.ts");
+  if (args.includes("--check")) {
+    const notice = await checkForUpdate();
+    console.log(
+      notice === undefined
+        ? `uji ${VERSION} is the latest release.`
+        : `Update available: ${notice.version}. Run: uji update`,
+    );
+    return;
+  }
+  const version = args.find((arg) => !arg.startsWith("-"));
+  console.log(`Installed  ${VERSION}`);
+  const outcome = await selfUpdate({
+    ...(version === undefined ? {} : { version }),
+    report: (line) => console.log(line),
+  });
+  console.log(describeUpdateOutcome(outcome));
+  if (outcome.kind === "failed" || outcome.kind === "unsupported") process.exitCode = 1;
+}
+
 async function status(): Promise<void> {
   const { FileCredentialStore } = await import("@uji-ai/ai");
   const stored = await new FileCredentialStore().list();
@@ -68,6 +90,10 @@ async function main(): Promise<void> {
   }
   if (command === "status") {
     await status();
+    return;
+  }
+  if (command === "update") {
+    await update(args.slice(1));
     return;
   }
 

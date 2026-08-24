@@ -8,7 +8,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import type { OAuthCredentials } from "../../src/auth/types.ts";
+import type { OAuthCredential } from "../../src/auth/types.ts";
 import { builtinProviders } from "../../src/providers/all.ts";
 
 const AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
@@ -18,11 +18,7 @@ type ApiKeyCredential = {
   key: string;
 };
 
-type OAuthCredentialEntry = {
-  type: "oauth";
-} & OAuthCredentials;
-
-type AuthCredential = ApiKeyCredential | OAuthCredentialEntry;
+type AuthCredential = ApiKeyCredential | OAuthCredential;
 
 type AuthStorage = Record<string, AuthCredential>;
 

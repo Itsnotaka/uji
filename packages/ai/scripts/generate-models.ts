@@ -100,6 +100,7 @@ interface ModelsDevModel {
   structured_output?: boolean;
   reasoning?: boolean;
   reasoning_options?: ModelsDevReasoningOption[];
+  experimental?: { modes?: { fast?: unknown } };
   status?: string;
   limit?: {
     context?: number;
@@ -482,19 +483,25 @@ function mergeThinkingLevelMap(
 }
 
 const modelsDevReasoningOptions = new Map<string, ModelsDevReasoningOption[]>();
+const modelsDevModes = new Map<string, NonNullable<Model<Api>["modes"]>>();
 
 function getModelKey(model: Pick<Model<Api>, "provider" | "id">): string {
   return `${model.provider}:${model.id}`;
 }
 
-function recordModelsDevReasoningOptions(
-  provider: string,
-  id: string,
-  sourceModel: ModelsDevModel,
-): void {
+function applyModelsDevModeMetadata(model: Model<Api>): void {
+  const provider = model.provider === "openai-codex" ? "openai" : model.provider;
+  if (provider !== "anthropic" && provider !== "openai") return;
+  const modes = modelsDevModes.get(`${provider}:${model.id}`);
+  if (modes) model.modes = [...modes];
+}
+
+function recordModelsDevMetadata(provider: string, id: string, sourceModel: ModelsDevModel): void {
+  const key = `${provider}:${id}`;
   if (sourceModel.reasoning_options !== undefined) {
-    modelsDevReasoningOptions.set(`${provider}:${id}`, sourceModel.reasoning_options);
+    modelsDevReasoningOptions.set(key, sourceModel.reasoning_options);
   }
+  if (sourceModel.experimental?.modes?.fast !== undefined) modelsDevModes.set(key, ["fast"]);
 }
 
 function supportsDirectReasoningEffort(model: Model<Api>): boolean {
@@ -1328,7 +1335,7 @@ function processZaiModels(data: ModelsDevCatalog): Model<Api>[] {
         contextWindow: m.limit?.context || 4096,
         maxTokens: m.limit?.output || 4096,
       });
-      recordModelsDevReasoningOptions(provider, modelId, m);
+      recordModelsDevMetadata(provider, modelId, m);
     }
   }
 
@@ -1501,7 +1508,7 @@ function processFireworksModels(provider: ModelsDevProvider | undefined): Model<
         compat: anthropicCompat,
       });
     }
-    recordModelsDevReasoningOptions("fireworks", modelId, model);
+    recordModelsDevMetadata("fireworks", modelId, model);
   }
 
   return models;
@@ -1559,7 +1566,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           maxTokens: m.limit?.output || 4096,
           ...(m.structured_output === true && { compat: { supportsStrictMode: true } }),
         });
-        recordModelsDevReasoningOptions("amazon-bedrock" as const, id, m);
+        recordModelsDevMetadata("amazon-bedrock" as const, id, m);
       }
     }
 
@@ -1586,7 +1593,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("anthropic", modelId, m);
+        recordModelsDevMetadata("anthropic", modelId, m);
       }
     }
 
@@ -1620,7 +1627,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: source.limit?.context || 4096,
           maxTokens: source.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("google", modelId, source);
+        recordModelsDevMetadata("google", modelId, source);
       }
     }
 
@@ -1665,7 +1672,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: source.limit?.context || 4096,
           maxTokens: source.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("google-vertex", modelId, source);
+        recordModelsDevMetadata("google-vertex", modelId, source);
       }
     }
 
@@ -1694,7 +1701,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("openai", modelId, m);
+        recordModelsDevMetadata("openai", modelId, m);
       }
     }
 
@@ -1721,7 +1728,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("groq", modelId, m);
+        recordModelsDevMetadata("groq", modelId, m);
       }
     }
 
@@ -1748,7 +1755,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("cerebras", modelId, m);
+        recordModelsDevMetadata("cerebras", modelId, m);
       }
     }
 
@@ -1776,7 +1783,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           maxTokens: m.limit?.output || 4096,
           compat: { sendSessionAffinityHeaders: true },
         });
-        recordModelsDevReasoningOptions("cloudflare-workers-ai", modelId, m);
+        recordModelsDevMetadata("cloudflare-workers-ai", modelId, m);
       }
     }
 
@@ -1835,7 +1842,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           maxTokens: m.limit?.output || 4096,
           ...(compat ? { compat } : {}),
         });
-        recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
+        recordModelsDevMetadata("cloudflare-ai-gateway", id, m);
       }
     }
 
@@ -1863,7 +1870,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("xai", modelId, m);
+        recordModelsDevMetadata("xai", modelId, m);
       }
     }
 
@@ -1892,7 +1899,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("mistral", modelId, m);
+        recordModelsDevMetadata("mistral", modelId, m);
       }
     }
 
@@ -1922,7 +1929,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("huggingface", modelId, m);
+        recordModelsDevMetadata("huggingface", modelId, m);
       }
     }
 
@@ -1960,7 +1967,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("nvidia", liveModelId, m);
+        recordModelsDevMetadata("nvidia", liveModelId, m);
       }
     }
 
@@ -1993,7 +2000,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("together", modelId, m);
+        recordModelsDevMetadata("together", modelId, m);
       }
     }
 
@@ -2110,7 +2117,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions(variant.provider, modelId, m);
+        recordModelsDevMetadata(variant.provider, modelId, m);
       }
     }
 
@@ -2168,7 +2175,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
         };
 
         models.push(copilotModel);
-        recordModelsDevReasoningOptions("github-copilot", modelId, m);
+        recordModelsDevMetadata("github-copilot", modelId, m);
       }
     }
 
@@ -2202,7 +2209,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
             contextWindow: m.limit?.context || 4096,
             maxTokens: m.limit?.output || 4096,
           });
-          recordModelsDevReasoningOptions(provider, modelId, m);
+          recordModelsDevMetadata(provider, modelId, m);
         }
       }
     }
@@ -2210,7 +2217,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
     // Process Kimi For Coding models
     if (data["kimi-for-coding"]?.models) {
       const kimiModels = data["kimi-for-coding"].models as Record<string, ModelsDevModel>;
-      const hasCanonicalModel = Object.prototype.hasOwnProperty.call(kimiModels, "kimi-for-coding");
+      const hasKimiForCoding = Object.prototype.hasOwnProperty.call(kimiModels, "kimi-for-coding");
 
       const kimiAliases = new Set(["k2p5", "k2p6", "k2p7"]);
 
@@ -2218,8 +2225,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
         const m = model as ModelsDevModel;
         if (m.tool_call !== true) continue;
         // models.dev may expose versioned aliases (e.g. k2p5/k2p6/k2p7).
-        // Normalize aliases to the canonical model id and drop duplicates when canonical exists.
-        if (kimiAliases.has(modelId) && hasCanonicalModel) continue;
+        // Keep kimi-for-coding and drop those aliases when that id is present.
+        if (kimiAliases.has(modelId) && hasKimiForCoding) continue;
 
         const normalizedId = kimiAliases.has(modelId) ? "kimi-for-coding" : modelId;
         const normalizedName = kimiAliases.has(modelId)
@@ -2251,7 +2258,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions("kimi-coding", normalizedId, m);
+        recordModelsDevMetadata("kimi-coding", normalizedId, m);
       }
     }
 
@@ -2309,7 +2316,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           maxTokens: m.limit?.output || 4096,
           compat,
         });
-        recordModelsDevReasoningOptions(provider, modelId, m);
+        recordModelsDevMetadata(provider, modelId, m);
       }
     }
 
@@ -2367,7 +2374,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           contextWindow: m.limit?.context || 4096,
           maxTokens: m.limit?.output || 4096,
         });
-        recordModelsDevReasoningOptions(provider, modelId, m);
+        recordModelsDevMetadata(provider, modelId, m);
       }
     }
 
@@ -2444,7 +2451,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
           maxTokens: m.limit?.output || 4096,
         });
         emittedModelIds?.add(modelId);
-        recordModelsDevReasoningOptions(provider, modelId, m);
+        recordModelsDevMetadata(provider, modelId, m);
       }
 
       if (modelIds && emittedModelIds && generatorOptions.strict) {
@@ -2541,7 +2548,7 @@ async function generateModels() {
     if (candidate.provider === "openai" && candidate.id === "gpt-5-pro") {
       candidate.maxTokens = 128000;
     }
-    // Keep Kimi K3's canonical output limit when gateway metadata is missing or incorrect.
+    // Keep Kimi K3's output limit when gateway metadata is missing or incorrect.
     if (
       (candidate.provider === "openrouter" && OPENROUTER_KIMI_K3_MODEL_IDS.has(candidate.id)) ||
       (candidate.provider === "vercel-ai-gateway" && candidate.id === "moonshotai/kimi-k3")
@@ -2969,6 +2976,7 @@ async function generateModels() {
   allModels.push(...azureOpenAiModels);
 
   for (const model of allModels) {
+    applyModelsDevModeMetadata(model);
     applyOpenAICompletionsCompatMetadata(model);
     applyAnthropicMessagesCompatMetadata(model);
     applyModelsDevReasoningOptionMetadata(model);
@@ -2994,6 +3002,9 @@ async function generateModels() {
   }
 
   const sortedProviderIds = Object.keys(providers).sort();
+  const generatedCatalogProviderIds = sortedProviderIds.filter(
+    (providerId) => providerId !== "opencode" && providerId !== "opencode-go",
+  );
   const jsonProviders: Record<string, Record<string, Model<any>>> = {};
   for (const providerId of sortedProviderIds) {
     jsonProviders[providerId] = {};
@@ -3007,7 +3018,7 @@ async function generateModels() {
   const writeJson = (path: string, value: unknown) => writeFileSync(path, serializeJson(value));
   const generatedDataProviderIds = generatorOptions.dataOnly
     ? readModelDataProviderIds(packageRoot)
-    : sortedProviderIds;
+    : generatedCatalogProviderIds;
   const missingProviderIds = generatedDataProviderIds.filter(
     (providerId) => !jsonProviders[providerId],
   );
@@ -3083,7 +3094,7 @@ async function generateModels() {
         const catalogConstName = (providerId: string) =>
           `${providerId.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_MODELS`;
         const generatedShardFiles = new Set<string>();
-        for (const providerId of sortedProviderIds) {
+        for (const providerId of generatedCatalogProviderIds) {
           let output = generatedHeader;
           output += `import values from "./data/${providerId}.json" with { type: "json" };\n`;
           output += `import { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";\n\n`;
@@ -3099,15 +3110,15 @@ async function generateModels() {
         }
 
         let output = generatedHeader;
-        for (const providerId of sortedProviderIds) {
+        for (const providerId of generatedCatalogProviderIds) {
           output += `import { ${catalogConstName(providerId)} } from "./providers/${providerId}.models.ts";\n`;
         }
         output += `\nexport const MODELS: {\n`;
-        for (const providerId of sortedProviderIds) {
+        for (const providerId of generatedCatalogProviderIds) {
           output += `\treadonly ${JSON.stringify(providerId)}: typeof ${catalogConstName(providerId)};\n`;
         }
         output += `} = {\n`;
-        for (const providerId of sortedProviderIds) {
+        for (const providerId of generatedCatalogProviderIds) {
           output += `\t${JSON.stringify(providerId)}: ${catalogConstName(providerId)},\n`;
         }
         output += `};\n`;

@@ -1,5 +1,5 @@
 /**
- * Ls tool ported from pi's tools/ls.ts, adapted to June's AgentTool contract.
+ * Ls tool ported from pi's tools/ls.ts, adapted to Uji's AgentTool contract.
  * TUI rendering code from pi is dropped.
  *
  * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/ls.ts

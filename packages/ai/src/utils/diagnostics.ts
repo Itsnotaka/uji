@@ -4,9 +4,9 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/src/utils/diagnostics.ts
  * Synced with pi 7ebf9087e.
  */
-import type { AssistantMessageDiagnostic, DiagnosticErrorInfo } from "@june/schema";
+import type { AssistantMessageDiagnostic, DiagnosticErrorInfo } from "@uji-ai/schema";
 
-// June divergence: the diagnostic shapes live in @june/schema because AssistantMessage (wire type) carries them; re-exported here so callers that follow pi's layout keep working.
+// Uji divergence: the diagnostic shapes live in @uji-ai/schema because AssistantMessage (wire type) carries them; re-exported here so callers that follow pi's layout keep working.
 export type { AssistantMessageDiagnostic, DiagnosticErrorInfo };
 
 export function formatThrownValue(value: unknown): string {

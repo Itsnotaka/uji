@@ -1,6 +1,6 @@
 /**
- * Request option and adapter contract types for @june/ai. The neutral message,
- * model, and tool types live in @june/schema and are re-exported here so
+ * Request option and adapter contract types for @uji-ai/ai. The neutral message,
+ * model, and tool types live in @uji-ai/schema and are re-exported here so
  * callers that follow pi's layout can import everything from one place; this
  * file adds only what a provider request needs on top of them: transport and
  * auth options, the stream function contract, and the per-API option map.
@@ -8,10 +8,12 @@
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/ai/src/types.ts
  * Synced with pi 7ebf9087e.
  */
-import type { Api, Context, DeferredHandle, Model, ThinkingLevel } from "@june/schema";
-import type { TelemetryContext } from "@june/telemetry";
+import type { Api, Context, DeferredHandle, Model, ThinkingLevel } from "@uji-ai/schema";
+import type { TelemetryContext } from "@uji-ai/telemetry";
 import type { AnthropicOptions } from "./api/anthropic-messages.ts";
+import type { GoogleOptions } from "./api/google-generative-ai.ts";
 import type { OpenAICodexResponsesOptions } from "./api/openai-codex-responses.ts";
+import type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 import type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
 import type { AssistantMessageEventStream } from "./utils/event-stream.ts";
 
@@ -44,6 +46,7 @@ export type {
   ModelCost,
   ModelCostRates,
   ModelCostTier,
+  ModelMode,
   ModelThinkingLevel,
   OpenAIResponsesCompat,
   ProviderId,
@@ -59,7 +62,7 @@ export type {
   ToolResultMessage,
   Usage,
   UserMessage,
-} from "@june/schema";
+} from "@uji-ai/schema";
 
 export type ToolChoice = "auto" | "none";
 
@@ -111,7 +114,7 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
   onPayload?: (
     payload: unknown,
     model: TModel,
-    // oxlint-disable-next-line no-redundant-type-constituents -- pi's signature; the union documents that undefined means keep the payload
+    // oxlint-disable-next-line no-redundant-type-constituents -- pi's signature: the union documents that undefined means keep the payload, whose shape is the provider's own request body
   ) => unknown | undefined | Promise<unknown | undefined>;
   /**
    * Optional callback invoked after an HTTP response is received.
@@ -153,7 +156,7 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
   /**
    * Arbitrary sampling parameters merged into the request body as-is, after the named request
    * fields, so keys here override them. Lets custom OpenAI-compatible servers receive parameters
-   * June does not model, e.g. `top_p`, `top_k`, `min_p`, `repetition_penalty`. Merged over
+   * Uji does not model, e.g. `top_p`, `top_k`, `min_p`, `repetition_penalty`. Merged over
    * `Model.samplingParams` per key. Only applied by OpenAI-compatible adapters; other APIs ignore it.
    */
   samplingParams?: Record<string, unknown>;
@@ -208,6 +211,8 @@ export type DeferredCancelOptions = ProviderRequestOptions<Model<Api>>;
  */
 export interface ApiOptionsMap {
   "anthropic-messages": AnthropicOptions;
+  "google-generative-ai": GoogleOptions;
+  "openai-completions": OpenAICompletionsOptions;
   "openai-responses": OpenAIResponsesOptions;
   "openai-codex-responses": OpenAICodexResponsesOptions;
 }
@@ -252,6 +257,8 @@ export interface SimpleStreamOptions extends StreamOptions {
   /** Provider-neutral tool selection for simple requests. Default: "auto". */
   toolChoice?: ToolChoice;
   reasoning?: ThinkingLevel;
+  /** Request the selected model's advertised fast inference mode. */
+  fast?: boolean;
   /** Ask a capable provider to return a durable handle and continue the request asynchronously. */
   deferred?: boolean | { window?: "15m" | "1h" | "24h" };
   /** Custom token budgets for thinking levels (token-based providers only) */

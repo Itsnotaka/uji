@@ -423,6 +423,20 @@ type StreamingToolCall = ToolCall & {
   };
 };
 
+/**
+ * Strips the streaming scratch fields that accumulate on tool-call blocks while
+ * arguments are still arriving. They are parsing state, never conversation
+ * content, so adapters call this before persisting or emitting a failed message.
+ */
+export function stripStreamingScratchState(content: AssistantMessage["content"]): void {
+  for (const block of content) {
+    // SAFETY: only streaming tool-call blocks are ever assigned these scratch fields; deleting them off every block is harmless.
+    const scratch = block as StreamingToolCall;
+    delete scratch.partialJson;
+    delete scratch.customInput;
+  }
+}
+
 function getCustomToolCallInput(block: StreamingToolCall): string {
   const property = block.customInput?.property;
   if (property === undefined) return "";

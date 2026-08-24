@@ -3,9 +3,9 @@ import * as stylex from "@stylexjs/stylex";
 import { IconCrossSmall } from "central-icons";
 import type * as React from "react";
 
-import { Button } from "@june/ui/components/ui/button";
-import { IconBox } from "@june/ui/components/ui/icon-box";
-import { mergeStyleProps, type XStyle } from "@june/ui/style";
+import { Button } from "@uji-ai/ui/components/ui/button";
+import { IconBox } from "@uji-ai/ui/components/ui/icon-box";
+import { mergeStyleProps, type XStyle } from "@uji-ai/ui/style";
 import {
   borderVars,
   colorVars,
@@ -16,87 +16,87 @@ import {
   overlayVars,
   radiusVars,
   spaceVars,
-} from "@june/ui/tokens.stylex";
+} from "@uji-ai/ui/tokens.stylex";
 
 const styles = stylex.create({
   overlay: {
     position: "fixed",
     inset: 0,
-    zIndex: overlayVars["--june-layer-dialog"],
-    backgroundColor: colorVars["--june-color-scrim"],
+    zIndex: overlayVars["--uji-layer-dialog"],
+    backgroundColor: colorVars["--uji-color-scrim"],
     opacity: { default: 1, "[data-starting-style]": 0, "[data-ending-style]": 0 },
     transitionProperty: "opacity",
     transitionDuration: {
-      default: motionVars["--june-motion-normal"],
+      default: motionVars["--uji-motion-normal"],
       "@media (prefers-reduced-motion: reduce)": "0s",
     },
-    transitionTimingFunction: motionVars["--june-motion-ease-out"],
+    transitionTimingFunction: motionVars["--uji-motion-ease-out"],
   },
   popup: {
     position: "fixed",
     top: "50%",
     left: "50%",
-    zIndex: overlayVars["--june-layer-dialog"],
+    zIndex: overlayVars["--uji-layer-dialog"],
     display: "grid",
     boxSizing: "border-box",
-    width: overlayVars["--june-dialog-width"],
-    maxWidth: overlayVars["--june-dialog-max-width"],
-    maxHeight: overlayVars["--june-dialog-max-height"],
-    gap: spaceVars["--june-space-4"],
+    width: overlayVars["--uji-dialog-width"],
+    maxWidth: overlayVars["--uji-dialog-max-width"],
+    maxHeight: overlayVars["--uji-dialog-max-height"],
+    gap: spaceVars["--uji-space-4"],
     overflowY: "auto",
-    padding: spaceVars["--june-space-4"],
+    padding: spaceVars["--uji-space-4"],
     transform: "translate(-50%, -50%)",
     transformOrigin: "center",
-    borderWidth: borderVars["--june-border-hairline-width"],
+    borderWidth: borderVars["--uji-border-control-width"],
     borderStyle: "solid",
-    borderColor: colorVars["--june-color-border"],
-    borderRadius: radiusVars["--june-radius-dialog"],
-    backgroundColor: colorVars["--june-color-popover"],
-    boxShadow: elevationVars["--june-elevation-dialog"],
-    color: colorVars["--june-color-popover-foreground"],
-    fontFamily: fontVars["--june-font-family-ui"],
-    fontSize: fontVars["--june-font-size-body"],
-    lineHeight: fontVars["--june-leading-body"],
+    borderColor: colorVars["--uji-color-border"],
+    borderRadius: radiusVars["--uji-radius-dialog"],
+    backgroundColor: colorVars["--uji-color-popover"],
+    boxShadow: elevationVars["--uji-elevation-dialog"],
+    color: colorVars["--uji-color-popover-foreground"],
+    fontFamily: fontVars["--uji-font-family-ui"],
+    fontSize: fontVars["--uji-font-size-body"],
+    lineHeight: fontVars["--uji-leading-body"],
     outline: "none",
     opacity: { default: 1, "[data-starting-style]": 0, "[data-ending-style]": 0 },
     scale: { default: 1, "[data-starting-style]": 0.98, "[data-ending-style]": 0.98 },
     transitionProperty: "opacity, scale",
     transitionDuration: {
-      default: motionVars["--june-motion-normal"],
+      default: motionVars["--uji-motion-normal"],
       "@media (prefers-reduced-motion: reduce)": "0s",
     },
-    transitionTimingFunction: motionVars["--june-motion-ease-out"],
+    transitionTimingFunction: motionVars["--uji-motion-ease-out"],
   },
   close: {
     position: "absolute",
-    top: spaceVars["--june-space-2"],
-    right: spaceVars["--june-space-2"],
+    top: spaceVars["--uji-space-2"],
+    right: spaceVars["--uji-space-2"],
   },
   header: {
     display: "flex",
     flexDirection: "column",
     // Clears the absolutely positioned close button.
-    paddingInlineEnd: controlVars["--june-control-height-sm"],
-    gap: spaceVars["--june-space-1"],
+    paddingInlineEnd: controlVars["--uji-control-height-sm"],
+    gap: spaceVars["--uji-space-1"],
   },
   footer: {
     display: "flex",
     alignItems: "center",
     justifyContent: "flex-end",
-    gap: spaceVars["--june-space-2"],
+    gap: spaceVars["--uji-space-2"],
   },
   title: {
     margin: 0,
-    color: colorVars["--june-color-popover-foreground"],
-    fontSize: fontVars["--june-font-size-title"],
-    fontWeight: fontVars["--june-font-weight-medium"],
-    lineHeight: fontVars["--june-leading-title"],
+    color: colorVars["--uji-color-popover-foreground"],
+    fontSize: fontVars["--uji-font-size-title"],
+    fontWeight: fontVars["--uji-font-weight-medium"],
+    lineHeight: fontVars["--uji-leading-title"],
   },
   description: {
     margin: 0,
-    color: colorVars["--june-color-muted-foreground"],
-    fontSize: fontVars["--june-font-size-body"],
-    lineHeight: fontVars["--june-leading-body"],
+    color: colorVars["--uji-color-muted-foreground"],
+    fontSize: fontVars["--uji-font-size-body"],
+    lineHeight: fontVars["--uji-leading-body"],
   },
 });
 

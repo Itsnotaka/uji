@@ -7,6 +7,7 @@ export const USAGE = `usage:
   uji login [provider]         sign in (default: openai-codex)
   uji logout [provider]        remove the stored credential
   uji status                   list stored credentials
+  uji update [version|--check] install the latest release, a given one, or only check
   uji --version                print the installed version
   uji -p [--json] [--quiet] [--resume] [prompt]
   A missing prompt is read from stdin.

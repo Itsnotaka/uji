@@ -66,6 +66,11 @@ export const SLASH_COMMANDS = [
   { name: "edit", description: "Edit a message you sent" },
   { name: "plugins", description: "List loaded plugins" },
   { name: "reload", description: "Reload plugins and skills from disk" },
+  {
+    name: "update",
+    description: "Update uji to the latest release",
+    argument: { kind: "optional" },
+  },
   { name: "skills", description: "Browse skills" },
 ] as const satisfies readonly SlashCommand[];
 

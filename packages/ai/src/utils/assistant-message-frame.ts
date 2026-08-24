@@ -10,7 +10,7 @@ import type {
   TextContent,
   ThinkingContent,
   ToolCall,
-} from "@june/schema";
+} from "@uji-ai/schema";
 import { parseStreamingJson } from "./json-parse.ts";
 
 /**
