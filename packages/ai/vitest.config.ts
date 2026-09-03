@@ -7,7 +7,6 @@ export default defineConfig({
     include: ["test/upstream/**/*.test.ts"],
     exclude: [
       "test/upstream/model-catalog-types.test.ts", // imports other providers' catalogs
-      "test/upstream/generate-models-strict.test.ts", // runs the full generator, needs every provider catalog
 
       "test/upstream/anthropic-adaptive-thinking-models.test.ts",
       "test/upstream/anthropic-cache-write-1h-cost.test.ts",

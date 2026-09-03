@@ -1,13 +1,13 @@
 import type { KeyEvent } from "@opentui/core";
 import type { ThinkingLevel } from "@uji-ai/core";
 
-export type TuiKeyAction = "clear_for_quit" | "shutdown";
+type TuiKeyAction = "clear_for_quit" | "shutdown";
 
 /** How long a second escape still counts as part of the same gesture. */
 export const DOUBLE_ESCAPE_MS = 500;
 
 /**
- * Escape twice on an empty composer takes back the last message you sent.
+ * Escape twice on an empty composer opens the session tree.
  * The first press only arms the pair, so a lone escape keeps meaning "stop".
  *
  * Based on pi's double-escape timer:
@@ -24,14 +24,14 @@ export class DoubleEscape {
   }
 }
 
-export interface TuiKeyState {
+interface TuiKeyState {
   selecting: boolean;
   inputMode: "chat" | "auth";
   authenticating: boolean;
   hasDraft: boolean;
 }
 
-export interface TuiFocusTarget {
+interface TuiFocusTarget {
   focus: () => void;
   blur: () => void;
 }
@@ -57,10 +57,6 @@ export class TuiFocusController {
     this.use(this.defaultTarget);
   }
 
-  isUsing(target: TuiFocusTarget): boolean {
-    return this.target === target;
-  }
-
   blur(): void {
     if (!this.terminalFocused) return;
     this.terminalFocused = false;
@@ -82,7 +78,7 @@ export function nextThinkingLevel(
   return supported[(currentIndex + 1) % supported.length];
 }
 
-/** A printable key that can be forwarded from scrollback into the composer. */
+/** A printable key that belongs to the composer. */
 export function isComposerTextKey(key: KeyEvent): boolean {
   if (key.ctrl || key.meta || key.option === true || key.super === true) return false;
   const first = key.sequence.charCodeAt(0);
@@ -90,29 +86,44 @@ export function isComposerTextKey(key: KeyEvent): boolean {
 }
 
 /** The one thing escape can mean right now. */
-export type EscapeIntent = "abort" | "focus_composer" | "edit_last_message" | "ignore";
+type EscapeIntent = "abort" | "open_tree" | "ignore";
 
-export interface EscapeState extends TuiKeyState {
+interface EscapeState extends TuiKeyState {
   /** A run or a compaction is in flight, so there is work to interrupt. */
   busy: boolean;
-  scrollbackFocused: boolean;
 }
 
-/**
- * Escape resolves in one place instead of in whichever handler sees the key
- * first, so stopping the agent never depends on which pane holds focus. That
- * is the ordering that matters: a run you cannot stop from the scrollback is
- * a run you cannot stop, and reaching for the mouse first is not an answer.
- *
- * OpenCode registers interrupt as a keymap command scoped to the session
- * rather than as a widget handler, for the same reason:
- * https://github.com/anomalyco/opencode/blob/main/packages/tui/src/config/keybind.ts
- */
+/** Resolve escape before the focused editor sees it. */
 export function escapeIntent(state: EscapeState): EscapeIntent {
   if (state.inputMode !== "chat" || state.selecting) return "ignore";
   if (state.busy) return "abort";
-  if (state.scrollbackFocused) return "focus_composer";
-  return state.hasDraft ? "ignore" : "edit_last_message";
+  return state.hasDraft ? "ignore" : "open_tree";
+}
+
+/** What a stopped run leaves behind on screen. */
+type StoppedTurnIntent = "retract" | "keep";
+
+interface StoppedTurnState {
+  /** The turn drew the request and nothing that answers it. */
+  unanswered: boolean;
+  /** The composer already holds text that a returning message would overwrite. */
+  hasDraft: boolean;
+}
+
+/**
+ * Escape that lands before the model says anything leaves a request with a
+ * `! Stopped` line under it, and that line is a dead end: the text you wanted
+ * to fix is now in the record, and getting it back costs a second escape and a
+ * picker. So a run stopped with nothing under it hands the message straight
+ * back to the composer, which is the same round trip double-escape makes.
+ *
+ * Two cases keep the stopped line. A turn that produced a thought, a reply, or
+ * a tool call is a turn worth keeping, and the message that opened it is no
+ * longer the only thing on screen. A composer that already holds a draft has
+ * nowhere to put the returning text without destroying what is typed there.
+ */
+export function stoppedTurnIntent(state: StoppedTurnState): StoppedTurnIntent {
+  return state.unanswered && !state.hasDraft ? "retract" : "keep";
 }
 
 export function tuiKeyAction(key: KeyEvent, state: TuiKeyState): TuiKeyAction | undefined {
@@ -125,14 +136,15 @@ export function tuiKeyAction(key: KeyEvent, state: TuiKeyState): TuiKeyAction | 
 }
 
 /** What shutdown drives on the runner it is tearing down: stop the work, then release it. */
-export interface ShutdownTarget {
+interface ShutdownTarget {
   close: () => Promise<void>;
 }
 
 interface TuiShutdownOptions {
   unsubscribeHarness: () => void;
   getHarness: () => ShutdownTarget;
-  repo: { close: () => Promise<void> };
+  /** Closed after the host; absent when the host owns its own store. */
+  repo?: { close: () => Promise<void> };
   renderer: { destroy: () => void };
 }
 
@@ -158,7 +170,7 @@ export function createTuiShutdown(options: TuiShutdownOptions): () => Promise<vo
         await harness.close();
       } catch {}
       try {
-        await options.repo.close();
+        await options.repo?.close();
       } catch {}
     })();
     return shutdownPromise;

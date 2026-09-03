@@ -46,16 +46,16 @@ export function CopyValue({
           size={14}
           ariaHidden
           className={cn(
-            "absolute inset-0 motion-reduce:transition-none motion-safe:transition-[opacity,transform,filter] motion-safe:duration-200",
-            copied ? "scale-75 opacity-0 blur-[2px]" : "scale-100 opacity-100 blur-0",
+            "absolute inset-0 motion-safe:transition-[opacity,transform,filter] motion-safe:duration-200 motion-reduce:transition-none",
+            copied ? "scale-75 opacity-0 blur-[2px]" : "blur-0 scale-100 opacity-100",
           )}
         />
         <IconCheckmark2
           size={14}
           ariaHidden
           className={cn(
-            "absolute inset-0 text-fd-primary motion-reduce:transition-none motion-safe:transition-[opacity,transform,filter] motion-safe:duration-200",
-            copied ? "scale-100 opacity-100 blur-0" : "scale-75 opacity-0 blur-[2px]",
+            "absolute inset-0 text-fd-primary motion-safe:transition-[opacity,transform,filter] motion-safe:duration-200 motion-reduce:transition-none",
+            copied ? "blur-0 scale-100 opacity-100" : "scale-75 opacity-0 blur-[2px]",
           )}
         />
       </span>

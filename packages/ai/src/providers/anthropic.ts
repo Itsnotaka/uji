@@ -53,6 +53,9 @@ export function anthropicProvider(): Provider<"anthropic-messages"> {
     id: "anthropic",
     name: "Anthropic",
     baseUrl: "https://api.anthropic.com",
+    promptCache: {
+      minimumRetentionMs: { short: 5 * 60_000, long: 60 * 60_000 },
+    },
     auth: {
       apiKey: anthropicApiKeyAuth(),
       oauth: lazyOAuth({

@@ -7,9 +7,7 @@ import { gitConfig } from "@/lib/shared";
 
 const links = [
   { label: "Home", href: "/" },
-  { label: "Docs", href: "/docs" },
-  { label: "Quickstart", href: "/docs/quickstart" },
-  { label: "Roadmap", href: "/docs/roadmap" },
+  { label: "Design", href: "/docs/design" },
   { label: "Brand", href: "/branding" },
 ];
 
@@ -28,7 +26,7 @@ export function RailNav() {
         aria-label="Uji, home"
         className="inline-flex text-cog-ink transition-opacity duration-150 hover:opacity-60"
       >
-        <UjiMark className="h-6 w-6" />
+        <UjiMark className="size-6" />
       </Link>
 
       <nav aria-label="Site" className="mt-6">

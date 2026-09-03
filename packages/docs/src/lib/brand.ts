@@ -221,7 +221,7 @@ export const iconSystem = {
   sizes: [16, 20, 24],
   note: "One set across the docs site and the desktop client, so a glyph means the same thing in both. The stroke is part of the package variant rather than a prop, which is why nothing here passes strokeWidth.",
   resolver:
-    "src/lib/source.ts swaps Fumadocs' lucideIconsPlugin for a Central Icons resolver, so an icon name in frontmatter or meta.json is a Central name.",
+    'src/components/mdx/doc-card.tsx resolves <DocCard icon="…" /> names against Central Icons. The docs sidebar carries no icons at all.',
   fumadocs:
     "Fumadocs' built-in chrome stays on Lucide. fumadocs-ui imports lucide-react in 46 of its own modules, so replacing it would mean forking the layouts.",
 } as const;

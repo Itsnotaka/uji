@@ -3,6 +3,7 @@ import {
   createModels,
   defaultProviderAuthContext,
   FileCredentialStore,
+  FileModelsStore,
   opencodeGoProvider,
   opencodeProvider,
   openaiCodexProvider,
@@ -35,6 +36,7 @@ export function createCliModels(options: { fetch?: FetchFunction } = {}): Mutabl
   const models = createModels({
     credentials: new FileCredentialStore(),
     authContext: defaultProviderAuthContext(),
+    modelsStore: new FileModelsStore(),
   });
   models.setProvider(openaiCodexProvider());
   models.setProvider(openaiProvider());
@@ -44,11 +46,13 @@ export function createCliModels(options: { fetch?: FetchFunction } = {}): Mutabl
   return models;
 }
 
-/** Fetch a dynamic catalog, retaining a previously loaded list when the source is unavailable. */
+/**
+ * Restore the provider's persisted catalog on top of its baked models. Local
+ * disk only: the boot path must work on a plane, so the network freshen is
+ * the background `loadAuthenticatedModels` warm, never this call.
+ */
 export async function loadProviderCatalog(models: Models, providerId: string): Promise<void> {
-  const result = await models.refresh({ providers: [providerId] });
-  const error = result.errors.get(providerId);
-  if (error !== undefined && models.getModels(providerId).length === 0) throw error;
+  await models.refresh({ providers: [providerId], allowNetwork: false });
 }
 
 export type ProviderAuthStatus =

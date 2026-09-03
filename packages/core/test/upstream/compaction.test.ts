@@ -16,23 +16,25 @@ import {
   type Usage,
 } from "@uji-ai/ai";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  AgentHarness,
-  buildSessionContext,
-  calculateContextTokens,
-  COMPACTION_SUMMARY_PREFIX,
-  DEFAULT_COMPACTION_SETTINGS,
-  estimateContextTokens,
-  findCutPoint,
-  inlinePlugin,
-  prepareCompaction,
-  shouldCompact,
-  SqliteSessionRepo,
-  SUMMARIZATION_SYSTEM_PROMPT,
-  systemPromptPlugin,
-} from "../../src/index.ts";
+import { DEFAULT_COMPACTION_SETTINGS } from "../../src/index.ts";
 import type { CompactionEntry, Entry, MessageEntry } from "../../src/harness/session/types.ts";
 import type { StreamFn } from "../../src/types.ts";
+import { AgentHarness } from "../../src/harness/agent-harness.ts";
+import { prompt } from "../harness-driver.ts";
+import {
+  SUMMARIZATION_SYSTEM_PROMPT,
+  calculateContextTokens,
+  estimateContextTokens,
+  prepareCompaction,
+  shouldCompact,
+} from "../../src/harness/compaction/compaction.ts";
+import { inlinePlugin, systemPromptPlugin } from "../../src/plugins/index.ts";
+import {
+  COMPACTION_SUMMARY_PREFIX,
+  SqliteSessionRepo,
+  buildSessionContext,
+  buildSessionModelContext,
+} from "../../src/store.ts";
 
 const temporaryDirectories: string[] = [];
 let nextEntryId = 0;
@@ -189,9 +191,6 @@ describe("Pi compaction helpers", () => {
     const nextAssistant = messageEntry(assistant("new assistant"), nextUser.id);
     const entries: Entry[] = [prior, nextUser, nextAssistant];
 
-    const cut = findCutPoint(entries, 0, entries.length, 1);
-    expect(entries[cut.firstKeptEntryIndex]?.type).toBe("message");
-
     const prepared = prepareCompaction(entries, {
       ...DEFAULT_COMPACTION_SETTINGS,
       reserveTokens: 100,
@@ -245,7 +244,7 @@ describe("AgentHarness compaction", () => {
       expect(context.systemPrompt).toBe(SUMMARIZATION_SYSTEM_PROMPT);
       return messageStream(assistant("durable summary", "stop", usage(12, 4)));
     };
-    const { harness } = await AgentHarness.create({
+    const harness = await AgentHarness.create({
       session,
       streamFn,
       plugins: [inlinePlugin(systemPromptPlugin("agent"))],
@@ -253,25 +252,88 @@ describe("AgentHarness compaction", () => {
       model: model(),
       compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
     });
-    const eventTypes: string[] = [];
+    const eventKinds: string[] = [];
     harness.subscribe((event) => {
-      eventTypes.push(event.type);
+      eventKinds.push(event.kind);
     });
 
     const result = await harness.compact({ customInstructions: "Preserve decisions" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.operation).toBe("compaction");
-    expect(result.value.kind).toBe("completed");
-    if (result.value.kind !== "completed") return;
-    expect(result.value.entry.summary).toContain("durable summary");
-    expect(eventTypes).toEqual(["compaction_start", "compaction_end"]);
+    expect(result.kind).toBe("compacted");
+    if (result.kind !== "compacted") return;
+    expect(eventKinds).toEqual(["compacting"]);
 
     const branch = await session.getBranch("main");
-    expect(branch.at(-1)?.type).toBe("compaction");
+    const entry = branch.at(-1);
+    expect(entry?.type).toBe("compaction");
+    if (entry?.type !== "compaction") return;
+    expect(entry.id).toBe(result.entryId);
+    expect(entry.summary).toContain("durable summary");
     expect(buildSessionContext(branch)[0]?.role).toBe("user");
     expect((await session.findRecords({ type: "usage" }))[0]?.cause).toBe("compaction");
     expect(await session.findOpenOperations("main")).toEqual([]);
+
+    await harness.close();
+    await session.close();
+    await repo.close();
+  });
+
+  it("persists a hook checkpoint with its portable transcript fallback", async () => {
+    const { repo } = createRepo();
+    const session = await repo.create();
+    await appendMessages(session, [user("first request"), assistant("first answer"), user("keep")]);
+
+    const harness = await AgentHarness.create({
+      session,
+      streamFn: (_requestModel, context) => {
+        expect(context.systemPrompt).toBe(SUMMARIZATION_SYSTEM_PROMPT);
+        return messageStream(assistant("portable summary", "stop", usage(8, 2)));
+      },
+      plugins: [inlinePlugin(systemPromptPlugin("agent"))],
+      env: { cwd: "/" },
+      model: model(),
+      compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+    });
+    harness.hooks.on("before_compaction", () => ({
+      material: {
+        type: "provider",
+        provider: "openai",
+        api: "openai-responses",
+        model: "test-model",
+        data: [{ type: "compaction", encrypted_content: "opaque" }],
+      },
+    }));
+
+    const result = await harness.compact();
+    expect(result.kind).toBe("compacted");
+    if (result.kind !== "compacted") return;
+    const branch = await session.getBranch("main");
+    const entry = branch.at(-1);
+    expect(entry?.type).toBe("compaction");
+    if (entry?.type !== "compaction") return;
+    expect(entry.id).toBe(result.entryId);
+    expect(entry.fromHook).toBe(true);
+    expect(entry.summary).toContain("portable summary");
+    expect(entry.retainedTail.length).toBeGreaterThan(0);
+    expect(entry.material).toMatchObject({ model: "test-model" });
+
+    const portable = buildSessionContext(branch);
+    expect(portable).toHaveLength(2);
+    expect(portable[0]).toMatchObject({ role: "user" });
+    expect(portable[1]).toMatchObject({ role: "user", content: "keep" });
+    const native = buildSessionModelContext(branch, {
+      provider: "openai",
+      api: "openai-responses",
+      model: "test-model",
+    });
+    expect(native.messages).toEqual([]);
+    expect(native.checkpoint).toMatchObject({ model: "test-model" });
+    const otherModel = buildSessionModelContext(branch, {
+      provider: "openai",
+      api: "openai-responses",
+      model: "other-model",
+    });
+    expect(otherModel.checkpoint).toBeUndefined();
+    expect(otherModel.messages).toEqual(portable);
 
     await harness.close();
     await session.close();
@@ -295,7 +357,7 @@ describe("AgentHarness compaction", () => {
       mainContexts.push(context.messages);
       return messageStream(assistant("done"));
     };
-    const { harness } = await AgentHarness.create({
+    const harness = await AgentHarness.create({
       session,
       streamFn,
       plugins: [inlinePlugin(systemPromptPlugin("agent"))],
@@ -303,9 +365,10 @@ describe("AgentHarness compaction", () => {
       model: model(),
       compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
     });
+    harness.attach();
 
-    const result = await harness.prompt("continue");
-    expect(result.ok).toBe(true);
+    const result = await prompt(harness, "continue");
+    expect(result.outcome.kind).toBe("completed");
     expect(summaryCalls).toBe(1);
     expect(mainContexts).toHaveLength(1);
     expect(mainContexts[0]?.[0]).toMatchObject({ role: "user" });
@@ -336,7 +399,7 @@ describe("AgentHarness compaction", () => {
       }
       return messageStream(assistant("recovered"));
     };
-    const { harness } = await AgentHarness.create({
+    const harness = await AgentHarness.create({
       session,
       streamFn,
       plugins: [inlinePlugin(systemPromptPlugin("agent"))],
@@ -344,11 +407,10 @@ describe("AgentHarness compaction", () => {
       model: model(),
       compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
     });
+    harness.attach();
 
-    const result = await harness.prompt("overflow please");
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.kind).toBe("completed");
+    const result = await prompt(harness, "overflow please");
+    expect(result.outcome.kind).toBe("completed");
     expect(summaryCalls).toBe(1);
     expect(mainCalls).toBe(2);
     expect(retryContexts[1]?.some((message) => message.role === "assistant")).toBe(false);
@@ -372,7 +434,7 @@ describe("AgentHarness compaction", () => {
       mainCalls += 1;
       return messageStream(assistant("complete answer", "stop", usage(1_001, 20)));
     };
-    const { harness } = await AgentHarness.create({
+    const harness = await AgentHarness.create({
       session,
       streamFn,
       plugins: [inlinePlugin(systemPromptPlugin("agent"))],
@@ -380,9 +442,10 @@ describe("AgentHarness compaction", () => {
       model: model(),
       compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
     });
+    harness.attach();
 
-    const result = await harness.prompt("large prompt");
-    expect(result.ok).toBe(true);
+    const result = await prompt(harness, "large prompt");
+    expect(result.outcome.kind).toBe("completed");
     expect(mainCalls).toBe(1);
     expect(summaryCalls).toBe(1);
     expect(await session.findEntries({ type: "compaction" })).toHaveLength(1);
@@ -407,7 +470,7 @@ describe("AgentHarness compaction", () => {
         assistant("", "error", usage(0, 0), "Your input exceeds the context window"),
       );
     };
-    const { harness } = await AgentHarness.create({
+    const harness = await AgentHarness.create({
       session,
       streamFn,
       plugins: [inlinePlugin(systemPromptPlugin("agent"))],
@@ -415,11 +478,10 @@ describe("AgentHarness compaction", () => {
       model: model(),
       compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
     });
+    harness.attach();
 
-    const result = await harness.prompt("overflow twice");
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.kind).toBe("failed");
+    const result = await prompt(harness, "overflow twice");
+    expect(result.outcome.kind).toBe("failed");
     expect(mainCalls).toBe(2);
     expect(summaryCalls).toBe(1);
     expect(await session.findEntries({ type: "compaction" })).toHaveLength(1);
@@ -448,7 +510,7 @@ describe("AgentHarness compaction", () => {
       expect(context.systemPrompt).toBe(SUMMARIZATION_SYSTEM_PROMPT);
       return messageStream(assistant("resumed summary", "stop", usage(10, 5)));
     };
-    const created = await AgentHarness.create({
+    const harness = await AgentHarness.create({
       session,
       streamFn,
       plugins: [inlinePlugin(systemPromptPlugin("agent"))],
@@ -456,21 +518,17 @@ describe("AgentHarness compaction", () => {
       model: model(),
       compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
     });
-    expect(created.suspended).toEqual([
-      expect.objectContaining({ id: operationId, kind: "compaction" }),
-    ]);
 
-    const resumed = await created.harness.resume();
-    expect(resumed.ok).toBe(true);
-    if (!resumed.ok) return;
-    expect(resumed.value).toMatchObject({
+    const resumed = await harness.resume();
+    expect(resumed).toMatchObject({
+      kind: "finished",
       operation: "compaction",
       runId: operationId,
-      kind: "completed",
+      outcome: { kind: "completed" },
     });
     expect(await session.findOpenOperations("main")).toEqual([]);
 
-    await created.harness.close();
+    await harness.close();
     await session.close();
     await repo.close();
   });

@@ -8,6 +8,7 @@
  */
 
 import { readFile as fsReadFile, stat as fsStat, writeFile as fsWriteFile } from "node:fs/promises";
+import { relative } from "node:path";
 import { Unsafe } from "typebox";
 import type { AgentTool, AgentToolResult } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
@@ -15,8 +16,8 @@ import {
   applyEditsToNormalizedContent,
   detectLineEnding,
   type Edit,
-  generateDiffString,
-  generateUnifiedPatch,
+  type FileMutationDetails,
+  generateFileMutationDetails,
   normalizeToLF,
   restoreLineEndings,
   stripBom,
@@ -61,14 +62,7 @@ export interface EditToolInput {
   edits: Edit[];
 }
 
-export interface EditToolDetails {
-  /** Display-oriented diff of the changes made */
-  diff: string;
-  /** Standard unified patch of the changes made */
-  patch: string;
-  /** Line number of the first change in the new file (for editor navigation) */
-  firstChangedLine?: number;
-}
+export type EditToolDetails = FileMutationDetails;
 
 function editAccessError(path: string, error: unknown): Error {
   const code =
@@ -129,9 +123,16 @@ export function createEditTool(
 ): AgentTool<typeof editParametersSchema, EditToolDetails> {
   return {
     name: "edit",
-    label: "edit",
     description:
       "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+    promptSnippet:
+      "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
+    promptGuidelines: [
+      "Use edit for precise changes (edits[].oldText must match exactly)",
+      "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+      "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
+      "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+    ],
     parameters: editParametersSchema,
     prepareArguments: parseEditInput,
     async execute(_toolCallId, { path, edits }, signal): Promise<AgentToolResult<EditToolDetails>> {
@@ -191,11 +192,10 @@ export function createEditTool(
         }
         throwIfAborted();
 
-        const diffResult = generateDiffString(baseContent, newContent);
-        const patch = generateUnifiedPatch(path, baseContent, newContent);
         return {
-          content: toolResultContent(`Successfully replaced ${edits.length} block(s) in ${path}.`),
-          details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
+          content: toolResultContent(`Replaced ${edits.length} block(s) in ${path}.`),
+          details: generateFileMutationDetails(path, baseContent, newContent),
+          title: relative(cwd, absolutePath),
         };
       });
     },

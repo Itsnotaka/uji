@@ -6,9 +6,8 @@ const withMDX = createMDX();
 const config = {
   reactStrictMode: true,
 
-  // Memoises components and hooks at build time, so the marketing pages and the
-  // Mermaid client component stop re-rendering on unrelated state changes
-  // without hand-written useMemo.
+  // Memoises components and hooks at build time so marketing pages stop
+  // re-rendering on unrelated state changes without hand-written useMemo.
   reactCompiler: true,
 
   // Everything dynamic must sit behind an explicit `use cache` or a Suspense
@@ -17,10 +16,8 @@ const config = {
   cacheComponents: true,
 
   experimental: {
-    // Mermaid is the heaviest dependency here and only loads on pages that
-    // contain a diagram; barrel-file tree-shaking keeps Lucide out of the
-    // shared chunk too.
-    optimizePackageImports: ["lucide-react", "mermaid"],
+    // Barrel-file tree-shaking keeps Lucide out of the shared chunk.
+    optimizePackageImports: ["lucide-react"],
   },
 };
 

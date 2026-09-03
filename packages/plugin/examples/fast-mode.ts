@@ -4,7 +4,8 @@
  * requests while enabled. Nothing is contributed for a model that does not
  * advertise the mode, so the command and setting exist only where they can
  * run. The value lives in plugin storage only; every read goes there, so a
- * fresh host sees the same state the last one wrote.
+ * fresh host sees the same state the last one wrote. The setting declares that
+ * storage key, so any host resolves and moves the value.
  */
 import { definePlugin } from "@uji-ai/plugin";
 import type { Api, JsonValue, Model } from "@uji-ai/schema";
@@ -30,7 +31,7 @@ function supportsFastMode(model: Model<Api>): boolean {
 export async function readFastMode(session: SessionFacts, model: Model<Api>): Promise<boolean> {
   if (!supportsFastMode(model)) return false;
   const fact = await session.getFact(`plugin:${FAST_MODE_PLUGIN_ID}:${enabledKey(model)}`);
-  return fact === true;
+  return fact === "on";
 }
 
 export function fastModePlugin(model: Model<Api>) {
@@ -39,12 +40,17 @@ export function fastModePlugin(model: Model<Api>) {
     session(api) {
       if (!supportsFastMode(model)) return;
       const key = enabledKey(model);
-      const read = async (): Promise<boolean> => (await api.storage.get(key)) === true;
-      const write = (enabled: boolean): Promise<void> => api.storage.set(key, enabled);
+      const read = async (): Promise<boolean> => (await api.storage.get(key)) === "on";
+      const write = (enabled: boolean): Promise<void> =>
+        api.storage.set(key, enabled ? "on" : "off");
 
+      // The setting declares `key`; the harness reads and writes it, so the
+      // settings menu and `/fast` below move the same durable fact.
       api.settings.add((settings) =>
         settings.set("fast", {
           label: "Fast mode",
+          key,
+          fallback: "off",
           choices: [
             {
               id: "on",
@@ -54,8 +60,6 @@ export function fastModePlugin(model: Model<Api>) {
             },
             { id: "off", label: "off", description: "Standard processing" },
           ],
-          read: async () => ((await read()) ? "on" : "off"),
-          apply: (choiceId) => write(choiceId === "on"),
         }),
       );
 

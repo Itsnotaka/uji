@@ -8,10 +8,11 @@
  * Shape from opencode v2 `Plugin.activate` (packages/core/src/plugin.ts).
  */
 import type { Skill } from "@uji-ai/schema";
-import type { HarnessEvent, HarnessTool } from "../harness/agent-harness.ts";
+import type { HarnessTool } from "../harness/agent-harness.ts";
 import type { Hooks } from "../harness/hooks.ts";
 import type { SessionStorage } from "../harness/session/types.ts";
 import { Result, type Result as ResultValue } from "../harness/result.ts";
+import type { EphemeralEvent } from "../sdk/types.ts";
 import { bindSessionApi } from "./api.ts";
 import {
   ContributionRegistry,
@@ -21,8 +22,7 @@ import {
 } from "./registry.ts";
 import { PluginScope } from "./scope.ts";
 import type {
-  AskAnswer,
-  AskRequest,
+  Agent,
   Command,
   Disposer,
   LoadedPlugin,
@@ -33,6 +33,7 @@ import type {
 } from "./types.ts";
 
 export interface HarnessRegistries {
+  readonly agents: ContributionRegistry<Agent, MapDraft<Agent>>;
   readonly tools: ContributionRegistry<HarnessTool, ToolDraftImpl>;
   readonly commands: ContributionRegistry<Command, MapDraft<Command>>;
   readonly prompt: ContributionRegistry<PromptSection, MapDraft<PromptSection>>;
@@ -42,6 +43,7 @@ export interface HarnessRegistries {
 
 export function createRegistries(): HarnessRegistries {
   return {
+    agents: new ContributionRegistry(() => new MapDraft<Agent>()),
     tools: new ContributionRegistry(() => new ToolMapDraft()),
     commands: new ContributionRegistry(() => new MapDraft<Command>()),
     prompt: new ContributionRegistry(() => new MapDraft<PromptSection>()),
@@ -56,14 +58,10 @@ export interface PluginHostTarget {
   readonly registries: HarnessRegistries;
   readonly session: SessionStorage;
   readonly env: PluginEnv;
-  subscribe(listener: (event: HarnessEvent) => void | Promise<void>): Disposer;
-  ask<TRequest extends AskRequest>(
-    pluginId: string,
-    request: TRequest,
-  ): Promise<AskAnswer<TRequest>>;
-  /** Replay every registry and emit `config_update` for each one that changed. */
+  subscribe(listener: (event: EphemeralEvent) => void | Promise<void>): Disposer;
+  /** Replay every registry; a contribution that throws is reported as a diagnostic. */
   rebuildAll(): void;
-  emit(event: HarnessEvent): Promise<void>;
+  emit(event: EphemeralEvent): Promise<void>;
 }
 
 interface ActivePlugin {
@@ -136,7 +134,7 @@ export class PluginHost {
 
     if (changed) this.target.rebuildAll();
     this.inventory = info;
-    if (changed) await this.target.emit({ type: "plugin_updated", plugins: info });
+    if (changed) await this.target.emit({ kind: "plugins_changed", plugins: info });
     return info;
   }
 
@@ -145,16 +143,14 @@ export class PluginHost {
     order: number,
   ): Promise<ResultValue<ActivePlugin, string>> {
     const scope = new PluginScope(plugin.id, (error) => {
-      const event: HarnessEvent = {
-        type: "handler_error",
-        kind: "plugin",
-        plugin: plugin.id,
-        error: error.message,
-      };
-      if (error.stack !== undefined) event.stack = error.stack;
-      void this.target.emit(event);
+      void this.target.emit({
+        kind: "diagnostic",
+        owner: `plugin ${plugin.id}`,
+        level: "error",
+        message: error.message,
+      });
     });
-    const api = bindSessionApi(this.target, this, plugin, scope, order);
+    const api = bindSessionApi(this.target, plugin, scope, order);
     try {
       await plugin.module.session(api);
       return Result.ok({ plugin, scope });

@@ -5,16 +5,11 @@ import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import type { AssistantMessage, AssistantMessageEvent, Model, Usage } from "@uji-ai/ai";
 import { EventStream } from "@uji-ai/ai";
-import {
-  AgentHarness,
-  buildSystemPrompt,
-  DEFAULT_SELECTED_TOOLS,
-  DEFAULT_TOOL_SNIPPETS,
-  inlinePlugin,
-  SqliteSessionRepo,
-  systemPromptPlugin,
-} from "../src/index.ts";
 import type { StreamFn } from "../src/types.ts";
+import { AgentHarness } from "../src/harness/agent-harness.ts";
+import { buildSystemPrompt } from "../src/plugins/builtin/system-prompt.ts";
+import { inlinePlugin, systemPromptPlugin } from "../src/plugins/index.ts";
+import { SqliteSessionRepo } from "../src/store.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -70,39 +65,25 @@ const streamFn: StreamFn = () => {
 
 void describe("buildSystemPrompt", () => {
   void test("default prompt lists uji tools and cwd, with no guidelines section", () => {
-    const prompt = buildSystemPrompt({ cwd: String.raw`C:\work\uji` });
+    const prompt = buildSystemPrompt(String.raw`C:\work\uji`);
 
     assert.match(
       prompt,
       /You are an expert coding assistant operating inside uji, a coding agent harness/,
     );
-    const toolsList = DEFAULT_SELECTED_TOOLS.map(
-      (name) => `- ${name}: ${DEFAULT_TOOL_SNIPPETS[name]}`,
-    ).join("\n");
-    assert.ok(prompt.includes(`Available tools:\n${toolsList}`));
+    assert.ok(
+      prompt.includes(
+        "Available tools:\n- read: Read file contents\n- bash: Execute bash commands\n- edit: ",
+      ),
+    );
+    assert.ok(
+      prompt.includes("\n- write: Create or overwrite files\n- ls: List directory contents\n"),
+    );
+    assert.doesNotMatch(prompt, /\b(?:rg|ripgrep)\b/iu);
+    assert.doesNotMatch(prompt, /^- (grep|find):/m);
     assert.match(prompt, /Current working directory: C:\/work\/uji$/);
     assert.equal(prompt.includes("Guidelines:"), false);
     assert.equal(prompt.includes("Pi documentation"), false);
-  });
-
-  void test("promptGuidelines become a Guidelines section; empty entries are skipped", () => {
-    const prompt = buildSystemPrompt({
-      cwd: "/tmp",
-      promptGuidelines: [" Prefer diffs. ", "", "Prefer diffs."],
-    });
-    assert.match(prompt, /Guidelines:\n- Prefer diffs\.\n\nCurrent working directory: \/tmp$/);
-  });
-
-  void test("customPrompt replaces the body and still appends cwd", () => {
-    const prompt = buildSystemPrompt({
-      cwd: "/repo",
-      customPrompt: "You are a reviewer.",
-      appendSystemPrompt: "Prefer diffs.",
-    });
-    assert.equal(
-      prompt,
-      "You are a reviewer.\n\nPrefer diffs.\nCurrent working directory: /repo\n",
-    );
   });
 });
 
@@ -112,7 +93,7 @@ void describe("systemPromptPlugin", () => {
     directories.push(directory);
     const repo = new SqliteSessionRepo(join(directory, "sessions.db"));
     const session = await repo.create();
-    const { harness } = await AgentHarness.create({
+    const harness = await AgentHarness.create({
       session,
       streamFn,
       plugins: [inlinePlugin(systemPromptPlugin())],
@@ -121,7 +102,7 @@ void describe("systemPromptPlugin", () => {
     });
     try {
       const prompt = harness.getSystemPrompt();
-      assert.equal(prompt, buildSystemPrompt({ cwd: directory }));
+      assert.equal(prompt, buildSystemPrompt(directory));
     } finally {
       await harness.close();
       await session.close();
@@ -134,7 +115,7 @@ void describe("systemPromptPlugin", () => {
     directories.push(directory);
     const repo = new SqliteSessionRepo(join(directory, "sessions.db"));
     const session = await repo.create();
-    const { harness } = await AgentHarness.create({
+    const harness = await AgentHarness.create({
       session,
       streamFn,
       plugins: [inlinePlugin(systemPromptPlugin("base"))],

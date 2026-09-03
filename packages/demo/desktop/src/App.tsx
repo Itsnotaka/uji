@@ -1,4 +1,5 @@
 import { Button } from "@uji-ai/ui";
+import type { SessionEvent, SessionId } from "@uji-ai/core";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { AgentDraft, AgentId } from "./agents.ts";
@@ -9,7 +10,7 @@ import { SettingsDialog, type ThemePreference } from "./components/settings-dial
 import { Sidebar } from "./components/sidebar.tsx";
 import type { OptimisticMessage } from "./components/transcript.tsx";
 import type {
-  LiveToolEvent,
+  LivePart,
   RuntimeSettingsChange,
   UjiDesktopEvent,
   UjiSnapshot,
@@ -17,10 +18,10 @@ import type {
 
 interface LiveState {
   stopping: boolean;
-  streamingText: string;
-  thinkingText: string;
-  tools: Record<string, LiveToolEvent>;
+  parts: readonly LivePart[];
 }
+
+type DeltaEvent = Extract<SessionEvent, { kind: "reasoning_delta" | "text_delta" }>;
 
 type ReadyView = UjiSnapshot & {
   loading: boolean;
@@ -46,8 +47,15 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [detailsWidth, setDetailsWidth] = useState(readDetailsWidth);
-  const textBuffer = useRef(new Map<string, string>());
-  const thinkingBuffer = useRef(new Map<string, string>());
+  const deltaBuffer = useRef(
+    new Map<
+      string,
+      {
+        part: Extract<LivePart, { kind: "text" | "thinking" }>;
+        sessionId: SessionId;
+      }
+    >(),
+  );
   const deltaFrame = useRef<number | undefined>(undefined);
   const noticeCount = useRef(0);
   const actionQueue = useRef<Promise<void>>(Promise.resolve());
@@ -75,85 +83,141 @@ export function App() {
     function cancelDeltaFrame(): void {
       if (deltaFrame.current !== undefined) cancelAnimationFrame(deltaFrame.current);
       deltaFrame.current = undefined;
-      textBuffer.current.clear();
-      thinkingBuffer.current.clear();
+      deltaBuffer.current.clear();
     }
 
     function flushDeltas(): void {
       deltaFrame.current = undefined;
-      const textBySession = textBuffer.current;
-      const thinkingBySession = thinkingBuffer.current;
-      textBuffer.current = new Map();
-      thinkingBuffer.current = new Map();
+      const buffered = deltaBuffer.current;
+      deltaBuffer.current = new Map();
       if (!active) return;
       updateReady(setState, (view) => {
         const sessionId = view.activeSessionId;
         if (sessionId === null) return view;
-        const text = textBySession.get(sessionId) ?? "";
-        const thinking = thinkingBySession.get(sessionId) ?? "";
-        if (text === "" && thinking === "") return view;
+        let parts = view.rendererLive.parts;
+        for (const delta of buffered.values()) {
+          if (delta.sessionId === sessionId) parts = appendLiveDelta(parts, delta.part);
+        }
+        if (parts === view.rendererLive.parts) return view;
         return {
           ...view,
           running: true,
-          rendererLive: {
-            ...view.rendererLive,
-            streamingText: view.rendererLive.streamingText + text,
-            thinkingText: view.rendererLive.thinkingText + thinking,
-          },
+          rendererLive: { ...view.rendererLive, parts },
         };
       });
     }
 
-    function bufferDelta(sessionId: string, kind: "text" | "thinking", text: string): void {
-      const buffer = kind === "text" ? textBuffer.current : thinkingBuffer.current;
-      buffer.set(sessionId, (buffer.get(sessionId) ?? "") + text);
+    function bufferDelta(sessionId: SessionId, event: DeltaEvent): void {
+      const kind = event.kind === "text_delta" ? "text" : "thinking";
+      const key = `${sessionId}:${kind}:${event.entryId}:${String(event.contentIndex)}`;
+      const current = deltaBuffer.current.get(key);
+      deltaBuffer.current.set(key, {
+        sessionId,
+        part: {
+          kind,
+          contentIndex: event.contentIndex,
+          entryId: event.entryId,
+          text: (current?.part.text ?? "") + event.delta,
+        },
+      });
       deltaFrame.current ??= requestAnimationFrame(flushDeltas);
+    }
+
+    function setSessionRunning(sessionId: SessionId, running: boolean): void {
+      updateReady(setState, (view) => {
+        const conversations = view.conversations.map((conversation) =>
+          conversation.id === sessionId ? { ...conversation, running } : conversation,
+        );
+        if (view.activeSessionId !== sessionId) return { ...view, conversations };
+        return {
+          ...view,
+          conversations,
+          running,
+          rendererLive: running
+            ? { ...(view.running ? view.rendererLive : emptyLiveState()), stopping: false }
+            : emptyLiveState(),
+        };
+      });
     }
 
     function handleEvent(event: UjiDesktopEvent): void {
       if (!active) return;
       switch (event.type) {
-        case "delta":
-          bufferDelta(event.sessionId, "text", event.text);
-          return;
-        case "thinking-delta":
-          bufferDelta(event.sessionId, "thinking", event.text);
-          return;
-        case "tool":
-          updateReady(setState, (view) =>
-            view.activeSessionId === event.sessionId
-              ? {
-                  ...view,
-                  rendererLive: {
-                    ...view.rendererLive,
-                    tools: { ...view.rendererLive.tools, [event.tool.callId]: event.tool },
-                  },
+        case "session":
+          switch (event.event.kind) {
+            case "text_delta":
+            case "reasoning_delta":
+              bufferDelta(event.sessionId, event.event);
+              return;
+            case "tool_progress": {
+              const part: LivePart = {
+                kind: "tool",
+                callId: event.event.callId,
+                entryId: event.event.entryId,
+                progress: event.event.progress,
+              };
+              updateReady(setState, (view) =>
+                view.activeSessionId === event.sessionId
+                  ? {
+                      ...view,
+                      rendererLive: {
+                        ...view.rendererLive,
+                        parts: upsertLivePart(view.rendererLive.parts, part),
+                      },
+                    }
+                  : view,
+              );
+              return;
+            }
+            case "run_started":
+              setSessionRunning(event.sessionId, true);
+              return;
+            case "run_finished":
+              if (deltaFrame.current !== undefined) flushDeltas();
+              setSessionRunning(event.sessionId, false);
+              return;
+            case "message": {
+              const entryId = event.event.entryId;
+              for (const [key, delta] of deltaBuffer.current) {
+                if (delta.sessionId === event.sessionId && delta.part.entryId === entryId) {
+                  deltaBuffer.current.delete(key);
                 }
-              : view,
-          );
-          return;
-        case "running":
-          if (!event.running && deltaFrame.current !== undefined) flushDeltas();
-          updateReady(setState, (view) => {
-            const conversations = view.conversations.map((conversation) =>
-              conversation.id === event.sessionId
-                ? { ...conversation, running: event.running }
-                : conversation,
-            );
-            if (view.activeSessionId !== event.sessionId) return { ...view, conversations };
-            return {
-              ...view,
-              conversations,
-              running: event.running,
-              rendererLive: event.running
-                ? {
-                    ...(view.running ? view.rendererLive : emptyLiveState()),
-                    stopping: false,
-                  }
-                : { ...view.rendererLive, stopping: false },
-            };
-          });
-          return;
+              }
+              updateReady(setState, (view) =>
+                view.activeSessionId === event.sessionId
+                  ? {
+                      ...view,
+                      rendererLive: {
+                        ...view.rendererLive,
+                        parts: dropLiveEntry(view.rendererLive.parts, entryId),
+                      },
+                    }
+                  : view,
+              );
+              return;
+            }
+            case "retry_scheduled":
+            case "retry_started":
+            case "compacting":
+              setSessionRunning(event.sessionId, true);
+              return;
+            case "claim":
+            case "compaction":
+            case "diagnostic":
+            case "head_moved":
+            case "name_changed":
+            case "plugins_changed":
+            case "queue_cancelled":
+            case "queue_consumed":
+            case "queued":
+            case "run_waiting":
+            case "synced":
+              return;
+            default: {
+              const exhaustive: never = event.event;
+              return exhaustive;
+            }
+          }
         case "status":
           pushNotice(event.message, "info");
           return;
@@ -338,7 +402,7 @@ export function App() {
     });
   }
 
-  function selectConversation(sessionId: string): void {
+  function selectConversation(sessionId: SessionId): void {
     if (state.kind !== "ready" || state.view.activeSessionId === sessionId) return;
     const target = state.view.conversations.find((conversation) => conversation.id === sessionId);
     if (target === undefined) return;
@@ -409,7 +473,7 @@ export function App() {
     });
   }
 
-  function renameConversation(sessionId: string, name: string): void {
+  function renameConversation(sessionId: SessionId, name: string): void {
     void runAction("rename-conversation", () =>
       window.uji.renameConversation(sessionId, name),
     ).then((ok) => {
@@ -517,8 +581,7 @@ export function App() {
             connecting={pendingAction === "login"}
             detailsOpen={detailsOpen}
             draft={draft}
-            liveThinking={view.rendererLive.thinkingText}
-            liveTools={Object.values(view.rendererLive.tools)}
+            liveParts={view.rendererLive.parts}
             loading={view.loading}
             notices={view.notices}
             onAbort={abort}
@@ -533,7 +596,6 @@ export function App() {
             onSend={(message) => void sendMessage(message)}
             snapshot={view}
             stopping={view.rendererLive.stopping}
-            streamingText={view.rendererLive.streamingText}
             waiting={pendingAction === "runtime"}
             {...(activeConversation === undefined ? {} : { conversation: activeConversation })}
             {...(optimisticMessage === undefined ? {} : { optimisticMessage })}
@@ -618,7 +680,7 @@ function focusComposer(): void {
 }
 
 function emptyLiveState(): LiveState {
-  return { stopping: false, streamingText: "", thinkingText: "", tools: {} };
+  return { stopping: false, parts: [] };
 }
 
 /** Clears the transcript while the host opens another session, so switching feels immediate. */
@@ -657,14 +719,39 @@ function mergeSnapshot(current: ReadyView | undefined, snapshot: UjiSnapshot): R
 }
 
 function toLiveState(live: UjiSnapshot["live"]): LiveState {
-  const tools: Record<string, LiveToolEvent> = {};
-  for (const tool of live.tools) tools[tool.callId] = tool;
-  return {
-    stopping: false,
-    streamingText: live.streamingText,
-    thinkingText: live.thinkingText,
-    tools,
-  };
+  return { stopping: false, parts: live.parts };
+}
+
+function appendLiveDelta(
+  parts: readonly LivePart[],
+  delta: Extract<LivePart, { kind: "text" | "thinking" }>,
+): readonly LivePart[] {
+  const index = parts.findIndex(
+    (part) =>
+      part.kind === delta.kind &&
+      part.entryId === delta.entryId &&
+      part.contentIndex === delta.contentIndex,
+  );
+  if (index < 0) return [...parts, delta];
+  const current = parts[index];
+  if (current?.kind !== delta.kind) return parts;
+  return parts.with(index, { ...delta, text: current.text + delta.text });
+}
+
+function upsertLivePart(parts: readonly LivePart[], next: LivePart): readonly LivePart[] {
+  const index = parts.findIndex((part) =>
+    next.kind === "tool" && part.kind === "tool"
+      ? part.callId === next.callId
+      : next.kind !== "tool" &&
+        part.kind === next.kind &&
+        part.entryId === next.entryId &&
+        part.contentIndex === next.contentIndex,
+  );
+  return index < 0 ? [...parts, next] : parts.with(index, next);
+}
+
+function dropLiveEntry(parts: readonly LivePart[], entryId: string): readonly LivePart[] {
+  return parts.filter((part) => part.entryId !== entryId);
 }
 
 function updateReady(
@@ -683,7 +770,7 @@ function readTheme(): ThemePreference {
 
 function readSidebarWidth(): number {
   const stored = localStorage.getItem("uji.sidebar-width");
-  if (stored === null) return 280;
+  if (stored === null) return 300;
   const value = Number(stored);
   return Number.isFinite(value) ? Math.min(400, Math.max(240, value)) : 280;
 }

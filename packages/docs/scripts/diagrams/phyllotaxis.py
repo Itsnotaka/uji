@@ -7,7 +7,7 @@ seeds the same way: no seed is told where to go, and the arrangement falls out
 of one rule applied to every seed in turn.
 
 The rule is Vogel's: the nth seed sits at radius c*sqrt(n) and angle n*137.507
-degrees, the golden angle. Seven seeds are marked — the seven built-in coding
+degrees, the golden angle. Five seeds are marked — the five built-in coding
 tools — and they are marked by index, so which ones light up is a consequence
 of the packing rather than a choice about where to put a highlight.
 """
@@ -21,10 +21,10 @@ from _canvas import ACCENT, CX, CY, INK, Canvas, emit, point
 GOLDEN_ANGLE = math.radians(137.507764)
 SEEDS = 420
 SCALE = 4.1
-# The seven built-ins. Consecutive indices sit a golden angle apart, so
+# The five built-ins. Consecutive indices sit a golden angle apart, so
 # stepping by an odd stride spreads them over the head instead of stacking
 # them along one parastichy.
-MARKED = tuple(24 + index * 57 for index in range(7))
+MARKED = tuple(24 + index * 57 for index in range(5))
 
 
 def build() -> Canvas:

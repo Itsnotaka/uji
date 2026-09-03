@@ -39,7 +39,7 @@ export type UpdateProgress =
   | { kind: "percent"; percent: number }
   | { kind: "verified" };
 
-export interface UpdateOptions {
+interface UpdateOptions {
   /** Install this release instead of the newest one. A leading `v` is fine. */
   version?: string;
   /** Progress events, one at a time, in the order they happen. */
@@ -62,7 +62,7 @@ export function releaseAssetName(
 }
 
 /** The hex digest from a `sha256sum`/`shasum` line: `<hex>  <file>`. */
-export function parseSha256(text: string): string | undefined {
+function parseSha256(text: string): string | undefined {
   const digest = text.trim().split(/\s+/u)[0]?.toLowerCase();
   return digest !== undefined && /^[0-9a-f]{64}$/u.test(digest) ? digest : undefined;
 }

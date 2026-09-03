@@ -62,7 +62,7 @@ export default function Layout({ children }: LayoutProps<"/">) {
       className={`${inter.variable} ${geist.variable} ${berkeleyMono.variable} ${newsreader.variable} ${inter.className}`}
       suppressHydrationWarning
     >
-      <body className="flex flex-col min-h-screen">
+      <body className="flex min-h-screen flex-col">
         <RootProvider>{children}</RootProvider>
       </body>
     </html>

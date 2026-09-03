@@ -230,13 +230,7 @@ function validateName(name: string, parentDirectoryName: string): string[] {
   if (name.length > MAX_NAME_LENGTH) {
     messages.push(`name exceeds ${MAX_NAME_LENGTH} characters (${name.length})`);
   }
-  const validCharacters = [...name].every(
-    (character) =>
-      (character >= "a" && character <= "z") ||
-      (character >= "0" && character <= "9") ||
-      character === "-",
-  );
-  if (!validCharacters) {
+  if (!/^[a-z0-9-]*$/.test(name)) {
     messages.push("name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)");
   }
   if (name.startsWith("-") || name.endsWith("-")) {

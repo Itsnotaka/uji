@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Uji</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; font-src 'self' data:"
+    />
+  </head>
+  <body>
+    <div id="root">
+      <div class="boot-shell" aria-hidden="true">
+        <div class="boot-titlebar"></div>
+        <div class="boot-stage">
+          <aside class="boot-sidebar">
+            <div class="boot-sidebar-row">
+              <span class="boot-sidebar-icon"></span>
+              <span class="boot-sidebar-line boot-sidebar-line-primary"></span>
+            </div>
+            <div class="boot-sidebar-search"></div>
+            <div class="boot-sidebar-section">
+              <span class="boot-sidebar-line boot-sidebar-line-section"></span>
+              <div class="boot-sidebar-row">
+                <span class="boot-sidebar-icon"></span>
+                <span class="boot-sidebar-line boot-sidebar-line-secondary"></span>
+              </div>
+              <div class="boot-sidebar-row">
+                <span class="boot-sidebar-icon"></span>
+                <span class="boot-sidebar-line boot-sidebar-line-tertiary"></span>
+              </div>
+            </div>
+          </aside>
+          <main class="boot-surface"></main>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

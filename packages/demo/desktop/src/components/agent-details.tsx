@@ -27,6 +27,7 @@ import {
   type AgentTone,
 } from "../agents.ts";
 import type { ConversationSummary, UjiSnapshot } from "../desktop-api.ts";
+import { AgentAvatar } from "./agent-avatar.tsx";
 
 export function AgentDetails({
   agent,
@@ -121,6 +122,14 @@ export function AgentDetails({
       </header>
       <div className="details-scroll">
         <div className="details-form">
+          <div className="editor-identity">
+            <AgentAvatar agent={{ avatar: draft.avatar, name: draft.name }} size="xl" />
+            <TonePicker
+              disabled={pending}
+              onChange={(avatar) => saveDraft({ ...draft, avatar })}
+              value={draft.avatar}
+            />
+          </div>
           <FormField label="Name">
             <Input
               disabled={pending}
@@ -149,11 +158,6 @@ export function AgentDetails({
               value={draft.instructions}
             />
           </FormField>
-          <TonePicker
-            disabled={pending}
-            onChange={(avatar) => saveDraft({ ...draft, avatar })}
-            value={draft.avatar}
-          />
         </div>
 
         <section className="details-section">
@@ -246,13 +250,25 @@ export function CreateAgentDialog({
       <DialogContent className="agent-editor-dialog">
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>Create an assistant</DialogTitle>
-            <DialogDescription>
-              Give it a clear job and instructions. You can change both later.
+            <DialogTitle>New assistant</DialogTitle>
+            <DialogDescription className="visually-hidden">
+              Name it and give it a job. The face is drawn from the name; pick a colour if you like.
+              Everything can change later.
             </DialogDescription>
           </DialogHeader>
-          <div className="dialog-form">
-            <FormField label="Name">
+
+          <div className="editor-identity">
+            <AgentAvatar agent={{ avatar: draft.avatar, name: draft.name }} size="xl" />
+            <TonePicker
+              disabled={pending}
+              onChange={(avatar) => setDraft({ ...draft, avatar })}
+              value={draft.avatar}
+            />
+          </div>
+
+          <div className="field-group">
+            <label className="field-row">
+              <span>Name</span>
               <Input
                 autoFocus
                 disabled={pending}
@@ -261,30 +277,31 @@ export function CreateAgentDialog({
                 required
                 value={draft.name}
               />
-            </FormField>
-            <FormField label="Role">
+            </label>
+            <label className="field-row">
+              <span>Role</span>
               <Input
                 disabled={pending}
                 onChange={(event) => setDraft({ ...draft, role: event.target.value })}
-                placeholder="Research lead"
+                placeholder="What it does"
                 value={draft.role}
               />
-            </FormField>
-            <FormField label="Instructions">
+            </label>
+          </div>
+
+          <div className="field-group">
+            <label className="field-row" data-multiline="true">
+              <span>Instructions</span>
               <Textarea
                 disabled={pending}
                 onChange={(event) => setDraft({ ...draft, instructions: event.target.value })}
-                placeholder="Evaluate the evidence and finish with a clear recommendation."
-                rows={5}
+                placeholder="How should it work? Tone, scope, what to leave alone."
+                rows={4}
                 value={draft.instructions}
               />
-            </FormField>
-            <TonePicker
-              disabled={pending}
-              onChange={(avatar) => setDraft({ ...draft, avatar })}
-              value={draft.avatar}
-            />
+            </label>
           </div>
+
           <DialogFooter>
             <Button disabled={pending} onClick={() => onOpenChange(false)} variant="outline">
               Cancel
@@ -310,19 +327,18 @@ function TonePicker({
 }) {
   return (
     <fieldset className="tone-picker" disabled={disabled}>
-      <legend>Avatar color</legend>
-      <div>
-        {agentTones.map((tone) => (
-          <button
-            aria-label={tone}
-            aria-pressed={tone === value}
-            data-tone={tone}
-            key={tone}
-            onClick={() => onChange(tone)}
-            type="button"
-          />
-        ))}
-      </div>
+      <legend className="visually-hidden">Colour</legend>
+      {agentTones.map((tone) => (
+        <button
+          aria-label={tone === "neutral" ? "Colour from the name" : tone}
+          aria-pressed={tone === value}
+          data-tone={tone}
+          key={tone}
+          onClick={() => onChange(tone)}
+          title={tone === "neutral" ? "From the name" : titleCase(tone)}
+          type="button"
+        />
+      ))}
     </fieldset>
   );
 }
@@ -395,6 +411,10 @@ function sameDraft(left: AgentDraft, right: AgentDraft): boolean {
 
 function emptyDraft(): AgentDraft {
   return { name: "", role: "", instructions: "", avatar: randomAgentTone() };
+}
+
+function titleCase(value: string): string {
+  return value.charAt(0).toLocaleUpperCase() + value.slice(1);
 }
 
 function formatTokens(value: number): string {

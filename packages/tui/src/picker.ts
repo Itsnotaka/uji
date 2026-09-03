@@ -12,6 +12,7 @@ import type { CliRenderer, KeyEvent } from "@opentui/core";
 import { MenuList } from "./menu-list.ts";
 import type { MenuItem } from "./menu-list.ts";
 import { GLYPHS } from "./constants.ts";
+import { bindSemantics } from "./semantics.ts";
 import type { CliTheme } from "./theme.ts";
 
 export type Choice = MenuItem;
@@ -60,6 +61,12 @@ interface InlineMenuOptions {
   theme: CliTheme;
   nextId?: (prefix?: string) => string;
   onError?: (error: unknown) => void;
+  /**
+   * The panel's row count, whenever filtering or a new screen changes it. The
+   * shell borrows exactly this many rows from the transcript, so the number
+   * has to arrive with the change rather than a layout pass later.
+   */
+  onRows?: (rows: number) => void;
 }
 
 function consume(key: KeyEvent): void {
@@ -76,7 +83,7 @@ function filterChoices(choices: readonly Choice[], value: string): readonly Choi
   if (query.length === 0) return choices;
   return choices.filter((choice) => {
     const searchable =
-      `${choice.label} ${choice.description ?? ""} ${choice.id}`.toLocaleLowerCase();
+      `${choice.label} ${choice.description ?? ""} ${choice.status?.text ?? ""} ${choice.id}`.toLocaleLowerCase();
     return query.every((part) => searchable.includes(part));
   });
 }
@@ -85,6 +92,10 @@ const MAX_ROWS = 10;
 // Composer, powerline, panel padding, the search row, and the global hint row
 // take six terminal rows before the list gets any.
 const CHROME_ROWS = 7;
+/** The panel's own rows: padding above, the search row, padding below. */
+const PANEL_CHROME_ROWS = 3;
+const COUNT_MIN_WIDTH = 48;
+const TITLE_MIN_WIDTH = 32;
 /**
  * The composer spends a border column and a padding column on each side, so
  * matching its inner span means two columns on the left, under the prompt
@@ -99,8 +110,9 @@ const PADDING_RIGHT = 1;
  * command is the same gesture, so all of them take the same chrome instead of
  * a window over the chat.
  *
- * Based on Grok Build's slash dropdown:
- * https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/src/views/slash_dropdown.rs
+ * It mounts in the ephemeral slot, which is why it declares `rows`.
+ *
+ * Based on https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/src/views/slash_dropdown.rs
  */
 export class InlineMenu {
   readonly container: BoxRenderable;
@@ -113,6 +125,7 @@ export class InlineMenu {
   private readonly count: TextRenderable;
   private readonly empty: TextRenderable;
   private readonly onError: (error: unknown) => void;
+  private readonly onRows: (rows: number) => void;
   private screen: MenuScreen;
   private choices: readonly Choice[];
   private matches: readonly Choice[];
@@ -125,6 +138,7 @@ export class InlineMenu {
     this.renderer = options.renderer;
     this.theme = options.theme;
     this.onError = options.onError ?? (() => undefined);
+    this.onRows = options.onRows ?? (() => undefined);
     this.screen = screen;
     this.choices = screen.choices;
     this.matches = screen.choices;
@@ -135,8 +149,8 @@ export class InlineMenu {
       id: nextId("menu-panel"),
       flexShrink: 0,
       flexDirection: "column",
-      // No panel fill: the menu belongs to the composer, not to a window over
-      // it. Only the selected row takes a background.
+      // The ephemeral slot paints the opaque fill; only the selected row adds
+      // a background of its own.
       backgroundColor: theme.transparent,
       marginLeft: 1,
       marginRight: 1,
@@ -145,6 +159,7 @@ export class InlineMenu {
       paddingTop: 1,
       paddingBottom: 1,
     });
+    bindSemantics(this.container, () => ({ role: "dialog", label: this.screen.title }));
 
     const queryRow = new BoxRenderable(options.renderer, {
       id: nextId("menu-query-row"),
@@ -209,8 +224,21 @@ export class InlineMenu {
     options.renderer.keyInput.on("keypress", this.onKeyPress);
     options.renderer.on(CliRenderEvents.RESIZE, this.onResize);
     this.queryInput.on(InputRenderableEvents.INPUT, this.onInput);
+    this.applyWidth(options.renderer.width);
     this.repaintStatus();
     this.startLoad();
+  }
+
+  /**
+   * Rows the panel needs right now. The shell sizes the ephemeral slot from
+   * this in the same tick the list changes, so it is declared rather than
+   * read back from a layout pass.
+   */
+  get rows(): number {
+    return (
+      PANEL_CHROME_ROWS +
+      Math.max(1, Math.min(this.matches.length, this.maxVisibleForHeight(this.renderer.height)))
+    );
   }
 
   /** Keycap row for the shell's hint line while this menu owns the input. */
@@ -268,6 +296,7 @@ export class InlineMenu {
         this.choices = choices;
         this.matches = filterChoices(choices, this.queryInput.value);
         this.list.setItems(this.matches, this.indexOf(highlighted ?? screen.selectedId));
+        this.onRows(this.rows);
       })
       .catch(this.onError)
       .finally(() => {
@@ -310,6 +339,7 @@ export class InlineMenu {
     this.empty.content = this.loading ? "loading" : "no matches";
     this.list.container.visible = this.matches.length > 0;
     this.empty.visible = this.matches.length === 0;
+    this.onRows(this.rows);
   }
 
   private maxVisibleForHeight(height: number): number {
@@ -317,8 +347,16 @@ export class InlineMenu {
     return Math.max(1, Math.min(cap, height - CHROME_ROWS));
   }
 
-  private readonly onResize = (_width: number, height: number): void => {
+  /** Give narrow menus to the filter first, then the title, then the count. */
+  private applyWidth(width: number): void {
+    this.title.visible = width >= TITLE_MIN_WIDTH;
+    this.count.visible = width >= COUNT_MIN_WIDTH;
+  }
+
+  private readonly onResize = (width: number, height: number): void => {
+    this.applyWidth(width);
     this.list.setMaxVisible(this.maxVisibleForHeight(height));
+    this.onRows(this.rows);
   };
 
   private readonly onInput = (value: string): void => {
@@ -330,16 +368,26 @@ export class InlineMenu {
     this.repaintStatus();
   };
 
+  /**
+   * Runs the selection in the dispatch that picked it. A terminal can deliver
+   * enter and the next typed character in one stdin chunk, so a deferred
+   * handler would leave the menu open to swallow that character; a synchronous
+   * one lets the shell close the menu and refocus the composer first. Only an
+   * async handler holds the menu busy while it applies.
+   */
   private activate(id: string): void {
     if (this.busy) return;
-    const { onSelect } = this.screen;
-    this.busy = true;
-    void Promise.resolve()
-      .then(() => onSelect(id))
-      .catch(this.onError)
-      .finally(() => {
-        this.busy = false;
-      });
+    try {
+      const applied = this.screen.onSelect(id);
+      if (applied instanceof Promise) {
+        this.busy = true;
+        void applied.catch(this.onError).finally(() => {
+          this.busy = false;
+        });
+      }
+    } catch (error) {
+      this.onError(error);
+    }
   }
 
   private readonly onKeyPress = (key: KeyEvent): void => {

@@ -6,15 +6,6 @@ export interface SessionDirectoryEntry {
   preview?: string;
   lastActivity: number;
   heads: string[];
-  liveClaim: boolean;
-}
-
-interface SequencedClaim {
-  seq: number;
-  runId: string;
-  ownerId: string;
-  fence: number;
-  expiresAt: number;
 }
 
 function messagePreview(entry: Entry): string | undefined {
@@ -71,8 +62,10 @@ function messagePreview(entry: Entry): string | undefined {
       }
     }
     case "compaction":
+    case "branch_summary":
     case "model_change":
     case "thinking_level_change":
+    case "agent_change":
     case "custom":
       return undefined;
     default: {
@@ -86,10 +79,8 @@ function messagePreview(entry: Entry): string | undefined {
 export function sessionDirectoryEntryFromLog(input: {
   metadata: { readonly id: string; readonly createdAt: number };
   log: readonly LogItem[];
-  now: number;
 }): SessionDirectoryEntry {
   const heads = new Set<string>(["main"]);
-  const claims = new Map<string, SequencedClaim>();
   let name: { seq: number; value: string } | undefined;
   let preview: { seq: number; value: string } | undefined;
   let lastActivity = input.metadata.createdAt;
@@ -115,44 +106,8 @@ export function sessionDirectoryEntryFromLog(input: {
         if (name === undefined || item.seq > name.seq) name = { seq: item.seq, value: item.name };
         break;
       case "fact_value":
+      case "claim":
         break;
-      case "claim": {
-        const { event } = item;
-        switch (event.kind) {
-          case "acquired":
-          case "renewed": {
-            const current = claims.get(event.claim.head);
-            if (current === undefined || item.seq > current.seq) {
-              claims.set(event.claim.head, {
-                seq: item.seq,
-                runId: event.claim.runId,
-                ownerId: event.claim.ownerId,
-                fence: event.claim.fence,
-                expiresAt: event.claim.expiresAtMs,
-              });
-            }
-            break;
-          }
-          case "released": {
-            const current = claims.get(event.head);
-            if (
-              current !== undefined &&
-              item.seq > current.seq &&
-              current.runId === event.runId &&
-              current.ownerId === event.ownerId &&
-              current.fence === event.fence
-            ) {
-              claims.delete(event.head);
-            }
-            break;
-          }
-          default: {
-            const _exhaustive: never = event;
-            return _exhaustive;
-          }
-        }
-        break;
-      }
       default: {
         const _exhaustive: never = item;
         return _exhaustive;
@@ -164,7 +119,6 @@ export function sessionDirectoryEntryFromLog(input: {
     id: input.metadata.id,
     lastActivity,
     heads: [...heads].toSorted((left, right) => left.localeCompare(right)),
-    liveClaim: [...claims.values()].some((claim) => claim.expiresAt > input.now),
     ...(name === undefined ? {} : { name: name.value }),
     ...(preview === undefined ? {} : { preview: preview.value }),
   };

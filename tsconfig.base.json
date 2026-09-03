@@ -6,7 +6,7 @@
     "module": "nodenext",
     "noEmit": true,
     "strict": true,
-    "target": "es2025",
+    "target": "esnext",
     "types": ["node"],
     "verbatimModuleSyntax": true,
     "skipLibCheck": true

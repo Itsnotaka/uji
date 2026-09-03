@@ -12,8 +12,6 @@ const languageAliases: Readonly<Record<string, string>> = {
   typescriptreact: "tsx",
 };
 
-const themes = new WeakMap<CliTheme, ThemeRegistration>();
-
 function isBundledLanguage(language: string): language is BundledLanguage {
   return Object.hasOwn(bundledLanguages, language);
 }
@@ -24,11 +22,9 @@ function bundledLanguage(filetype: string): BundledLanguage | undefined {
 }
 
 function shikiTheme(theme: CliTheme): ThemeRegistration {
-  const existing = themes.get(theme);
-  if (existing !== undefined) return existing;
-  const value: ThemeRegistration = {
-    name: "uji-terminal",
-    type: "dark",
+  return {
+    name: `uji-terminal-${theme.mode}`,
+    type: theme.mode,
     fg: theme.foreground,
     bg: theme.codeBackground,
     settings: [
@@ -72,8 +68,6 @@ function shikiTheme(theme: CliTheme): ThemeRegistration {
       { scope: "markup.raw", settings: { foreground: theme.code } },
     ],
   };
-  themes.set(theme, value);
-  return value;
 }
 
 function tokenChunk(

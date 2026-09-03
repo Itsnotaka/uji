@@ -21,8 +21,11 @@
   },
   "scripts": {
     "clean": "rm -rf node_modules .turbo",
+    "models:check": "node scripts/check-model-data.ts",
+    "models:generate": "node scripts/generate-models.ts --strict --pretty",
+    "models:opencode:snapshot": "node scripts/snapshot-opencode-catalog.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts && vitest --run",
+    "test": "pnpm models:check && node --test test/*.test.ts && vitest --run",
     "test:upstream": "vitest --run"
   },
   "dependencies": {
@@ -35,7 +38,7 @@
     "typebox": "1.3.7"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }

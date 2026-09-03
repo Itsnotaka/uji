@@ -1,11 +1,20 @@
 /**
- * Example question tool. The model calls `question`; the plugin asks the
- * attached client to render a choice and returns the answer as a tool result.
+ * Example question tool over durable suspension. The model calls `question`;
+ * the call parks the run (design record, "Suspension and wake") and the
+ * pending tool call itself is what a client renders: its arguments carry the
+ * question and the options. The user answers through the reply channel
+ * (`runs.reply`), which targets this call directly; conversation messages are
+ * never involved, so an unrelated steer can never be mistaken for an answer.
+ *
+ * A reply that names an option (its number or its label) selects it; any
+ * other reply is the user's own answer, so a human is never trapped in the
+ * answers the model imagined.
  *
  * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/question.ts
+ * The own-answer rule follows https://github.com/anomalyco/opencode/blob/e70d667a9fe3e84cc071a5596aa522c142c525b7/packages/core/src/tool/plugin/question.ts
  */
-import { definePlugin } from "@uji-ai/plugin";
-import type { AskRequest, HarnessTool } from "@uji-ai/plugin";
+import { definePlugin, ToolWait } from "@uji-ai/plugin";
+import type { HarnessTool } from "@uji-ai/plugin";
 import { Unsafe } from "typebox";
 
 interface QuestionOption {
@@ -71,42 +80,61 @@ function parseQuestionInput(value: unknown): QuestionInput {
   return { question, options: options.map(parseQuestionOption) };
 }
 
-type AskSelect = (request: Extract<AskRequest, { kind: "select" }>) => Promise<string>;
-
-export function createQuestionTool(ask: AskSelect): HarnessTool {
-  return {
-    name: "question",
-    label: "Question",
-    description: "Ask the user one question and let them choose from a list of answers.",
-    parameters: questionParameters,
-    replay: "never",
-    async execute(_toolCallId, rawParams) {
-      const params = parseQuestionInput(rawParams);
-      const request = {
-        kind: "select",
-        title: params.question,
-        options: params.options.map((option, index) => ({
-          value: String(index),
-          label: option.label,
-          description: option.description,
-        })),
-      } satisfies AskRequest;
-      const answer = await ask(request);
-      const selected = params.options[Number(answer)];
-      if (selected === undefined) throw new Error("Question returned an unknown choice");
-      return {
-        content: [{ type: "text", text: selected.label }],
-        details: { question: params.question, answer: selected.label },
-      };
-    },
-  };
+/** A reply names an option by 1-based number or exact label; anything else is its own answer. */
+export function answerFor(input: QuestionInput, reply: string): string {
+  const trimmed = reply.trim();
+  const index = Number(trimmed);
+  if (Number.isInteger(index) && index >= 1 && index <= input.options.length) {
+    const selected = input.options[index - 1];
+    if (selected !== undefined) return selected.label;
+  }
+  const lowered = trimmed.toLowerCase();
+  const byLabel = input.options.find((option) => option.label.toLowerCase() === lowered);
+  return byLabel?.label ?? trimmed;
 }
+
+export const questionTool: HarnessTool = {
+  name: "question",
+  description:
+    "Ask the user one question and let them choose from a list of answers. " +
+    "The user may also answer in their own words; you receive whichever they gave.",
+  parameters: questionParameters,
+  replay: "never",
+  async execute(_toolCallId, rawParams) {
+    parseQuestionInput(rawParams);
+    throw new ToolWait();
+  },
+  wake: async (suspension, context) => {
+    const input = parseQuestionInput(suspension.args);
+    if (context.reply === undefined) return { kind: "wait" };
+    const answer = typeof context.reply === "string" ? answerFor(input, context.reply) : "";
+    if (answer === "") {
+      // An empty or malformed reply is a human walking away, not an answer.
+      return {
+        kind: "settle",
+        isError: true,
+        result: {
+          content: [{ type: "text", text: "Question was left unanswered" }],
+          details: { question: input.question },
+          title: input.question,
+        },
+      };
+    }
+    return {
+      kind: "settle",
+      result: {
+        content: [{ type: "text", text: answer }],
+        details: { question: input.question, answer },
+        title: input.question,
+      },
+    };
+  },
+};
 
 export const questionPlugin = definePlugin({
   id: "question",
   session(api) {
-    const tool = createQuestionTool(api.ask);
-    api.tools.add((draft) => draft.set(tool.name, tool));
+    api.tools.add((draft) => draft.set(questionTool.name, questionTool));
   },
 });
 

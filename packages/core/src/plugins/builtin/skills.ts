@@ -7,7 +7,6 @@ export const SKILLS_PLUGIN_ID = "skills";
 
 export interface SkillsOptions {
   readonly directories: readonly string[];
-  readonly promptOrder?: number;
 }
 
 export function skillsPlugin(options: SkillsOptions) {
@@ -41,9 +40,7 @@ export function skillsPlugin(options: SkillsOptions) {
 
       const catalog = formatSkillsForPrompt(skills);
       if (catalog !== "") {
-        api.prompt.add((draft) =>
-          draft.set("available-skills", { text: catalog, order: options.promptOrder ?? 90 }),
-        );
+        api.prompt.add((draft) => draft.set("available-skills", { text: catalog, order: 90 }));
       }
     },
   });

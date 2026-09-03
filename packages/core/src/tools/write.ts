@@ -5,11 +5,16 @@
  *
  * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/tools/write.ts
  */
-import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import {
+  mkdir as fsMkdir,
+  readFile as fsReadFile,
+  writeFile as fsWriteFile,
+} from "node:fs/promises";
+import { dirname, relative } from "node:path";
 import { Unsafe } from "typebox";
 import type { AgentTool } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
+import { type FileMutationDetails, generateFileMutationDetails } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./support/file-mutation-queue.ts";
 import { resolveToCwd } from "./support/path-utils.ts";
 
@@ -49,12 +54,19 @@ function parseWriteParams(params: unknown): WriteToolInput {
   return { path, content };
 }
 
-export function createWriteTool(cwd: string): AgentTool<typeof writeParameters, undefined> {
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+export function createWriteTool(
+  cwd: string,
+): AgentTool<typeof writeParameters, FileMutationDetails> {
   return {
     name: "write",
-    label: "write",
     description:
       "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+    promptSnippet: "Create or overwrite files",
+    promptGuidelines: ["Use write only for new files or complete rewrites."],
     parameters: writeParameters,
     prepareArguments: parseWriteParams,
     async execute(_toolCallId, { path, content }, signal?, _onUpdate?) {
@@ -69,6 +81,16 @@ export function createWriteTool(cwd: string): AgentTool<typeof writeParameters, 
         };
 
         throwIfAborted();
+
+        let previousContent = "";
+        try {
+          previousContent = await fsReadFile(absolutePath, "utf-8");
+        } catch (error: unknown) {
+          throwIfAborted();
+          if (!isMissingFile(error)) throw error;
+        }
+        throwIfAborted();
+
         // Create parent directories if needed.
         await fsMkdir(dirname(absolutePath), { recursive: true });
         throwIfAborted();
@@ -78,8 +100,9 @@ export function createWriteTool(cwd: string): AgentTool<typeof writeParameters, 
         throwIfAborted();
 
         return {
-          content: toolResultContent(`Successfully wrote ${content.length} bytes to ${path}`),
-          details: undefined,
+          content: toolResultContent(`Wrote ${path}.`),
+          details: generateFileMutationDetails(path, previousContent, content),
+          title: relative(cwd, absolutePath),
         };
       });
     },

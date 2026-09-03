@@ -16,6 +16,7 @@ import {
   type SendOptions,
   type SendOrigin,
   type SendReceipt,
+  type ToolReplyAdmission,
   type WatchOptions,
 } from "./store.ts";
 import {
@@ -40,8 +41,8 @@ import {
   type RunState,
   type SessionMetadata,
   type SessionRepo,
-  type SessionSearch,
-  type SessionSearchHit,
+  type ToolReplyRecord,
+  type ToolWaitingRecord,
   type SessionStorage,
 } from "./types.ts";
 
@@ -50,7 +51,7 @@ import {
  * in harness.md Part 1: entries and records are write-once rows, head pointers
  * and facts are the only mutable state, and one per-session `seq` counter
  * orders all of them. As in pi, one database file holds every session, keyed
- * by session_id — which also gives SessionSearch one FTS index across sessions.
+ * by session_id.
  *
  * The schema is structural only; validating payload shapes is the session
  * layer's job before a write is admitted. Two decisions are load-bearing:
@@ -73,6 +74,7 @@ import {
  */
 const OPERATION_STARTED: OperationStartedRecord["type"] = "operation_started";
 const OPERATION_FINISHED: OperationFinishedRecord["type"] = "operation_finished";
+const TOOL_WAITING: ToolWaitingRecord["type"] = "tool_waiting";
 const FACT_NAME: Extract<LogItem, { kind: "fact" }>["fact"] = "name";
 /** Generic facts store JSON; deletion uses an out-of-band marker so latest-wins still works. */
 const FACT_DELETED = "\u0000deleted";
@@ -137,7 +139,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   next_seq INTEGER NOT NULL
 ) WITHOUT ROWID;
 
--- Keeps its rowid: entries_fts is an external-content index over this table.
+-- Keeps its rowid (no WITHOUT ROWID): an FTS index once hung off it, and
+-- changing that now would be a table rebuild for nothing.
 CREATE TABLE IF NOT EXISTS entries (
   session_id TEXT NOT NULL,
   seq INTEGER NOT NULL,
@@ -152,6 +155,10 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 CREATE INDEX IF NOT EXISTS idx_entries_parent ON entries(session_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_entries_type_seq ON entries(session_id, type, seq);
+-- The full-text index is gone; files that still carry it stop paying for the
+-- trigger on every insert.
+DROP TRIGGER IF EXISTS entries_fts_insert;
+DROP TABLE IF EXISTS entries_fts;
 
 CREATE TABLE IF NOT EXISTS records (
   session_id TEXT NOT NULL,
@@ -183,6 +190,9 @@ CREATE TABLE IF NOT EXISTS head_moves (
   seq INTEGER NOT NULL,
   head TEXT NOT NULL,
   leaf_id TEXT,
+  -- Why the head moved: an entry append advancing the tip, or a deliberate
+  -- re-point (navigation). Stored so the log reports fact instead of a guess.
+  moved_by TEXT NOT NULL DEFAULT 'append' CHECK (moved_by IN ('append', 'move')),
   PRIMARY KEY (session_id, seq)
 ) WITHOUT ROWID;
 
@@ -195,18 +205,6 @@ CREATE TABLE IF NOT EXISTS facts (
 ) WITHOUT ROWID;
 
 ${RUN_CLAIMS_SCHEMA}
-
-CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-  payload,
-  content = 'entries',
-  content_rowid = 'rowid',
-  tokenize = 'trigram remove_diacritics 1'
-);
--- Insert-only: entries are write-once, so the index never needs update or
--- delete triggers.
-CREATE TRIGGER IF NOT EXISTS entries_fts_insert AFTER INSERT ON entries BEGIN
-  INSERT INTO entries_fts(rowid, payload) VALUES (new.rowid, new.payload);
-END;
 `;
 
 /**
@@ -215,6 +213,23 @@ END;
  */
 function transact<T>(db: DatabaseSync, fn: () => T): T {
   db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // A failed COMMIT has already rolled back.
+    }
+    throw error;
+  }
+}
+
+/** Keep a multi-table projection on one SQLite read snapshot. */
+function readTransaction<T>(db: DatabaseSync, fn: () => T): T {
+  db.exec("BEGIN");
   try {
     const result = fn();
     db.exec("COMMIT");
@@ -292,6 +307,18 @@ function readLeafId(db: DatabaseSync, sessionId: string, head: string): string |
   const row = sql`SELECT leaf_id FROM heads
     WHERE session_id = ${sessionId} AND head = ${head}`.get<{ leaf_id: string | null }>(db);
   return row?.leaf_id ?? null;
+}
+
+function readName(db: DatabaseSync, sessionId: string): string | undefined {
+  const row = sql`SELECT value FROM facts
+    WHERE session_id = ${sessionId} AND fact = ${FACT_NAME}
+    ORDER BY seq DESC LIMIT 1`.get<{ value: string }>(db);
+  return row?.value;
+}
+
+function writeName(db: DatabaseSync, sessionId: string, name: string): void {
+  sql`INSERT INTO facts (session_id, seq, fact, value)
+    VALUES (${sessionId}, ${allocateSeq(db, sessionId, 1)}, ${FACT_NAME}, ${name})`.run(db);
 }
 
 function entryExists(db: DatabaseSync, sessionId: string, id: string): boolean {
@@ -374,9 +401,10 @@ function writeHeadMove(
   seq: number,
   head: string,
   leafId: string | null,
+  by: "append" | "move",
 ): void {
-  sql`INSERT INTO head_moves (session_id, seq, head, leaf_id)
-    VALUES (${sessionId}, ${seq}, ${head}, ${leafId})`.run(db);
+  sql`INSERT INTO head_moves (session_id, seq, head, leaf_id, moved_by)
+    VALUES (${sessionId}, ${seq}, ${head}, ${leafId}, ${by})`.run(db);
   sql`INSERT INTO heads (session_id, head, leaf_id) VALUES (${sessionId}, ${head}, ${leafId})
     ON CONFLICT(session_id, head) DO UPDATE SET leaf_id = excluded.leaf_id`.run(db);
 }
@@ -402,7 +430,7 @@ function writeEntry(
   sql`INSERT INTO entries (session_id, seq, id, parent_id, head, type, timestamp, payload)
     VALUES (${sessionId}, ${seq}, ${full.id}, ${full.parentId}, ${head}, ${full.type},
             ${full.timestamp}, ${payload})`.run(db);
-  writeHeadMove(db, sessionId, seq + 1, head, full.id);
+  writeHeadMove(db, sessionId, seq + 1, head, full.id, "append");
   return full;
 }
 
@@ -428,11 +456,16 @@ function assertParticipantRecord(record: NewRecord<SessionRecord>): void {
     case "queue_enqueued":
     case "deferred_write":
     case "queue_cancelled":
+    case "tool_reply":
       return;
     case "operation_started":
     case "operation_finished":
     case "step_attempt":
+    case "retry_scheduled":
     case "tool_started":
+    case "tool_waiting":
+    case "tool_wake_observed":
+    case "queue_consumed":
     case "usage":
       throw new SessionError("invalid_entry", `${record.type} must be written through a run claim`);
     default: {
@@ -448,13 +481,18 @@ function assertRunRecord(record: NewRecord<SessionRecord>): void {
     case "operation_started":
     case "operation_finished":
     case "step_attempt":
+    case "retry_scheduled":
     case "tool_started":
+    case "tool_waiting":
+    case "tool_wake_observed":
+    case "queue_consumed":
     case "usage":
       return;
     case "abort_requested":
     case "queue_enqueued":
     case "deferred_write":
     case "queue_cancelled":
+    case "tool_reply":
       throw new SessionError("invalid_entry", `${record.type} is a participant record`);
     default: {
       const _exhaustive: never = record;
@@ -462,6 +500,37 @@ function assertRunRecord(record: NewRecord<SessionRecord>): void {
       throw new SessionError("invalid_entry", "Unknown run record type");
     }
   }
+}
+
+/**
+ * The newest open operation on the head whose run holds an active wait:
+ * a `tool_waiting` record whose reserved result entry has not landed.
+ * Admission treats it exactly like a live claim, so input queues to the run
+ * instead of landing after an assistant message with a dangling tool call
+ * (design record: mid-run context grows only at the tail).
+ */
+function readWaitingOpenRun(
+  db: DatabaseSync,
+  sessionId: string,
+  head: string,
+): { runId: string } | undefined {
+  const open = sql`SELECT id FROM records
+    WHERE session_id = ${sessionId} AND head = ${head} AND type = ${OPERATION_STARTED}
+      AND id NOT IN (
+        SELECT run_id FROM records
+        WHERE session_id = ${sessionId} AND type = ${OPERATION_FINISHED}
+          AND run_id IS NOT NULL
+      )
+    ORDER BY seq DESC LIMIT 1`.get<{ id: string }>(db);
+  if (open === undefined) return undefined;
+  const waiting = sql`SELECT payload FROM records
+    WHERE session_id = ${sessionId} AND type = ${TOOL_WAITING} AND run_id = ${open.id}
+    ORDER BY seq`.all<RecordRow>(db);
+  for (const row of waiting) {
+    const record = readPayload<ToolWaitingRecord>(row);
+    if (!entryExists(db, sessionId, record.resultEntryId)) return { runId: open.id };
+  }
+  return undefined;
 }
 
 function pendingDeferredWrites(
@@ -491,44 +560,17 @@ function pendingDeferredWrites(
   return pending;
 }
 
-function applyDeferredWrites(db: DatabaseSync, sessionId: string, head: string): Entry[] {
-  return pendingDeferredWrites(db, sessionId, head).map((record) =>
-    writeEntry(db, sessionId, record.target, head),
-  );
-}
-
 function moveHead(db: DatabaseSync, sessionId: string, head: string, to: string | null): void {
   if (to !== null && !entryExists(db, sessionId, to)) {
     throw new SessionError("not_found", `Entry not found: ${to}`);
   }
-  writeHeadMove(db, sessionId, allocateSeq(db, sessionId, 1), head, to);
+  writeHeadMove(db, sessionId, allocateSeq(db, sessionId, 1), head, to, "move");
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseSendReceipt(raw: string): SendReceipt {
-  const value: unknown = JSON.parse(raw);
-  if (
-    !isObject(value) ||
-    typeof value.entryId !== "string" ||
-    typeof value.duplicate !== "boolean"
-  ) {
-    throw new SessionError("storage", "Stored send receipt is invalid");
-  }
-  if (value.disposition === "placed") {
-    return { disposition: "placed", entryId: value.entryId, duplicate: true };
-  }
-  if (value.disposition === "queued" && typeof value.runId === "string") {
-    return {
-      disposition: "queued",
-      entryId: value.entryId,
-      runId: value.runId,
-      duplicate: true,
-    };
-  }
-  throw new SessionError("storage", "Stored send receipt has an unknown disposition");
+function readSendReceipt(raw: string): SendReceipt {
+  // SAFETY: receipt rows are write-once and written only by send(), which stringifies a typed SendReceipt.
+  const receipt = JSON.parse(raw) as SendReceipt;
+  return { ...receipt, duplicate: true };
 }
 
 function normalizeOrigin(origin: SendOrigin | undefined): SendOrigin | undefined {
@@ -649,7 +691,7 @@ class SqliteChangeTracker {
     this.closed = true;
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
-    for (const subscription of [...this.subscriptions]) subscription.close();
+    for (const subscription of this.subscriptions) subscription.close();
   }
 
   private startPolling(): void {
@@ -798,74 +840,84 @@ class SqliteSessionStorage implements SessionStorage {
     return projectRunState(await this.getLog(), runId);
   }
 
+  lastSeq(): Promise<number> {
+    this.assertOpen();
+    const row = sql`SELECT next_seq FROM sessions WHERE id = ${this.metadata.id}`.get<{
+      next_seq: number;
+    }>(this.db);
+    return Promise.resolve((row?.next_seq ?? 0) - 1);
+  }
+
   getLog(options?: { afterSeq?: number }): Promise<LogItem[]> {
     this.assertOpen();
     const after = options?.afterSeq ?? -1;
-    const entryRows = sql`SELECT seq, head, payload FROM entries
+    const log = readTransaction(this.db, () => {
+      const entryRows = sql`SELECT seq, head, payload FROM entries
       WHERE session_id = ${this.metadata.id} AND seq > ${after}`.all<EntryRow>(this.db);
-    const recordRows = sql`SELECT seq, payload FROM records
+      const recordRows = sql`SELECT seq, payload FROM records
       WHERE session_id = ${this.metadata.id} AND seq > ${after}`.all<RecordRow>(this.db);
-    const headRows = sql`SELECT seq, head, leaf_id FROM head_moves
+      const headRows = sql`SELECT seq, head, leaf_id, moved_by FROM head_moves
       WHERE session_id = ${this.metadata.id} AND seq > ${after}`.all<{
-      seq: number;
-      head: string;
-      leaf_id: string | null;
-    }>(this.db);
-    const factRows = sql`SELECT seq, value FROM facts
+        seq: number;
+        head: string;
+        leaf_id: string | null;
+        moved_by: "append" | "move";
+      }>(this.db);
+      const factRows = sql`SELECT seq, value FROM facts
       WHERE session_id = ${this.metadata.id} AND fact = ${FACT_NAME} AND seq > ${after}`.all<{
-      seq: number;
-      value: string;
-    }>(this.db);
-    const factValueRows = sql`SELECT seq, fact, value FROM facts
+        seq: number;
+        value: string;
+      }>(this.db);
+      const factValueRows = sql`SELECT seq, fact, value FROM facts
       WHERE session_id = ${this.metadata.id} AND fact <> ${FACT_NAME} AND seq > ${after}`.all<{
-      seq: number;
-      fact: string;
-      value: string;
-    }>(this.db);
-    const claimRows = sql`SELECT seq, head, run_id, owner_id, fence, expires_at_ms, action
+        seq: number;
+        fact: string;
+        value: string;
+      }>(this.db);
+      const claimRows = sql`SELECT seq, head, run_id, owner_id, fence, expires_at_ms, action
       FROM run_claim_events
       WHERE session_id = ${this.metadata.id} AND seq > ${after}`.all<ClaimEventRow>(this.db);
-    const log: LogItem[] = [
-      ...entryRows.map((row): LogItem => ({
-        kind: "entry",
-        seq: row.seq,
-        head: row.head,
-        entry: readPayload<Entry>(row),
-      })),
-      ...recordRows.map((row): LogItem => ({
-        kind: "record",
-        seq: row.seq,
-        record: readPayload<SessionRecord>(row),
-      })),
-      ...headRows.map((row): LogItem => ({
-        kind: "head",
-        seq: row.seq,
-        head: row.head,
-        leafId: row.leaf_id,
-      })),
-      ...factRows.map((row): LogItem => ({
-        kind: "fact",
-        seq: row.seq,
-        fact: FACT_NAME,
-        name: row.value,
-      })),
-      ...factValueRows.map((row): LogItem => ({
-        kind: "fact_value",
-        seq: row.seq,
-        fact: row.fact,
-        value: decodeFact(row.value),
-      })),
-      ...claimRows.map(claimLogItem),
-    ];
-    return Promise.resolve(log.sort((a, b) => a.seq - b.seq));
+      const items: LogItem[] = [
+        ...entryRows.map((row): LogItem => ({
+          kind: "entry",
+          seq: row.seq,
+          head: row.head,
+          entry: readPayload<Entry>(row),
+        })),
+        ...recordRows.map((row): LogItem => ({
+          kind: "record",
+          seq: row.seq,
+          record: readPayload<SessionRecord>(row),
+        })),
+        ...headRows.map((row): LogItem => ({
+          kind: "head",
+          seq: row.seq,
+          head: row.head,
+          leafId: row.leaf_id,
+          by: row.moved_by,
+        })),
+        ...factRows.map((row): LogItem => ({
+          kind: "fact",
+          seq: row.seq,
+          fact: FACT_NAME,
+          name: row.value,
+        })),
+        ...factValueRows.map((row): LogItem => ({
+          kind: "fact_value",
+          seq: row.seq,
+          fact: row.fact,
+          value: decodeFact(row.value),
+        })),
+        ...claimRows.map(claimLogItem),
+      ];
+      return items.sort((a, b) => a.seq - b.seq);
+    });
+    return Promise.resolve(log);
   }
 
   getName(): Promise<string | undefined> {
     this.assertOpen();
-    const row = sql`SELECT value FROM facts
-      WHERE session_id = ${this.metadata.id} AND fact = ${FACT_NAME}
-      ORDER BY seq DESC LIMIT 1`.get<{ value: string }>(this.db);
-    return Promise.resolve(row?.value);
+    return Promise.resolve(readName(this.db, this.metadata.id));
   }
 
   getFact(fact: string): Promise<JsonValue | undefined> {
@@ -892,30 +944,34 @@ class SqliteSessionStorage implements SessionStorage {
   }
 
   watch(options: WatchOptions = {}): AsyncIterable<LogItem> {
+    // Checked eagerly: a closed session refuses here, not on the first pull.
     this.assertOpen();
-    const session = this;
     const signals =
       options.signal === undefined
         ? [this.closeController.signal]
         : [this.closeController.signal, options.signal];
-    async function* events(): AsyncIterable<LogItem> {
-      const subscription = session.changes.subscribe(session.metadata.id, signals);
-      let cursor = options.afterSeq ?? -1;
-      try {
-        while (!subscription.closed) {
-          const items = await session.getLog({ afterSeq: cursor });
-          for (const item of items) {
-            if (subscription.closed) return;
-            cursor = item.seq;
-            yield item;
-          }
-          await subscription.wait();
+    return this.streamLog(options.afterSeq ?? -1, signals);
+  }
+
+  private async *streamLog(
+    afterSeq: number,
+    signals: readonly AbortSignal[],
+  ): AsyncIterable<LogItem> {
+    const subscription = this.changes.subscribe(this.metadata.id, signals);
+    let cursor = afterSeq;
+    try {
+      while (!subscription.closed) {
+        const items = await this.getLog({ afterSeq: cursor });
+        for (const item of items) {
+          if (subscription.closed) return;
+          cursor = item.seq;
+          yield item;
         }
-      } finally {
-        subscription.close();
+        await subscription.wait();
       }
+    } finally {
+      subscription.close();
     }
-    return events();
   }
 
   async appendEntry(entry: ProvisionedEntry, head: string): Promise<Entry> {
@@ -939,18 +995,17 @@ class SqliteSessionStorage implements SessionStorage {
     return this.write(() => writeRecord(this.db, this.metadata.id, record));
   }
 
-  async moveHead(head: string, to: string | null): Promise<void> {
-    this.write(() => {
-      this.assertHeadIdle(head);
-      moveHead(this.db, this.metadata.id, head, to);
-    });
+  async setName(name: string): Promise<void> {
+    this.write(() => writeName(this.db, this.metadata.id, name));
   }
 
-  async setName(name: string): Promise<void> {
-    this.write(() => {
-      sql`INSERT INTO facts (session_id, seq, fact, value)
-        VALUES (${this.metadata.id}, ${allocateSeq(this.db, this.metadata.id, 1)},
-                ${FACT_NAME}, ${name})`.run(this.db);
+  async setNameIfCurrent(expected: string | undefined, next: string): Promise<boolean> {
+    // One BEGIN IMMEDIATE transaction holds the compare and the write, so a
+    // rename from any other handle or process lands wholly before or after.
+    return this.write(() => {
+      if (readName(this.db, this.metadata.id) !== expected) return false;
+      writeName(this.db, this.metadata.id, next);
+      return true;
     });
   }
 
@@ -977,7 +1032,7 @@ class SqliteSessionStorage implements SessionStorage {
             WHERE session_id = ${this.metadata.id} AND key = ${options.idempotencyKey}`.get<{
           receipt: string;
         }>(this.db);
-        if (existing !== undefined) return parseSendReceipt(existing.receipt);
+        if (existing !== undefined) return readSendReceipt(existing.receipt);
       }
 
       const message: MessageEntry["message"] =
@@ -987,10 +1042,12 @@ class SqliteSessionStorage implements SessionStorage {
         id: newId("e"),
         message,
         ...(origin === undefined ? {} : { origin }),
+        ...(options.wake === false ? { wake: false as const } : {}),
       };
       const claim = readLiveClaim(this.db, this.metadata.id, head);
+      const liveRunId = claim?.runId ?? readWaitingOpenRun(this.db, this.metadata.id, head)?.runId;
       let receipt: SendReceipt;
-      if (claim === undefined) {
+      if (liveRunId === undefined) {
         const entry = writeEntry(this.db, this.metadata.id, target, head);
         receipt = { disposition: "placed", entryId: entry.id, duplicate: false };
       } else {
@@ -999,13 +1056,13 @@ class SqliteSessionStorage implements SessionStorage {
           id: newId("r"),
           head: head,
           queue: options.delivery === "queue" ? "followUp" : "steer",
-          runId: claim.runId,
+          runId: liveRunId,
           target,
         });
         receipt = {
           disposition: "queued",
           entryId: target.id,
-          runId: claim.runId,
+          runId: liveRunId,
           duplicate: false,
         };
       }
@@ -1024,7 +1081,8 @@ class SqliteSessionStorage implements SessionStorage {
         throw new SessionError("invalid_entry", `Entry id already exists: ${entry.id}`);
       }
       const claim = readLiveClaim(this.db, this.metadata.id, head);
-      if (claim === undefined) {
+      const liveRunId = claim?.runId ?? readWaitingOpenRun(this.db, this.metadata.id, head)?.runId;
+      if (liveRunId === undefined) {
         writeEntry(this.db, this.metadata.id, entry, head);
         return { disposition: "placed" };
       }
@@ -1032,24 +1090,65 @@ class SqliteSessionStorage implements SessionStorage {
         type: "deferred_write",
         id: newId("r"),
         head: head,
-        runId: claim.runId,
+        runId: liveRunId,
         target: entry,
       });
-      return { disposition: "deferred", runId: claim.runId };
+      return { disposition: "deferred", runId: liveRunId };
     });
   }
 
   async requestAbort(head = "main"): Promise<{ runId: string } | undefined> {
     return this.write(() => {
       const claim = readLiveClaim(this.db, this.metadata.id, head);
-      if (claim === undefined) return undefined;
+      const runId = claim?.runId ?? readWaitingOpenRun(this.db, this.metadata.id, head)?.runId;
+      if (runId === undefined) return undefined;
       writeRecord(this.db, this.metadata.id, {
         type: "abort_requested",
         id: newId("r"),
         head: head,
-        runId: claim.runId,
+        runId,
       });
-      return { runId: claim.runId };
+      return { runId };
+    });
+  }
+
+  async admitToolReply(
+    input: { toolCallId?: string; toolName?: string; reply: JsonValue },
+    head = "main",
+  ): Promise<ToolReplyAdmission> {
+    return this.write(() => {
+      const candidates = sql`SELECT payload FROM records
+        WHERE session_id = ${this.metadata.id} AND head = ${head} AND type = ${TOOL_WAITING}
+        ORDER BY seq`
+        .all<RecordRow>(this.db)
+        .map((row) => readPayload<ToolWaitingRecord>(row))
+        .filter(
+          (record) =>
+            !entryExists(this.db, this.metadata.id, record.resultEntryId) &&
+            (input.toolCallId === undefined || record.toolCallId === input.toolCallId) &&
+            (input.toolName === undefined || record.toolName === input.toolName),
+        );
+      if (candidates.length === 0) return { ok: false, reason: "no_wait" };
+      // Without an explicit call id, guessing between two live waits would
+      // answer the wrong one.
+      if (input.toolCallId === undefined && candidates.length > 1) {
+        return { ok: false, reason: "ambiguous" };
+      }
+      const live = candidates[0];
+      if (live === undefined) return { ok: false, reason: "no_wait" };
+      const replied = sql`SELECT payload FROM records
+        WHERE session_id = ${this.metadata.id} AND head = ${head} AND type = ${"tool_reply"}`
+        .all<RecordRow>(this.db)
+        .some((row) => readPayload<ToolReplyRecord>(row).toolCallId === live.toolCallId);
+      if (replied) return { ok: false, reason: "already_replied" };
+      writeRecord(this.db, this.metadata.id, {
+        type: "tool_reply",
+        id: newId("r"),
+        head,
+        toolCallId: live.toolCallId,
+        reply: input.reply,
+      });
+      return { ok: true, toolCallId: live.toolCallId };
     });
   }
 
@@ -1089,10 +1188,35 @@ class SqliteSessionStorage implements SessionStorage {
     return { ok: true, claim: outcome.claim, writer };
   }
 
+  async beginOperation(
+    head: string,
+    runId: string,
+    body: Omit<NewRecord<OperationStartedRecord>, "type" | "id" | "head" | "sourceLeafId">,
+  ): Promise<ClaimRunOutcome> {
+    // Claim then record, through the writer's own fenced path. The two-write
+    // window predates this verb; it now lives in exactly one place, so
+    // closing it never touches a caller again.
+    const claimed = await this.claimRun(head, runId);
+    if (!claimed.ok) return claimed;
+    try {
+      await claimed.writer.appendRecord({
+        type: "operation_started",
+        id: runId,
+        head,
+        sourceLeafId: await this.getLeafId(head),
+        ...body,
+      });
+    } catch (error) {
+      await claimed.writer.release().catch(() => undefined);
+      throw error;
+    }
+    return claimed;
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     const errors: unknown[] = [];
-    for (const writer of [...this.writers]) {
+    for (const writer of this.writers) {
       await writer.release().catch((error: unknown) => errors.push(error));
     }
     this.closed = true;
@@ -1109,7 +1233,10 @@ class SqliteSessionStorage implements SessionStorage {
   }
 
   private assertHeadIdle(head: string): void {
-    if (readLiveClaim(this.db, this.metadata.id, head) !== undefined) {
+    if (
+      readLiveClaim(this.db, this.metadata.id, head) !== undefined ||
+      readWaitingOpenRun(this.db, this.metadata.id, head) !== undefined
+    ) {
       throw new SessionError(
         "invalid_entry",
         `Head ${head} has a live run; admit messages through send()`,
@@ -1153,16 +1280,6 @@ class SqliteRunWriter implements RunWriter {
     return this.write(() => writeEntry(this.db, this.sessionId, entry, this.claim.head));
   }
 
-  async appendEntries(entries: readonly ProvisionedEntry[]): Promise<Entry[]> {
-    return this.write(() =>
-      entries.map((entry) => writeEntry(this.db, this.sessionId, entry, this.claim.head)),
-    );
-  }
-
-  async applyDeferred(): Promise<Entry[]> {
-    return this.write(() => applyDeferredWrites(this.db, this.sessionId, this.claim.head));
-  }
-
   async appendRecord<TRecord extends RunRecord>(record: NewRecord<TRecord>): Promise<TRecord> {
     assertRunRecord(record);
     this.assertRunRecord(record);
@@ -1195,7 +1312,9 @@ class SqliteRunWriter implements RunWriter {
       if (!renewRunClaim(this.db, this.sessionId, this.claim, Date.now() + this.options.ttlMs)) {
         throw this.loseClaim();
       }
-      const deferredEntries = applyDeferredWrites(this.db, this.sessionId, this.claim.head);
+      const deferredEntries = pendingDeferredWrites(this.db, this.sessionId, this.claim.head).map(
+        (pending) => writeEntry(this.db, this.sessionId, pending.target, this.claim.head),
+      );
       const finished = writeRecord(this.db, this.sessionId, record);
       releaseClaim(this.db, this.sessionId, this.claim);
       return { record: finished, deferredEntries };
@@ -1301,7 +1420,7 @@ export interface SqliteSessionRepoOptions {
   watchPollIntervalMs?: number;
 }
 
-export class SqliteSessionRepo implements SessionRepo, SessionSearch {
+export class SqliteSessionRepo implements SessionRepo {
   private readonly path: string;
   private readonly claimOptions: RunClaimOptions;
   private readonly watchPollIntervalMs: number;
@@ -1375,39 +1494,25 @@ export class SqliteSessionRepo implements SessionRepo, SessionSearch {
     return rows.map((row) => ({ id: row.id, createdAt: row.created_at }));
   }
 
-  async searchEntries(
-    text: string,
-    options?: { limit?: number; type?: Entry["type"] },
-  ): Promise<SessionSearchHit[]> {
-    const query = text.trim();
-    if (query.length < 3) return []; // The trigram tokenizer needs 3 or more characters.
-    // Quoted as one FTS string so user text cannot be parsed as query syntax.
-    const predicates = [sql`entries_fts MATCH ${`"${query.replaceAll('"', '""')}"`}`];
-    if (options?.type !== undefined) predicates.push(sql`e.type = ${options.type}`);
-    const rows = sql`SELECT e.session_id, e.id, e.timestamp,
-        snippet(entries_fts, 0, '', '', '…', 12) AS snippet,
-        bm25(entries_fts) AS score
-      FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid
-      WHERE ${joinSqlFragments(predicates, " AND ")}
-      ORDER BY score LIMIT ${options?.limit ?? 20}`.all<{
-      session_id: string;
-      id: string;
-      timestamp: number;
-      snippet: string;
-      score: number;
-    }>(this.database());
-    return rows.map((row) => ({
-      sessionId: row.session_id,
-      entryId: row.id,
-      timestamp: row.timestamp,
-      snippet: row.snippet,
-      score: row.score,
-    }));
+  async delete(id: string): Promise<void> {
+    const db = this.database();
+    transact(db, () => {
+      sql`DELETE FROM entries WHERE session_id = ${id}`.run(db);
+      sql`DELETE FROM records WHERE session_id = ${id}`.run(db);
+      sql`DELETE FROM heads WHERE session_id = ${id}`.run(db);
+      sql`DELETE FROM head_moves WHERE session_id = ${id}`.run(db);
+      sql`DELETE FROM facts WHERE session_id = ${id}`.run(db);
+      sql`DELETE FROM run_claims WHERE session_id = ${id}`.run(db);
+      sql`DELETE FROM send_keys WHERE session_id = ${id}`.run(db);
+      sql`DELETE FROM run_claim_events WHERE session_id = ${id}`.run(db);
+      sql`DELETE FROM sessions WHERE id = ${id}`.run(db);
+    });
+    this.changes?.notify(id);
   }
 
   async close(): Promise<void> {
     const errors: unknown[] = [];
-    for (const storage of [...this.active]) {
+    for (const storage of this.active) {
       await storage.close().catch((error: unknown) => errors.push(error));
     }
     this.active.clear();

@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./examples/fast-mode": "./examples/fast-mode.ts",
-    "./examples/question": "./examples/question.ts"
+    "./examples/question": "./examples/question.ts",
+    "./examples/web-search": "./examples/web-search.ts"
   },
   "scripts": {
     "clean": "rm -rf node_modules .turbo",
@@ -18,7 +19,8 @@
     "typebox": "1.3.7"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
+    "@uji-ai/ai": "workspace:*",
     "typescript": "^7.0.2"
   }
 }

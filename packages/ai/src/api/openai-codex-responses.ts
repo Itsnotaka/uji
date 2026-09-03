@@ -11,9 +11,11 @@ import { Value } from "typebox/value";
 import { clampThinkingLevel } from "../models.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
+  AccountLimits,
   Api,
   AssistantMessage,
   Context,
+  JsonValue,
   Model,
   ProviderEnv,
   ProviderHeaders,
@@ -101,6 +103,20 @@ function recordOf(value: unknown): Record<string, unknown> | undefined {
   return Value.Check(JsonObjectJson, value) ? value : undefined;
 }
 
+function isJsonValue(value: unknown): value is JsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return true;
+  }
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  const record = recordOf(value);
+  return record !== undefined && Object.values(record).every(isJsonValue);
+}
+
 /** Returns the frame when its payload decodes, or `undefined` for frames without an event type. */
 function decodeCodexFrame(value: unknown): CodexFrame | undefined {
   if (!Value.Check(CodexFrameJson, value)) return undefined;
@@ -120,6 +136,7 @@ function isTerminalResponseType(type: string): boolean {
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
 const DEFAULT_MAX_RETRIES = 0;
+const DEFAULT_COMPACT_MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
@@ -195,6 +212,13 @@ function isRetryableError(status: number, errorText: string): boolean {
   return /rate.?limit|overloaded|service.?unavailable|upstream.?connect|connection.?refused/i.test(
     errorText,
   );
+}
+
+function isRetryableCompactError(status: number, errorText: string): boolean {
+  // ChatGPT's Codex compact route can temporarily disappear while the normal
+  // responses route remains healthy. Give that 404 the same bounded retry
+  // budget as transient provider failures before the caller uses portable compaction.
+  return status === 404 || isRetryableError(status, errorText);
 }
 
 function getRetryAfterDelayMs(headers: Headers): number | undefined {
@@ -684,6 +708,186 @@ function buildRequestBody(
   }
 
   return body;
+}
+
+export interface OpenAICodexCompactResult {
+  /** Responses input items returned by `responses/compact`. */
+  data: JsonValue;
+}
+
+/**
+ * Call Codex's native unary compaction endpoint. The caller decides whether
+ * this provider-native material becomes a durable checkpoint.
+ *
+ * Based on https://github.com/openai/codex/blob/d5caceccb1ee5bf94c081b995575ce4860e0912b/codex-rs/codex-api/src/endpoint/compact.rs
+ */
+export async function compactOpenAICodexContext(
+  model: Model<"openai-codex-responses">,
+  context: Context,
+  options?: OpenAICodexResponsesOptions,
+): Promise<OpenAICodexCompactResult> {
+  const apiKey = options?.apiKey;
+  if (!apiKey) throw new Error(`No API key for provider: ${model.provider}`);
+  const accountId = extractAccountId(apiKey);
+  const cacheSessionId =
+    options?.cacheRetention === "none" ? undefined : clampOpenAIPromptCacheKey(options?.sessionId);
+  const request = buildRequestBody(model, context, options, cacheSessionId);
+  let body: RequestBody = {
+    model: request.model,
+    input: request.input,
+    instructions: request.instructions,
+    tools: request.tools,
+    parallel_tool_calls: request.parallel_tool_calls,
+    reasoning: request.reasoning,
+    service_tier: request.service_tier,
+    prompt_cache_key: request.prompt_cache_key,
+    text: request.text,
+  };
+  const nextBody = await options?.onPayload?.(body, model);
+  if (nextBody !== undefined) body = nextBody as RequestBody;
+
+  const headers = buildBaseCodexHeaders(model.headers, options?.headers, accountId, apiKey);
+  headers.set("accept", "application/json");
+  headers.set("content-type", "application/json");
+  const timeoutMs = normalizeTimeoutMs(options?.timeoutMs);
+  const maxRetries = options?.maxRetries ?? DEFAULT_COMPACT_MAX_RETRIES;
+  const fetch = options?.fetch ?? globalThis.fetch;
+  const url = `${resolveCodexUrl(model.baseUrl)}/compact`;
+  const encodedBody = JSON.stringify(body);
+  let attempt = 0;
+
+  for (;;) {
+    if (options?.signal?.aborted) throw new Error("Request was aborted");
+    const timeoutSignal =
+      timeoutMs !== undefined && timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+    const combinedSignal = combineAbortSignals([options?.signal, timeoutSignal]);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: encodedBody,
+        signal: combinedSignal.signal,
+      });
+    } catch (error) {
+      if (options?.signal?.aborted) throw new Error("Request was aborted");
+      if (attempt >= maxRetries) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+      const delayMs = BASE_DELAY_MS * 2 ** attempt;
+      attempt += 1;
+      await sleep(delayMs, options?.signal);
+      continue;
+    } finally {
+      combinedSignal.cleanup();
+    }
+
+    await options?.onResponse?.(
+      { status: response.status, headers: headersToRecord(response.headers) },
+      model,
+    );
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (attempt < maxRetries && isRetryableCompactError(response.status, errorText)) {
+        const retryAfterDelayMs = getRetryAfterDelayMs(response.headers);
+        const delayMs =
+          retryAfterDelayMs === undefined
+            ? BASE_DELAY_MS * 2 ** attempt
+            : validateRetryDelayMs(retryAfterDelayMs, options);
+        attempt += 1;
+        await sleep(delayMs, options?.signal);
+        continue;
+      }
+
+      const info = await parseErrorResponse(
+        new Response(errorText, { status: response.status, statusText: response.statusText }),
+      );
+      throw new Error(info.friendlyMessage || info.message);
+    }
+
+    const decoded: unknown = await response.json();
+    const output = recordOf(decoded)?.["output"];
+    if (!Array.isArray(output) || !isJsonValue(output)) {
+      throw new Error("Codex compact response did not contain output items");
+    }
+    return { data: output };
+  }
+}
+
+function accountWindow(
+  fallbackId: "primary" | "secondary",
+  value: unknown,
+): AccountLimits["windows"][number] | undefined {
+  const record = recordOf(value);
+  const usedPercent = numberOf(record?.["used_percent"]);
+  if (usedPercent === undefined) return undefined;
+  const windowSeconds = numberOf(record?.["limit_window_seconds"]);
+  const resetAtSeconds = numberOf(record?.["reset_at"]);
+  const id =
+    windowSeconds === 5 * 60 * 60
+      ? "five_hour"
+      : windowSeconds === 7 * 24 * 60 * 60
+        ? "seven_day"
+        : fallbackId;
+  return {
+    id,
+    usedPercent: Math.max(0, Math.min(100, usedPercent)),
+    ...(resetAtSeconds === undefined ? {} : { resetsAt: resetAtSeconds * 1000 }),
+    ...(windowSeconds === undefined ? {} : { windowMinutes: windowSeconds / 60 }),
+  };
+}
+
+/** Fetch current ChatGPT subscription windows from `wham/usage`. */
+export async function fetchOpenAICodexAccountLimits(
+  model: Model<"openai-codex-responses">,
+  options?: OpenAICodexResponsesOptions,
+): Promise<AccountLimits> {
+  const apiKey = options?.apiKey;
+  if (!apiKey) throw new Error(`No API key for provider: ${model.provider}`);
+  const accountId = extractAccountId(apiKey);
+  const headers = buildBaseCodexHeaders(model.headers, options?.headers, accountId, apiKey);
+  headers.set("accept", "application/json");
+  const rawBase = model.baseUrl?.trim() || DEFAULT_CODEX_BASE_URL;
+  const baseUrl = rawBase.replace(/\/+$/, "").replace(/\/codex$/, "");
+  const timeoutSignal =
+    options?.timeoutMs !== undefined && options.timeoutMs > 0
+      ? AbortSignal.timeout(normalizeTimeoutMs(options.timeoutMs) ?? 0)
+      : undefined;
+  const combinedSignal = combineAbortSignals([options?.signal, timeoutSignal]);
+  let response: Response;
+  try {
+    response = await (options?.fetch ?? globalThis.fetch)(`${baseUrl}/wham/usage`, {
+      method: "GET",
+      headers,
+      signal: combinedSignal.signal,
+    });
+  } finally {
+    combinedSignal.cleanup();
+  }
+  await options?.onResponse?.(
+    { status: response.status, headers: headersToRecord(response.headers) },
+    model,
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `Codex usage request failed (${String(response.status)}): ${text || response.statusText}`,
+    );
+  }
+  const decoded: unknown = await response.json();
+  const root = recordOf(decoded);
+  if (root === undefined) throw new Error("Codex usage response was not an object");
+  const limits = recordOf(root.rate_limit);
+  const windows = [
+    accountWindow("primary", limits?.primary_window),
+    accountWindow("secondary", limits?.secondary_window),
+  ].filter((window) => window !== undefined);
+  return {
+    providerId: model.provider,
+    ...(typeof root.plan_type === "string" ? { plan: root.plan_type } : {}),
+    windows,
+    observedAt: Date.now(),
+  };
 }
 
 function getServiceTierCostMultiplier(

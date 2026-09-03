@@ -1,8 +1,8 @@
 /**
- * Proof of concept for plugins.md §5 and §8 against the real harness: a
- * policy plugin blocks a tool, a profiler plugin records every call into
- * its storage, activate with a new version hot-swaps behavior, a broken
- * version keeps the old one live, and dispose removes every registration.
+ * Proof of concept for plugins.md §5 against the real harness: a policy
+ * plugin blocks a tool, activate with a new version hot-swaps behavior, a
+ * broken version keeps the old one live, and dispose removes every
+ * registration.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -19,18 +19,30 @@ import type {
 import { EventStream } from "@uji-ai/ai";
 import type { JsonValue } from "@uji-ai/schema";
 import { Type } from "typebox";
-import {
-  AgentHarness,
-  type HarnessTool,
-  inlinePlugin,
-  type LoadedPlugin,
-  type Plugin,
-  SqliteSessionRepo,
-  systemPromptPlugin,
-  toolsPlugin,
-} from "../src/index.ts";
+import { type LoadedPlugin } from "../src/index.ts";
 import { definePlugin } from "../src/plugins/types.ts";
 import type { StreamFn } from "../src/types.ts";
+import { AgentHarness } from "../src/harness/agent-harness.ts";
+import {
+  inlinePlugin,
+  systemPromptPlugin,
+  type HarnessTool,
+  type Plugin,
+} from "../src/plugins/index.ts";
+import { SqliteSessionRepo } from "../src/store.ts";
+import { prompt } from "./harness-driver.ts";
+
+/** A plugin that contributes a fixed list of tools. */
+function toolsPlugin(tools: readonly HarnessTool[]): Plugin {
+  return definePlugin({
+    id: "tools",
+    session(api) {
+      api.tools.add((draft) => {
+        for (const tool of tools) draft.set(tool.name, tool);
+      });
+    },
+  });
+}
 
 const directories: string[] = [];
 afterEach(() => {
@@ -112,7 +124,6 @@ function bashThenStop(command: string): StreamFn {
 
 const bashTool: HarnessTool = {
   name: "bash",
-  label: "Bash",
   description: "run a command",
   parameters: Type.Object({ command: Type.String() }),
   execute: async () => ({ content: [{ type: "text", text: "ran" }], details: undefined }),
@@ -127,16 +138,16 @@ function inline(plugin: Plugin, version = "1"): LoadedPlugin {
   return inlinePlugin(plugin, { version });
 }
 
-/** A third-party policy plugin can block a tool without becoming harness policy. */
+/** A third-party policy plugin can reject a tool call without becoming harness policy. */
 const dangerousCommandGuard = definePlugin({
   id: "dangerous-command-guard",
   session(api) {
     api.hook("before_tool", (event) => {
       const command = event.args.command;
       if (event.toolName === "bash" && isString(command) && command.includes("rm -rf")) {
-        return { block: { reason: "blocked by policy" } };
+        return { action: "reject", message: "blocked by policy" };
       }
-      return undefined;
+      return { action: "continue" };
     });
   },
 });
@@ -145,35 +156,19 @@ function isString(value: JsonValue): value is string {
   return typeof value === "string";
 }
 
-/** plugins.md §8: the profiler the agent writes for itself. */
-const profiler = definePlugin({
-  id: "me.profile",
-  session(api) {
-    const started = new Map<string, number>();
-    api.on("tool_execution_start", (event) => {
-      started.set(event.toolCallId, Date.now());
-    });
-    api.on("tool_execution_end", async (event) => {
-      await api.storage.set(`call:${event.toolCallId}`, {
-        tool: event.toolName,
-        ms: Date.now() - (started.get(event.toolCallId) ?? Date.now()),
-      });
-    });
-  },
-});
-
 async function open(streamFn: StreamFn) {
   const directory = mkdtempSync(join(tmpdir(), "uji-plugins-poc-"));
   directories.push(directory);
   const repo = new SqliteSessionRepo(join(directory, "sessions.db"));
   const session = await repo.create();
-  const { harness } = await AgentHarness.create({
+  const harness = await AgentHarness.create({
     session,
     streamFn,
     plugins: base,
     env: { cwd: "/" },
     model,
   });
+  harness.attach();
   const host = {
     activate: (plugins: readonly LoadedPlugin[]) => harness.plugins.activate([...base, ...plugins]),
     list: () => harness.plugins.list(),
@@ -189,21 +184,16 @@ async function open(streamFn: StreamFn) {
   };
 }
 
-function lastToolResultText(events: string[]): string | undefined {
-  return events.at(-1);
-}
-
+/** The last tool result the run settled, read back from the branch. */
 async function runAndCollectToolResult(harness: AgentHarness): Promise<string | undefined> {
+  await prompt(harness, "go");
   const texts: string[] = [];
-  const off = harness.subscribe((event) => {
-    if (event.type === "message_end" && event.message.role === "toolResult") {
-      const part = event.message.content[0];
-      if (part?.type === "text") texts.push(part.text);
-    }
-  });
-  await harness.prompt("go");
-  off();
-  return lastToolResultText(texts);
+  for (const entry of await harness.session.getBranch("main")) {
+    if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+    const part = entry.message.content[0];
+    if (part?.type === "text") texts.push(part.text);
+  }
+  return texts.at(-1);
 }
 
 void describe("PluginHost proof of concept", () => {
@@ -217,30 +207,6 @@ void describe("PluginHost proof of concept", () => {
     await h.close();
   });
 
-  void test("a profiler plugin observes every call and keeps state in its storage", async () => {
-    const h = await open(bashThenStop("ls"));
-    await h.host.activate([inline(profiler)]);
-    await h.harness.prompt("go");
-    await h.harness.prompt("again");
-
-    // Storage is namespaced by plugin id and survives reload: read it back
-    // through a second activation of the same id.
-    let calls: unknown[] = [];
-    await h.host.activate([
-      inline(
-        definePlugin({
-          id: "me.profile",
-          session: async (api) => {
-            calls = await api.storage.scan("call:");
-          },
-        }),
-        "2",
-      ),
-    ]);
-    assert.equal(calls.length, 2);
-    await h.close();
-  });
-
   void test("hot swap: version 2 replaces version 1's hooks atomically", async () => {
     const h = await open(bashThenStop("deploy"));
     const gate = (version: string, reason: string) =>
@@ -248,7 +214,7 @@ void describe("PluginHost proof of concept", () => {
         definePlugin({
           id: "gate",
           session(api) {
-            api.hook("before_tool", () => ({ block: { reason } }));
+            api.hook("before_tool", () => ({ action: "reject", message: reason }));
           },
         }),
         version,
@@ -269,7 +235,7 @@ void describe("PluginHost proof of concept", () => {
       definePlugin({
         id: "gate",
         session(api) {
-          api.hook("before_tool", () => ({ block: { reason: "v1 says no" } }));
+          api.hook("before_tool", () => ({ action: "reject", message: "v1 says no" }));
         },
       }),
       "1",

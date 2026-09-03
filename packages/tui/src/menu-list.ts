@@ -20,6 +20,7 @@ export interface MenuItem {
   id: string;
   label: string;
   description?: string;
+  status?: { text: string; tone: "dim" | "ok" };
 }
 
 interface MenuListOptions {
@@ -41,6 +42,8 @@ interface MenuListOptions {
 const PREFIX_WIDTH = 2;
 /** Wide enough that the two columns read as columns, not as one sentence. */
 const LABEL_GAP = 4;
+/** Below this, a complete label is worth more than a clipped second column. */
+const DETAIL_MIN_WIDTH = 48;
 
 interface MenuRowsOptions extends RenderableOptions<MenuRows> {
   theme: CliTheme;
@@ -64,12 +67,13 @@ class MenuRows extends Renderable {
   private selected = 0;
   private hovered: number | undefined;
   private readonly notifySelectionChanged: (index: number) => void;
-  private readonly rowBackground: RGBA;
-  private readonly selectedBackground: RGBA;
-  private readonly hoverBackground: RGBA;
-  private readonly accent: RGBA;
-  private readonly foreground: RGBA;
-  private readonly dim: RGBA;
+  private rowBackground: RGBA;
+  private selectedBackground: RGBA;
+  private selectedForeground: RGBA;
+  private hoverBackground: RGBA;
+  private foreground: RGBA;
+  private dim: RGBA;
+  private ok: RGBA;
   private readonly boldAttributes = createTextAttributes({ bold: true });
 
   constructor(ctx: CliRenderer, options: MenuRowsOptions) {
@@ -77,10 +81,22 @@ class MenuRows extends Renderable {
     this.notifySelectionChanged = options.onSelectionChanged;
     this.rowBackground = parseColor(options.background);
     this.selectedBackground = parseColor(options.theme.selectionBackground);
+    this.selectedForeground = parseColor(options.theme.selectionForeground);
     this.hoverBackground = parseColor(options.theme.hover);
-    this.accent = parseColor(options.theme.accent);
     this.foreground = parseColor(options.theme.foreground);
     this.dim = parseColor(options.theme.dim);
+    this.ok = parseColor(options.theme.ok);
+  }
+
+  retheme(theme: CliTheme, background: string): void {
+    this.rowBackground = parseColor(background);
+    this.selectedBackground = parseColor(theme.selectionBackground);
+    this.selectedForeground = parseColor(theme.selectionForeground);
+    this.hoverBackground = parseColor(theme.hover);
+    this.foreground = parseColor(theme.foreground);
+    this.dim = parseColor(theme.dim);
+    this.ok = parseColor(theme.ok);
+    this.requestRender();
   }
 
   setItems(items: readonly MenuItem[], selectedIndex: number): void {
@@ -146,27 +162,43 @@ class MenuRows extends Renderable {
         selected ? `${GLYPHS.prompt} ` : "  ",
         left,
         top + index,
-        selected ? this.accent : this.foreground,
+        selected ? this.selectedForeground : this.foreground,
         background,
       );
       buffer.drawText(
         padEnd(truncate(item.label, labelColumn), labelColumn),
         left + PREFIX_WIDTH,
         top + index,
-        this.foreground,
+        selected ? this.selectedForeground : this.foreground,
         background,
         selected ? this.boldAttributes : undefined,
       );
       const width = this.width - PREFIX_WIDTH - labelColumn - LABEL_GAP;
       const description = item.description ?? "";
-      if (description === "" || width <= 0) continue;
+      const separator = description === "" || item.status === undefined ? "" : " · ";
+      const detail = `${description}${separator}${item.status?.text ?? ""}`;
+      if (this.width < DETAIL_MIN_WIDTH || detail === "" || width <= 0) continue;
+      const descriptionLeft = left + PREFIX_WIDTH + labelColumn;
       buffer.drawText(
-        `${" ".repeat(LABEL_GAP)}${truncate(description, width)}`,
-        left + PREFIX_WIDTH + labelColumn,
+        `${" ".repeat(LABEL_GAP)}${truncate(detail, width)}`,
+        descriptionLeft,
         top + index,
-        this.dim,
+        selected ? this.selectedForeground : this.dim,
         background,
       );
+      if (item.status?.tone === "ok") {
+        const statusOffset = columns(`${description}${separator}`);
+        const statusWidth = width - statusOffset;
+        if (statusWidth > 0) {
+          buffer.drawText(
+            truncate(item.status.text, statusWidth),
+            descriptionLeft + LABEL_GAP + statusOffset,
+            top + index,
+            selected ? this.selectedForeground : this.ok,
+            background,
+          );
+        }
+      }
     }
   }
 
@@ -184,8 +216,7 @@ class MenuRows extends Renderable {
  * shade; clicking one chooses it. Shared by the choice dialog and the slash
  * dropdown so both feel like one control.
  *
- * Based on Grok Build's slash dropdown and picker rows:
- * https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/src/views/slash_dropdown.rs
+ * Based on https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/src/views/slash_dropdown.rs
  */
 export class MenuList {
   readonly container: ScrollBoxRenderable;
@@ -243,6 +274,11 @@ export class MenuList {
   /** Rows currently on screen. */
   private get visibleCount(): number {
     return Math.min(this.items.length, this.maxVisible);
+  }
+
+  /** Repaint a persistent list after the shared theme object changes. */
+  retheme(theme: CliTheme, background: string): void {
+    this.rows.retheme(theme, background);
   }
 
   /** Change the viewport row budget without rebuilding the menu. */

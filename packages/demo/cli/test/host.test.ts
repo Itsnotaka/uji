@@ -6,7 +6,8 @@ import { afterEach, test } from "node:test";
 import { EventStream } from "@uji-ai/ai";
 import type { AssistantMessage, AssistantMessageEvent, Model, Usage } from "@uji-ai/ai";
 import type { StreamFn } from "@uji-ai/core";
-import { openHost, subscribePrint } from "../src/host.ts";
+import { createCliModels, lastRunEnd, openHost } from "../src/host.ts";
+import type { Host } from "../src/host.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -66,9 +67,13 @@ const reply: AssistantMessage = {
 
 const streamFn: StreamFn = () => stream(reply);
 
-const otherModel: Model<"openai-responses"> = { ...model, id: "other-model", name: "Other model" };
+/** Send one prompt through the SDK and wait out the run it starts. */
+async function promptAndWait(host: Host, content: string): Promise<void> {
+  await host.sdk.messages.send({ sessionId: host.sessionId, content });
+  await host.sdk.runs.wait({ sessionId: host.sessionId });
+}
 
-void test("openHost runs a prompt through AgentHarness", async () => {
+void test("openHost runs a prompt through the SDK and streams its deltas", async () => {
   const directory = mkdtempSync(join(tmpdir(), "uji-cli-"));
   directories.push(directory);
   const opened = await openHost({
@@ -79,14 +84,29 @@ void test("openHost runs a prompt through AgentHarness", async () => {
     model,
   });
   const chunks: string[] = [];
-  const unsubscribe = subscribePrint(opened.harness, (chunk) => {
-    chunks.push(chunk);
+  const controller = new AbortController();
+  let subscribed = (): void => undefined;
+  const ready = new Promise<void>((resolve) => {
+    subscribed = resolve;
   });
-  const result = await opened.harness.prompt("hi");
-  unsubscribe();
+  const watcher = (async () => {
+    for await (const event of opened.sdk.watch({
+      sessionId: opened.sessionId,
+      live: true,
+      signal: controller.signal,
+    })) {
+      if (event.kind === "synced") subscribed();
+      if (event.kind === "text_delta") chunks.push(event.delta);
+    }
+  })();
+  await ready;
+
+  await promptAndWait(opened, "hi");
+  const end = await lastRunEnd(opened);
+  controller.abort();
+  await watcher.catch(() => undefined);
   await opened.close();
-  assert.equal(result.ok, true);
-  if (result.ok) assert.equal(result.value.kind, "completed");
+  assert.equal(end?.kind, "completed");
   assert.equal(chunks.join(""), "ok");
 });
 
@@ -102,7 +122,7 @@ void test("resume opens the newest session", async () => {
     model,
   });
   const sessionId = first.sessionId;
-  await first.harness.prompt("hi");
+  await promptAndWait(first, "hi");
   await first.close();
   const second = await openHost({
     resume: true,
@@ -115,9 +135,16 @@ void test("resume opens the newest session", async () => {
   await second.close();
 });
 
-void test("setModel switches the model used by the next run", async () => {
+void test("configure switches the model used by the next run", async () => {
   const directory = mkdtempSync(join(tmpdir(), "uji-cli-"));
   directories.push(directory);
+  // Real catalog entries: `configure` refuses a model the catalog cannot resolve.
+  const catalog = createCliModels();
+  const [firstModel, secondModel] = catalog.getModels("openai");
+  assert.notEqual(firstModel, undefined);
+  assert.notEqual(secondModel, undefined);
+  if (firstModel === undefined || secondModel === undefined) return;
+
   const used: string[] = [];
   const recording: StreamFn = (requested) => {
     used.push(requested.id);
@@ -128,13 +155,16 @@ void test("setModel switches the model used by the next run", async () => {
     cwd: directory,
     dbPath: join(directory, "sessions.db"),
     streamFn: recording,
-    model,
+    model: firstModel,
   });
-  await opened.harness.prompt("hi");
-  opened.harness.setModel(otherModel);
-  assert.equal(opened.harness.state.model.id, "other-model");
-  await opened.harness.prompt("again");
+  await promptAndWait(opened, "hi");
+  const outcome = await opened.sdk.sessions.configure({
+    sessionId: opened.sessionId,
+    model: { provider: secondModel.provider, id: secondModel.id },
+  });
+  assert.equal(outcome.kind, "applied");
+  await promptAndWait(opened, "again");
   await opened.close();
-  assert.equal(used.at(0), "test-model");
-  assert.equal(used.at(-1), "other-model");
+  assert.equal(used.at(0), firstModel.id);
+  assert.equal(used.at(-1), secondModel.id);
 });

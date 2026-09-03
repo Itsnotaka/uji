@@ -2,7 +2,7 @@
  * Finds plugins and turns them into `LoadedPlugin`s. Built-ins come first,
  * then files from each directory in order; a file whose id matches an earlier
  * plugin replaces it in place, a new id is appended. A manifest can disable
- * ids and set options; it never has to list anything.
+ * ids and carry per-id options a host reads; it never has to list anything.
  *
  * A file's version is its mtime and size, so an edit gives the host a new
  * version and `import()` with a changed query string gives Node a new module.
@@ -12,20 +12,28 @@ import { readdir, stat } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@uji-ai/schema";
-import { isPlugin, type LoadedPlugin, type Plugin, type PluginSource } from "./types.ts";
+import type { LoadedPlugin, Plugin, PluginSource } from "./types.ts";
 
 type ManifestPluginRef = { id: string; options?: JsonValue };
-
-function isPluginRef(item: string | ManifestPluginRef): item is ManifestPluginRef {
-  return typeof item !== "string";
-}
 
 function hasDefaultExport(value: unknown): value is { default: unknown } {
   return typeof value === "object" && value !== null && "default" in value;
 }
 
+function isPlugin(value: unknown): value is Plugin {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    "session" in value &&
+    typeof value.session === "function"
+  );
+}
+
 export interface PluginManifest {
-  /** Strings are ids to disable when prefixed with "-"; objects set a plugin's options. */
+  /** Strings are ids to disable when prefixed with "-"; objects carry options a host reads. */
   plugins?: readonly (string | ManifestPluginRef)[];
 }
 
@@ -78,21 +86,10 @@ export async function resolvePlugins(options: ResolveOptions): Promise<ResolvedP
     }
   }
   const disabled = new Set<string>();
-  const pluginOptions = new Map<string, JsonValue>();
   for (const item of options.manifest?.plugins ?? []) {
-    if (isPluginRef(item)) {
-      if (item.options !== undefined) pluginOptions.set(item.id, item.options);
-      continue;
-    }
-    if (item.startsWith("-")) disabled.add(item.slice(1));
+    if (typeof item === "string" && item.startsWith("-")) disabled.add(item.slice(1));
   }
-  const plugins = [...byId.values()]
-    .filter((plugin) => !disabled.has(plugin.id))
-    .map((plugin) => {
-      const value = pluginOptions.get(plugin.id);
-      return value === undefined ? plugin : { ...plugin, options: value };
-    });
-  return { plugins, failures };
+  return { plugins: [...byId.values()].filter((plugin) => !disabled.has(plugin.id)), failures };
 }
 
 /** `foo.ts` and `foo/index.ts` are plugin entries; anything else in the directory is ignored. */

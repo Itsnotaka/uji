@@ -1,16 +1,25 @@
 import type { ModelThinkingLevel } from "@uji-ai/ai";
-import type { ContextStatus, PendingQueueItem, SessionDirectoryEntry, Turn } from "@uji-ai/core";
+import type {
+  ContextStatus,
+  PendingItem,
+  SessionEvent,
+  SessionId,
+  ToolProgress,
+  Turn,
+} from "@uji-ai/core";
 import type { Agent, AgentDraft, AgentId } from "./agents.ts";
 
-// TODO(protocol): Replace this demo-local facade with the sdk.sessions,
-// sdk.messages, and sdk.provider protocol once those namespaces ship.
 export type AuthStatus = {
   signedIn: boolean;
   label: string;
 };
 
-export type ConversationSummary = SessionDirectoryEntry & {
+export type ConversationSummary = {
+  id: SessionId;
   agentId: AgentId;
+  name?: string;
+  preview?: string;
+  lastActivity: number;
   running: boolean;
 };
 
@@ -37,53 +46,46 @@ export type RuntimeSettingsChange =
 
 export type UjiSnapshot = {
   activeAgentId: AgentId | null;
-  activeSessionId: string | null;
+  activeSessionId: SessionId | null;
   agents: readonly Agent[];
   auth: AuthStatus;
   context: ContextStatus | null;
   conversations: readonly ConversationSummary[];
   live: LiveSnapshot;
   messages: readonly Turn[];
-  pending: readonly PendingQueueItem[];
+  pending: readonly PendingItem[];
   running: boolean;
   runtime: RuntimeSettings;
 };
 
 export type LiveSnapshot = {
-  streamingText: string;
-  thinkingText: string;
-  tools: readonly LiveToolEvent[];
+  parts: readonly LivePart[];
 };
 
-export type LiveToolEvent =
+export type LivePart =
   | {
-      kind: "started";
-      args: unknown;
-      callId: string;
-      name: string;
+      kind: "text";
+      contentIndex: number;
+      entryId: string;
+      text: string;
     }
   | {
-      kind: "updated";
-      args: unknown;
-      callId: string;
-      name: string;
-      partialResult: unknown;
+      kind: "thinking";
+      contentIndex: number;
+      entryId: string;
+      text: string;
     }
   | {
-      kind: "finished";
+      kind: "tool";
       callId: string;
-      isError: boolean;
-      name: string;
-      result: unknown;
+      entryId: string;
+      progress: ToolProgress;
     };
 
 export type UjiDesktopEvent =
-  | { type: "delta"; entryId: string; sessionId: string; text: string }
-  | { type: "thinking-delta"; entryId: string; sessionId: string; text: string }
-  | { type: "tool"; entryId: string; sessionId: string; tool: LiveToolEvent }
-  | { type: "running"; running: boolean; sessionId: string }
+  | { type: "session"; event: SessionEvent; sessionId: SessionId }
   | { type: "status"; message: string }
-  | { type: "error"; message: string; sessionId?: string }
+  | { type: "error"; message: string; sessionId?: SessionId }
   | { type: "snapshot"; snapshot: UjiSnapshot };
 
 export type UjiDesktopApi = {
@@ -95,8 +97,8 @@ export type UjiDesktopApi = {
   abort(): Promise<void>;
   newChat(agentId?: AgentId): Promise<UjiSnapshot>;
   selectAgent(agentId: AgentId): Promise<UjiSnapshot>;
-  selectConversation(sessionId: string): Promise<UjiSnapshot>;
-  renameConversation(sessionId: string, name: string): Promise<UjiSnapshot>;
+  selectConversation(sessionId: SessionId): Promise<UjiSnapshot>;
+  renameConversation(sessionId: SessionId, name: string): Promise<UjiSnapshot>;
   createAgent(draft: AgentDraft): Promise<UjiSnapshot>;
   updateAgent(agentId: AgentId, draft: AgentDraft): Promise<UjiSnapshot>;
   deleteAgent(agentId: AgentId): Promise<UjiSnapshot>;

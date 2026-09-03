@@ -170,8 +170,15 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const { runTui } = await import("./interactive.ts");
-  const exit = await runTui(resolveTuiResume(flags));
+  const [{ runTui }, { resumeSessionHint }] = await Promise.all([
+    import("./interactive.ts"),
+    import("./lifecycle.ts"),
+  ]);
+  const exit = await runTui(resolveTuiResume(flags), {
+    onSessionClosed: (sessionId) => {
+      process.stdout.write(`${resumeSessionHint(sessionId)}\n`);
+    },
+  });
   if (exit.kind === "signal") process.kill(process.pid, exit.signal);
 }
 

@@ -57,7 +57,12 @@ export function lazyOAuth(input: {
 }): OAuthAuth {
   let promise: Promise<OAuthAuth> | undefined;
   const loaded = () => {
-    promise ??= input.load();
+    // Memoize only successful loads: a cached rejection would poison every
+    // later login/refresh/toAuth call for the life of the process.
+    promise ??= input.load().catch((error: unknown) => {
+      promise = undefined;
+      throw error;
+    });
     return promise;
   };
   return {

@@ -12,18 +12,27 @@ import {
   link,
   MarkdownRenderable,
   pathToFiletype,
+  RenderableEvents,
   StyledText,
   SyntaxStyle,
   TextRenderable,
 } from "@opentui/core";
-import type { CliRenderer, LineColorConfig, OnChunksCallback, Renderable } from "@opentui/core";
+import type {
+  BoxOptions,
+  CliRenderer,
+  LineColorConfig,
+  OnChunksCallback,
+  Renderable,
+} from "@opentui/core";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
   ImageContent,
+  JsonValue,
   UserMessage,
 } from "@uji-ai/schema";
-import type { CustomEntry, ProvisionedEntry, Turn, TurnPart } from "@uji-ai/core";
+import { patchOf } from "@uji-ai/core";
+import type { Turn, TurnOutcome, TurnPart } from "@uji-ai/core";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -33,19 +42,23 @@ import {
   pasteLineCount,
 } from "./composer.ts";
 import { renderDiagramFences } from "./diagram.ts";
+import { extractSkillInvocations } from "./slash.ts";
 import {
-  describeToolCall,
-  diffFromDetails,
+  patchPath,
+  toolHeading,
   diffFromOutput,
+  diffSections,
   diffStat,
+  earlierCallsLabel,
   formatDuration,
   omittedLabel,
   previewLines,
-  relativePath,
   resultSummary,
   spinnerFrame,
+  toolCallCounts,
+  toolCallVerbs,
+  unchangedLinesLabel,
   type OutputDiff,
-  type ToolCallSummary,
 } from "./format.ts";
 import {
   ACTIVITY_FAILED_LABEL,
@@ -54,17 +67,23 @@ import {
   ACTIVITY_THOUGHT_LABEL,
   ACTIVITY_WORKED_LABEL,
   ACTIVITY_WORKING_LABEL,
-  DIFF_PREVIEW_LINES,
   GLYPHS,
+  GROUP_TAIL_CALLS,
+  keycap,
+  MIN_REPORTED_DURATION_MS,
   RESULT_PREVIEW_LINES,
   RESULT_TAIL_LINES,
   SPACING,
   TOOL_INLINE_PREVIEW_LENGTH,
 } from "./constants.ts";
+import type { ToolCallDisplay } from "./constants.ts";
+import { presenter } from "./presenters.ts";
 import type { CliTheme } from "./theme.ts";
 import { displayWidth } from "./width.ts";
 import { collapsedImagePreview, collapsedTag } from "./collapsed-tag.ts";
 import { syntaxHighlightedChunks } from "./highlight.ts";
+import { bindSemantics } from "./semantics.ts";
+import type { CustomEntry, ProvisionedEntry } from "@uji-ai/core/store";
 
 /**
  * OpenTUI's line background fill rejects rows above the screen instead of
@@ -98,12 +117,56 @@ function clipOffscreenDiffLineColors(diff: DiffRenderable): void {
   }
 }
 
+/**
+ * Keep code columns fixed when separate hunks have different line-number widths.
+ * Based on OpenCode's patch diff component:
+ * https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/component/patch-diff.tsx
+ */
+function syncDiffGutters(diffs: readonly DiffRenderable[]): void {
+  const gutters = diffs.flatMap((diff) =>
+    diff.getChildren().filter((child) => child instanceof LineNumberRenderable),
+  );
+  const numbers = gutters.map((gutter) => new Map(gutter.getLineNumbers()));
+  const digits = numbers.map((lines) => Math.max(0, ...lines.values()).toString().length);
+  const after = gutters.map((gutter) =>
+    Math.max(
+      0,
+      ...[...gutter.getLineSigns().values()].map((sign) => displayWidth(sign.after ?? "")),
+    ),
+  );
+  const maxDigits = Math.max(0, ...digits);
+  const maxAfter = Math.max(0, ...after);
+  for (const [index, gutter] of gutters.entries()) {
+    const lineNumbers = numbers[index];
+    const lineDigits = digits[index];
+    if (lineNumbers === undefined || lineDigits === undefined) continue;
+    const signs = new Map(gutter.getLineSigns());
+    signs.set(-1, { after: " ".repeat(maxAfter + maxDigits - lineDigits) });
+    gutter.setLineNumbers(lineNumbers);
+    gutter.setLineSigns(signs);
+  }
+}
+
 function inlineToolPreview(text: string): string | undefined {
   const value = text.trim();
   if (value === "" || value.includes("\n") || displayWidth(value) > TOOL_INLINE_PREVIEW_LENGTH) {
     return undefined;
   }
   return value;
+}
+
+function toolOutputPreview(text: string, expanded: boolean): ReturnType<typeof previewLines> {
+  const trimmed = text.replace(/\n+$/u, "");
+  if (expanded || trimmed === "") return { text: trimmed, omitted: 0 };
+
+  const preview = previewLines(text, RESULT_PREVIEW_LINES, RESULT_TAIL_LINES);
+  const hidden = Math.max(0, trimmed.split("\n").length - RESULT_PREVIEW_LINES - RESULT_TAIL_LINES);
+  if (hidden === 0) return preview;
+  const omission = omittedLabel(hidden);
+  return {
+    ...preview,
+    text: preview.text.replace(omission, `${omission} · ${keycap("chat.tools.toggle")} expand`),
+  };
 }
 
 function shikiChunks(theme: CliTheme): OnChunksCallback {
@@ -162,29 +225,80 @@ export function createSubtleSyntaxStyle(theme: CliTheme): SyntaxStyle {
   return syntaxStyle(theme, true);
 }
 
+interface ExpandableToolOutput {
+  setExpanded(expanded: boolean): void;
+}
+
+/**
+ * One expansion state for the transcript and every tool card in it. New cards
+ * inherit the state, while destroyed cards unregister themselves.
+ *
+ * Based on pi's global tool-output toggle:
+ * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+ */
+export class ToolOutputExpansion {
+  private readonly cards = new Set<ExpandableToolOutput>();
+  private current = false;
+
+  get expanded(): boolean {
+    return this.current;
+  }
+
+  register(card: ExpandableToolOutput): () => void {
+    this.cards.add(card);
+    card.setExpanded(this.current);
+    return () => this.cards.delete(card);
+  }
+
+  setExpanded(expanded: boolean): void {
+    if (expanded === this.current) return;
+    this.current = expanded;
+    for (const card of this.cards) card.setExpanded(expanded);
+  }
+
+  toggle(): boolean {
+    this.setExpanded(!this.current);
+    return this.current;
+  }
+}
+
 export interface Transcript {
   renderer: CliRenderer;
   container: Renderable;
   syntaxStyle: SyntaxStyle;
   subtleSyntaxStyle: SyntaxStyle;
   theme: CliTheme;
+  toolOutput: ToolOutputExpansion;
+  /** How consecutive tool calls are drawn. Settings own the value. */
+  toolCalls: ToolCallDisplay;
   /** Working directory of the harness whose entries are being rendered. */
   cwd?: string;
   nextId: (prefix?: string) => string;
   openPath?: (path: string) => void;
+  /** Keeps nested user cards at the visible transcript width. */
+  userLayout?: {
+    readonly blocks: Set<BoxRenderable>;
+    width(): number;
+  };
 }
+
+type SectionOptions = Pick<
+  BoxOptions,
+  | "backgroundColor"
+  | "marginTop"
+  | "marginLeft"
+  | "marginRight"
+  | "paddingTop"
+  | "paddingBottom"
+  | "paddingLeft"
+  | "paddingRight"
+  | "width"
+>;
 
 function section(
   transcript: Transcript,
   prefix: string,
-  options: {
-    backgroundColor?: string;
-    marginTop?: number;
-    paddingTop?: number;
-    paddingBottom?: number;
-    paddingLeft?: number;
-    paddingRight?: number;
-  } = {},
+  options: SectionOptions = {},
   parent: Renderable = transcript.container,
   before?: Renderable,
 ): BoxRenderable {
@@ -197,7 +311,9 @@ function section(
     paddingLeft: options.paddingLeft ?? SPACING.inset,
     paddingRight: options.paddingRight ?? SPACING.insetRight,
     marginTop: options.marginTop ?? SPACING.block,
-    width: "100%",
+    marginLeft: options.marginLeft ?? 0,
+    marginRight: options.marginRight ?? 0,
+    width: options.width ?? "100%",
   });
   if (before === undefined) parent.add(box);
   else parent.insertBefore(box, before);
@@ -224,17 +340,26 @@ interface PresentedFile {
   text?: string;
 }
 
-function userPresentation(content: UserMessage["content"]): {
-  text: string;
-  files: PresentedFile[];
-  images: ImageContent[];
-} {
+/** A skill the turn invoked, shown as the token that invoked it. */
+interface PresentedSkill {
+  name: string;
+  path: string;
+}
+
+function userPresentation(content: UserMessage["content"]) {
   let text =
     typeof content === "string"
       ? content
       : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
   // An attached body is the file, not the prompt. It folds back into its tag so
   // the turn reads as what the user typed, and the tag can open it on demand.
+  // Instructions the prompt pulled in are the skill, not the prompt: they fold
+  // to the same short token the composer showed while the message was drafted.
+  const skills: PresentedSkill[] = [];
+  for (const invocation of extractSkillInvocations(text)) {
+    skills.push({ name: invocation.name, path: invocation.path });
+    text = text.replace(invocation.source, "");
+  }
   const files: PresentedFile[] = [];
   for (const attachment of extractFileAttachments(text)) {
     files.push({ path: attachment.path, text: attachment.text });
@@ -254,16 +379,13 @@ function userPresentation(content: UserMessage["content"]): {
       .replace(/\n[ \t]+/g, "\n")
       .trim(),
     files,
+    skills,
     images,
   };
 }
 
 /** Lines kept visible when a user message is folded. */
 const PASTE_PREVIEW_LINES = 3;
-
-function userText(theme: CliTheme, text: string): StyledText {
-  return new StyledText([fg(theme.user)(`${GLYPHS.prompt} `), fg(theme.foreground)(text)]);
-}
 
 /**
  * A pasted wall of text is a fact about the turn, not the turn itself, so
@@ -276,7 +398,8 @@ function addUserText(transcript: Transcript, block: BoxRenderable, text: string)
   const preview = lines.slice(0, PASTE_PREVIEW_LINES).join("\n");
   const body = new TextRenderable(transcript.renderer, {
     id: transcript.nextId("user-text"),
-    content: userText(transcript.theme, folded ? preview : text),
+    content: folded ? preview : text,
+    fg: transcript.theme.foreground,
     wrapMode: "word",
     selectionBg: transcript.theme.selectionBackground,
     selectionFg: transcript.theme.selectionForeground,
@@ -292,7 +415,7 @@ function addUserText(transcript: Transcript, block: BoxRenderable, text: string)
     label: () => (expanded ? " fewer lines " : ` +${String(hidden)} lines `),
     onToggle: () => {
       expanded = !expanded;
-      body.content = userText(transcript.theme, expanded ? text : preview);
+      body.content = expanded ? text : preview;
     },
   });
 }
@@ -342,6 +465,16 @@ function addFileTag(
   block.add(body);
 }
 
+/** A skill the turn invoked. The tag opens its SKILL.md, the way a file tag does. */
+function addSkillTag(transcript: Transcript, tags: BoxRenderable, skill: PresentedSkill): void {
+  collapsedTag(transcript, tags, {
+    id: "skill-tag",
+    url: pathToFileURL(skill.path).href,
+    label: () => ` Skill ${skill.name} `,
+    onToggle: () => transcript.openPath?.(skill.path),
+  });
+}
+
 function addImageTag(
   transcript: Transcript,
   block: BoxRenderable,
@@ -371,19 +504,28 @@ export function appendUser(
   transcript: Transcript,
   content: UserMessage["content"],
   parent?: Renderable,
-): void {
+): BoxRenderable {
   const presentation = userPresentation(content);
+  const userLayout = transcript.userLayout;
   const block = section(
     transcript,
     "user",
     {
       backgroundColor: transcript.theme.userBackground,
       marginTop: parent === undefined ? SPACING.block : 0,
+      marginLeft: 1,
+      marginRight: 1,
       paddingTop: 1,
       paddingBottom: 1,
+      paddingLeft: 3,
+      width: userLayout?.width() ?? "100%",
     },
     parent,
   );
+  if (userLayout !== undefined) {
+    userLayout.blocks.add(block);
+    block.once(RenderableEvents.DESTROYED, () => userLayout.blocks.delete(block));
+  }
   if (presentation.text !== "") addUserText(transcript, block, presentation.text);
 
   const tags = new BoxRenderable(transcript.renderer, {
@@ -391,18 +533,21 @@ export function appendUser(
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 1,
-    visible: presentation.files.length + presentation.images.length > 0,
+    visible:
+      presentation.files.length + presentation.skills.length + presentation.images.length > 0,
     marginTop: presentation.text === "" ? 0 : 1,
   });
   block.add(tags);
+  for (const skill of presentation.skills) addSkillTag(transcript, tags, skill);
   for (const file of presentation.files) addFileTag(transcript, block, tags, file);
   for (const [index, image] of presentation.images.entries()) {
     addImageTag(transcript, block, tags, image, index + 1);
   }
+  return block;
 }
 
 /** A short one-line note: session info, command output, errors. */
-export function appendNote(
+function appendNote(
   transcript: Transcript,
   text: string,
   color?: string,
@@ -421,55 +566,11 @@ export function appendNote(
   return box;
 }
 
-/** Temporary queue feedback which disappears once core consumes or cancels the steer. */
-export class PendingSteeringStatus {
-  private readonly transcript: Transcript;
-  private pending = new Set<string>();
-  private readonly notes = new Map<string, BoxRenderable>();
-
-  constructor(transcript: Transcript) {
-    this.transcript = transcript;
-  }
-
-  sync(entryIds: readonly string[]): void {
-    this.pending = new Set(entryIds);
-    for (const entryId of this.notes.keys()) {
-      if (!this.pending.has(entryId)) this.remove(entryId);
-    }
-  }
-
-  show(entryId: string, text: string): void {
-    if (!this.pending.has(entryId)) return;
-    this.remove(entryId);
-    this.notes.set(entryId, appendNote(this.transcript, `Steering: ${text}`));
-  }
-
-  resolve(entryId: string): void {
-    this.pending.delete(entryId);
-    this.remove(entryId);
-  }
-
-  clear(): void {
-    this.pending.clear();
-    for (const entryId of this.notes.keys()) this.remove(entryId);
-  }
-
-  private remove(entryId: string): void {
-    const note = this.notes.get(entryId);
-    if (note === undefined) return;
-    this.notes.delete(entryId);
-    note.parent?.remove(note);
-    if (!note.isDestroyed) note.destroyRecursively();
-  }
-}
-
-/** A restored compaction checkpoint, kept dim so old context reads as history. */
-export function appendCompaction(
+/** A compaction checkpoint, kept dim so old context reads as history. */
+function appendCompaction(
   transcript: Transcript,
   summary: string,
   tokensBefore: number,
-  parent: Renderable = transcript.container,
-  before?: Renderable,
 ): void {
   const { theme } = transcript;
   const preview = previewLines(summary, 40);
@@ -505,8 +606,44 @@ export function appendCompaction(
       }),
     );
   }
-  if (before === undefined) parent.add(card);
-  else parent.insertBefore(card, before);
+  transcript.container.add(card);
+}
+
+/** A branch summary left at a fork: what the abandoned branch was about. */
+function appendBranchSummary(transcript: Transcript, summary: string, fromId: string): void {
+  const { theme } = transcript;
+  const preview = previewLines(summary, 40);
+  const visibleSummary =
+    preview.omitted === 0 ? preview.text : `${preview.text}\n${omittedLabel(preview.omitted)}`;
+  const card = new BoxRenderable(transcript.renderer, {
+    id: transcript.nextId("branch-summary"),
+    flexDirection: "column",
+    border: true,
+    borderStyle: "rounded",
+    borderColor: theme.promptBorder,
+    paddingLeft: 2,
+    paddingRight: 2,
+    marginTop: SPACING.block,
+    width: "100%",
+  });
+  card.add(
+    new TextRenderable(transcript.renderer, {
+      id: transcript.nextId("branch-summary-heading"),
+      content: new StyledText([fg(theme.dim)(`branch summary · from ${fromId.slice(0, 10)}`)]),
+      wrapMode: "word",
+    }),
+  );
+  if (visibleSummary !== "") {
+    card.add(
+      new TextRenderable(transcript.renderer, {
+        id: transcript.nextId("branch-summary-text"),
+        content: visibleSummary,
+        fg: theme.dim,
+        wrapMode: "word",
+      }),
+    );
+  }
+  transcript.container.add(card);
 }
 
 export function authUrlText(url: string, color: string, prefix = ""): StyledText {
@@ -548,9 +685,9 @@ class TurnSection extends BoxRenderable {
     { elapsed: number; line: TextRenderable; draw: (elapsedMs: number) => StyledText }
   >();
 
-  constructor(transcript: Transcript) {
+  constructor(transcript: Transcript, id?: string) {
     super(transcript.renderer, {
-      id: transcript.nextId("turn"),
+      id: id === undefined ? transcript.nextId("turn") : `turn:${id}`,
       flexDirection: "column",
       paddingLeft: 0,
       paddingRight: 0,
@@ -558,6 +695,7 @@ class TurnSection extends BoxRenderable {
       width: "100%",
       live: false,
     });
+    bindSemantics(this, () => ({ role: "message", id: id ?? this.id }));
     transcript.container.add(this);
   }
 
@@ -675,15 +813,18 @@ class ActivityBlock {
   private readonly section: BoxRenderable;
   private readonly line: TextRenderable;
   private readonly animation: symbol;
+  /** The turn's span as the record has it. The row's own clock runs on top. */
+  private readonly durationMs: number;
   private mode: "working" | "thinking" | "settled" = "working";
 
   get anchor(): Renderable {
     return this.section;
   }
 
-  constructor(transcript: Transcript, parent: TurnSection) {
+  constructor(transcript: Transcript, parent: TurnSection, durationMs = 0) {
     this.transcript = transcript;
     this.owner = parent;
+    this.durationMs = durationMs;
     this.section = section(transcript, "activity", {}, parent);
     this.line = new TextRenderable(transcript.renderer, {
       id: transcript.nextId("activity-line"),
@@ -714,12 +855,12 @@ class ActivityBlock {
     this.owner.changeAnimation(this.animation, this.workingFrame);
   }
 
-  settle(outcome: "completed" | "aborted" | "failed"): void {
+  settle(outcome: TurnOutcome): void {
     const { theme } = this.transcript;
-    const elapsed = this.owner.stopAnimation(this.animation);
+    const elapsed = this.durationMs + this.owner.stopAnimation(this.animation);
     this.mode = "settled";
     if (outcome === "completed") {
-      const duration = elapsed > 0 ? ` for ${formatDuration(elapsed)}` : "";
+      const duration = elapsed >= MIN_REPORTED_DURATION_MS ? ` for ${formatDuration(elapsed)}` : "";
       this.line.content = new StyledText([fg(theme.dim)(`${ACTIVITY_WORKED_LABEL}${duration}`)]);
     } else if (outcome === "aborted") {
       this.line.content = new StyledText([fg(theme.warning)(ACTIVITY_STOPPED_LABEL)]);
@@ -745,7 +886,7 @@ class ReasoningBlock {
   private buffer = "";
   private finished = false;
 
-  constructor(transcript: Transcript, parent: TurnSection, before: Renderable) {
+  constructor(transcript: Transcript, parent: TurnSection, before?: Renderable) {
     this.box = section(transcript, "thinking", {}, parent, before);
     this.box.visible = false;
     this.heading = new TextRenderable(transcript.renderer, {
@@ -804,48 +945,43 @@ class ReasoningBlock {
   }
 }
 
+type ToolCardPresentation =
+  | { readonly kind: "called" }
+  | { readonly kind: "streaming"; readonly text: string }
+  | {
+      readonly kind: "complete";
+      readonly text: string;
+      readonly isError: boolean;
+      readonly details?: JsonValue;
+    };
+
 /**
  * One card per tool call, reused from start through partial updates and the
  * final result. Unified diffs from edit details or shell output render with
  * DiffRenderable; everything else shows a capped source-aware preview.
  */
 export class ToolCard {
+  readonly container: BoxRenderable;
+
   private readonly transcript: Transcript;
   private readonly detail: BoxRenderable;
   private readonly heading: TextRenderable;
-  private readonly call: ToolCallSummary;
+  readonly toolName: string;
+  private title: string | undefined;
   private readonly structuredBodies: Renderable[] = [];
+  private presentation: ToolCardPresentation = { kind: "called" };
+  private expanded = false;
+  private compact = false;
   private textBody: CodeRenderable | undefined;
   private omitted: TextRenderable | undefined;
-
-  private operandColor(): string {
-    const { theme } = this.transcript;
-    switch (this.call.operandKind) {
-      case "path":
-        return theme.path;
-      case "pattern":
-        return theme.string;
-      case "command":
-        return theme.command;
-      default:
-        return theme.foreground;
-    }
-  }
+  private readonly onStateChange: () => void;
 
   private headingContent(icon: string, color: string, result?: string): StyledText {
     const { theme } = this.transcript;
-    const operand =
-      this.call.operandKind === "path"
-        ? relativePath(this.call.operand, this.transcript.cwd ?? "")
-        : this.call.operand;
     const chunks = [
       fg(color)(icon),
-      fg(theme.foreground)(` ${this.call.verb}`),
-      fg(this.operandColor())(operand === "" ? "" : ` ${operand}`),
+      fg(theme.foreground)(` ${toolHeading(this.toolName, this.title)}`),
     ];
-    if (this.call.qualifier !== undefined && this.call.qualifier !== "") {
-      chunks.push(fg(theme.dim)(` ${this.call.qualifier}`));
-    }
     if (result !== undefined) chunks.push(fg(theme.dim)(`  ${result}`));
     return new StyledText(chunks);
   }
@@ -853,61 +989,117 @@ export class ToolCard {
   constructor(
     transcript: Transcript,
     toolName: string,
-    args: unknown,
     parent: Renderable = transcript.container,
     before?: Renderable,
+    onStateChange: () => void = () => undefined,
   ) {
     this.transcript = transcript;
-    this.call = describeToolCall(toolName, args);
-    const box = section(transcript, "tool", {}, parent, before);
+    this.toolName = toolName;
+    this.onStateChange = onStateChange;
+    this.container = section(transcript, "tool", {}, parent, before);
     this.heading = new TextRenderable(transcript.renderer, {
       id: transcript.nextId("tool-heading"),
       content: this.headingContent(GLYPHS.bullet, transcript.theme.running),
       wrapMode: "none",
       truncate: true,
     });
-    box.add(this.heading);
+    this.container.add(this.heading);
     this.detail = new BoxRenderable(transcript.renderer, {
       id: transcript.nextId("tool-detail"),
       visible: false,
       flexDirection: "column",
       backgroundColor: transcript.theme.codeBackground,
       paddingLeft: 2,
-      maxHeight: DIFF_PREVIEW_LINES,
-      overflow: "hidden",
       width: "100%",
     });
-    box.add(this.detail);
-    if (this.call.body !== undefined) this.showPreview(this.call.body, transcript.theme.dim);
+    this.container.add(this.detail);
+    const unregister = transcript.toolOutput.register(this);
+    this.container.once(RenderableEvents.DESTROYED, unregister);
   }
 
-  update(text: string): void {
-    const inline = inlineToolPreview(text);
-    this.heading.content = this.headingContent(
-      GLYPHS.bullet,
-      this.transcript.theme.user,
-      inline ?? resultSummary(text),
-    );
-    if (inline === undefined) this.showPreview(text, this.transcript.theme.dim);
-    else this.clearBody();
+  setExpanded(expanded: boolean): void {
+    if (expanded === this.expanded) return;
+    this.expanded = expanded;
+    this.renderPresentation();
   }
 
-  complete(text: string, options: { isError?: boolean; details?: unknown } = {}): void {
+  /** A collapsed group draws the card as one row: heading kept, body dropped. */
+  setCompact(compact: boolean): void {
+    if (compact === this.compact) return;
+    this.compact = compact;
+    this.renderPresentation();
+  }
+
+  /** The card has drawn its final result; a folded repeat has nothing to add. */
+  get completed(): boolean {
+    return this.presentation.kind === "complete";
+  }
+
+  get failed(): boolean {
+    return this.presentation.kind === "complete" && this.presentation.isError;
+  }
+
+  update(text: string, title?: string): void {
+    if (title !== undefined) this.title = title;
+    this.presentation = { kind: "streaming", text };
+    this.renderPresentation();
+  }
+
+  complete(
+    text: string,
+    options: { isError?: boolean; details?: JsonValue; title?: string } = {},
+  ): void {
+    if (options.title !== undefined) this.title = options.title;
+    this.presentation = {
+      kind: "complete",
+      text,
+      isError: options.isError ?? false,
+      details: options.details,
+    };
+    this.renderPresentation();
+    this.onStateChange();
+  }
+
+  private renderPresentation(): void {
     const { theme } = this.transcript;
-    const isError = options.isError ?? false;
-    const detailsDiff = diffFromDetails(options.details);
+    switch (this.presentation.kind) {
+      case "called":
+        this.heading.content = this.headingContent(GLYPHS.bullet, theme.running);
+        this.clearBody();
+        break;
+      case "streaming": {
+        const inline = inlineToolPreview(this.presentation.text);
+        this.heading.content = this.headingContent(
+          GLYPHS.bullet,
+          theme.user,
+          inline ?? resultSummary(this.presentation.text),
+        );
+        if (inline !== undefined || this.compact) this.clearBody();
+        else this.showPreview(this.presentation.text, theme.dim);
+        break;
+      }
+      case "complete":
+        this.renderComplete(
+          this.presentation.text,
+          this.presentation.isError,
+          this.presentation.details,
+        );
+        break;
+      default: {
+        const _exhaustive: never = this.presentation;
+        return _exhaustive;
+      }
+    }
+  }
+
+  private renderComplete(text: string, isError: boolean, details: JsonValue | undefined): void {
+    const { theme } = this.transcript;
+    const detailsDiff = patchOf(details);
     const outputDiff = detailsDiff === undefined ? diffFromOutput(text) : undefined;
     const presentedDiff =
       detailsDiff === undefined
         ? outputDiff
-        : {
-            files: [
-              {
-                patch: detailsDiff,
-                ...(this.call.path === undefined ? {} : { path: this.call.path }),
-              },
-            ],
-          };
+        : { files: [{ patch: detailsDiff, path: patchPath(detailsDiff) }] };
     if (presentedDiff !== undefined && !isError) {
       const stat = diffStat(presentedDiff.files.map((file) => file.patch).join("\n"));
       this.heading.content = this.headingContent(
@@ -915,23 +1107,42 @@ export class ToolCard {
         theme.ok,
         `+${String(stat.added)} -${String(stat.removed)}`,
       );
-      this.showDiff(presentedDiff);
+      if (this.compact) this.clearBody();
+      else this.showDiff(presentedDiff);
       return;
     }
     const inline = inlineToolPreview(text);
+    const refined = presenter.tool({
+      toolName: this.toolName,
+      result: {
+        output: text,
+        isError,
+        ...(details === undefined ? {} : { details }),
+        ...(this.title === undefined ? {} : { title: this.title }),
+      },
+    });
+    const summary = refined.summary ?? inline ?? resultSummary(text);
+    const collapsedRead =
+      this.toolName === "read" && !isError && !this.expanded && inline === undefined;
+    const headingResult =
+      collapsedRead && !this.compact
+        ? [summary, `${keycap("chat.tools.toggle")} expand`]
+            .filter((value) => value !== undefined)
+            .join(" · ")
+        : summary;
     this.heading.content = this.headingContent(
       isError ? GLYPHS.cross : GLYPHS.check,
       isError ? theme.error : theme.ok,
-      inline ?? resultSummary(text),
+      headingResult,
     );
-    // The model asked to read the file; the reader did not. Its size is enough.
-    if (this.call.verb === "Read" && !isError) this.clearBody();
+    // A collapsed read names the file and its size without repeating its body.
+    if (collapsedRead || this.compact) this.clearBody();
     else if (inline === undefined) this.showPreview(text, isError ? theme.error : theme.dim);
     else this.clearBody();
   }
 
   private showPreview(text: string, color: string): void {
-    const preview = previewLines(text, RESULT_PREVIEW_LINES, RESULT_TAIL_LINES);
+    const preview = toolOutputPreview(text, this.expanded);
     if (this.structuredBodies.length > 0) this.clearBody();
     if (preview.text === "") {
       this.clearBody();
@@ -943,7 +1154,10 @@ export class ToolCard {
       this.textBody = new CodeRenderable(this.transcript.renderer, {
         id: this.transcript.nextId("tool-body"),
         content: preview.text,
-        filetype: this.call.path === undefined ? undefined : pathToFiletype(this.call.path),
+        filetype:
+          this.toolName === "read" && this.title !== undefined
+            ? pathToFiletype(this.title)
+            : undefined,
         syntaxStyle: this.transcript.syntaxStyle,
         onChunks: shikiChunks(this.transcript.theme),
         conceal: false,
@@ -980,36 +1194,51 @@ export class ToolCard {
     this.detail.visible = true;
     this.detail.paddingLeft = 0;
     if (output.before !== undefined) this.addSupplementalPreview(output.before);
+    const diffs: DiffRenderable[] = [];
     for (const file of output.files) {
-      const diff = new DiffRenderable(this.transcript.renderer, {
-        id: this.transcript.nextId("tool-diff"),
-        diff: file.patch,
-        view: "unified",
-        showLineNumbers: true,
-        filetype: file.path === undefined ? undefined : pathToFiletype(file.path),
-        syntaxStyle: this.transcript.syntaxStyle,
-        wrapMode: "none",
-        addedBg: this.transcript.theme.diffAddedBackground,
-        removedBg: this.transcript.theme.diffRemovedBackground,
-        addedLineNumberBg: this.transcript.theme.diffAddedBackground,
-        removedLineNumberBg: this.transcript.theme.diffRemovedBackground,
-        addedSignColor: this.transcript.theme.ok,
-        removedSignColor: this.transcript.theme.error,
-        lineNumberFg: this.transcript.theme.dim,
-        selectionBg: this.transcript.theme.selectionBackground,
-        selectionFg: this.transcript.theme.selectionForeground,
-        width: "100%",
-      });
-      applyShikiToCodeChildren(diff, this.transcript.theme);
-      clipOffscreenDiffLineColors(diff);
-      this.detail.add(diff);
-      this.structuredBodies.push(diff);
+      for (const section of diffSections(file.patch)) {
+        if (section.omittedBefore > 0) {
+          const omitted = label(
+            this.transcript,
+            unchangedLinesLabel(section.omittedBefore),
+            this.transcript.theme.dim,
+          );
+          this.detail.add(omitted);
+          this.structuredBodies.push(omitted);
+        }
+        const diff = new DiffRenderable(this.transcript.renderer, {
+          id: this.transcript.nextId("tool-diff"),
+          diff: section.patch,
+          view: "unified",
+          showLineNumbers: true,
+          filetype: file.path === undefined ? undefined : pathToFiletype(file.path),
+          syntaxStyle: this.transcript.syntaxStyle,
+          wrapMode: "none",
+          addedBg: this.transcript.theme.diffAddedBackground,
+          removedBg: this.transcript.theme.diffRemovedBackground,
+          addedLineNumberBg: this.transcript.theme.diffAddedBackground,
+          removedLineNumberBg: this.transcript.theme.diffRemovedBackground,
+          addedSignColor: this.transcript.theme.ok,
+          removedSignColor: this.transcript.theme.error,
+          lineNumberFg: this.transcript.theme.dim,
+          selectionBg: this.transcript.theme.selectionBackground,
+          selectionFg: this.transcript.theme.selectionForeground,
+          minHeight: section.rows > 0 ? section.rows : undefined,
+          width: "100%",
+        });
+        applyShikiToCodeChildren(diff, this.transcript.theme);
+        clipOffscreenDiffLineColors(diff);
+        this.detail.add(diff);
+        this.structuredBodies.push(diff);
+        diffs.push(diff);
+      }
     }
+    syncDiffGutters(diffs);
     if (output.after !== undefined) this.addSupplementalPreview(output.after);
   }
 
   private addSupplementalPreview(text: string): void {
-    const preview = previewLines(text, RESULT_PREVIEW_LINES, RESULT_TAIL_LINES);
+    const preview = toolOutputPreview(text, this.expanded);
     if (preview.text === "") return;
     const panel = new BoxRenderable(this.transcript.renderer, {
       id: this.transcript.nextId("tool-output"),
@@ -1059,35 +1288,220 @@ export class ToolCard {
   }
 }
 
+/** Tools whose card never folds into a group under the `auto` display mode. */
+const DETAILED_TOOLS = new Set(["edit", "write"]);
+
+/**
+ * Consecutive tool calls collapse into one block: a verb heading, the newest
+ * calls as single rows, and everything older behind an "earlier calls" count.
+ * The window follows the stream, so the running call is always the visible
+ * tail. Expanding restores every call as a full card.
+ */
+class ToolCallGroup implements ExpandableToolOutput {
+  readonly container: BoxRenderable;
+
+  private readonly transcript: Transcript;
+  private readonly heading: TextRenderable;
+  private readonly omitted: TextRenderable;
+  private readonly body: BoxRenderable;
+  private readonly cards: ToolCard[] = [];
+  private expanded = false;
+
+  constructor(transcript: Transcript, parent: Renderable, before?: Renderable) {
+    this.transcript = transcript;
+    this.container = section(
+      transcript,
+      "tool-group",
+      { paddingLeft: 0, paddingRight: 0 },
+      parent,
+      before,
+    );
+    this.heading = new TextRenderable(transcript.renderer, {
+      id: transcript.nextId("tool-group-heading"),
+      content: "",
+      visible: false,
+      marginLeft: SPACING.inset,
+      wrapMode: "none",
+      truncate: true,
+      onMouseUp: (event) => {
+        if (event.button !== 0) return;
+        if ((transcript.renderer.getSelection()?.getSelectedText() ?? "") !== "") return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.setExpanded(!this.expanded);
+      },
+    });
+    // Sits at the cards' text column, under their icon-wide gutter.
+    this.omitted = new TextRenderable(transcript.renderer, {
+      id: transcript.nextId("tool-group-omitted"),
+      content: "",
+      visible: false,
+      fg: transcript.theme.dim,
+      marginLeft: SPACING.inset + 2,
+      wrapMode: "none",
+      truncate: true,
+    });
+    this.body = new BoxRenderable(transcript.renderer, {
+      id: transcript.nextId("tool-group-body"),
+      flexDirection: "column",
+      width: "100%",
+    });
+    this.container.add(this.heading);
+    this.container.add(this.omitted);
+    this.container.add(this.body);
+    bindSemantics(this.container, () => ({
+      role: "group",
+      label: "Tool calls",
+      expanded: this.cards.length < 2 || this.expanded,
+    }));
+    const unregister = transcript.toolOutput.register(this);
+    this.container.once(RenderableEvents.DESTROYED, unregister);
+  }
+
+  add(toolName: string): ToolCard {
+    const card = new ToolCard(this.transcript, toolName, this.body, undefined, () =>
+      this.repaint(),
+    );
+    card.container.marginTop = 0;
+    this.cards.push(card);
+    this.repaint();
+    return card;
+  }
+
+  setExpanded(expanded: boolean): void {
+    if (expanded === this.expanded) return;
+    this.expanded = expanded;
+    this.repaint();
+  }
+
+  private repaint(): void {
+    const grouped = this.cards.length > 1;
+    const complete = this.cards.every((card) => card.completed);
+    const failed = this.cards.some((card) => card.failed);
+    const icon = failed ? GLYPHS.cross : complete ? GLYPHS.check : GLYPHS.bullet;
+    const color = failed
+      ? this.transcript.theme.error
+      : complete
+        ? this.transcript.theme.ok
+        : this.transcript.theme.running;
+    const names = this.cards.map((card) => card.toolName);
+    this.heading.content = new StyledText([
+      fg(color)(icon),
+      fg(this.transcript.theme.foreground)(` ${toolCallVerbs(names)}`),
+      fg(this.transcript.theme.dim)(
+        `  ${toolCallCounts(names)} · ${keycap("chat.tools.toggle")} ${this.expanded ? "collapse" : "expand"}`,
+      ),
+    ]);
+    this.heading.visible = grouped;
+    // Collapsed, the newest calls stay on screen as one-line rows and the
+    // rest leave a count; a lone call renders exactly as it would ungrouped.
+    const collapsed = grouped && !this.expanded;
+    const hidden = collapsed ? Math.max(0, this.cards.length - GROUP_TAIL_CALLS) : 0;
+    for (const [index, card] of this.cards.entries()) {
+      card.container.visible = index >= hidden;
+      card.setCompact(collapsed);
+    }
+    this.omitted.content = earlierCallsLabel(hidden);
+    this.omitted.visible = hidden > 0;
+    this.transcript.renderer.requestRender();
+  }
+}
+
+/** How a turn is drawn before its own events say otherwise. */
+interface TurnBlockOptions {
+  /** Core-owned identity of the semantic turn. */
+  readonly id?: string;
+  readonly outcome?: TurnOutcome;
+  /**
+   * The turn's span as the record has it. A turn drawn from stored entries
+   * carries its whole span; a turn opened by a live request carries zero and
+   * counts on the status row's clock.
+   */
+  readonly durationMs?: number;
+}
+
 /** One visual owner for a user request and every assistant step it drives. */
 export class ConversationTurnBlock {
   private readonly transcript: Transcript;
   private readonly root: TurnSection;
+  private readonly users = new Set<string>();
   private readonly reasoning = new Map<string, ReasoningBlock>();
   private readonly assistants = new Map<string, AssistantPartBlock>();
   private readonly tools = new Map<string, ToolCard>();
+  /** Texts already noted, so the record's copy and the client's draw once. */
+  private readonly notes = new Set<string>();
+  private readonly durationMs: number;
+  /** Core-owned turn identity: the id of the entry that opened the turn. */
+  private id: string | undefined;
   private activity: ActivityBlock | undefined;
-  private step = 0;
-  private outcome: "completed" | "aborted" | "failed" = "completed";
+  private group: ToolCallGroup | undefined;
+  private outcome: TurnOutcome = "completed";
+  /** Notes and compactions, which the three block maps do not hold. */
+  private appended = false;
+  /**
+   * A turn ends once, by settling or by leaving the screen. `activity` cannot
+   * carry this: it is also undefined on a turn that has drawn nothing yet, and
+   * a closed turn's root is destroyed, so anything built under it would attach
+   * to a dead renderable.
+   */
+  private closed = false;
 
-  constructor(transcript: Transcript, outcome: "completed" | "aborted" | "failed" = "completed") {
+  constructor(transcript: Transcript, options: TurnBlockOptions = {}) {
     this.transcript = transcript;
-    this.outcome = outcome;
-    this.root = new TurnSection(transcript);
+    this.id = options.id;
+    this.outcome = options.outcome ?? "completed";
+    this.durationMs = options.durationMs ?? 0;
+    this.root = new TurnSection(transcript, options.id);
   }
 
-  nextStep(): void {
-    this.step += 1;
+  /**
+   * Adopt the record's identity for a turn the live stream opened without one,
+   * which happens when a resumed run draws before its entries commit. True
+   * when this block is the turn `id` names.
+   */
+  claim(id: string): boolean {
+    this.id ??= id;
+    return this.id === id;
   }
 
-  addUser(content: UserMessage["content"]): void {
+  /** How the turn's own events left it, before a caller overrides the settle. */
+  get result(): TurnOutcome {
+    return this.outcome;
+  }
+
+  /** The turn has settled or left the screen; nothing may reopen it. */
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /**
+   * The turn shows a request and nothing that answers it: no thought, no
+   * reply, no tool call, no note. The spinner does not count, since it is
+   * drawn the moment the request lands.
+   */
+  get unanswered(): boolean {
+    return (
+      !this.appended &&
+      this.reasoning.size === 0 &&
+      this.assistants.size === 0 &&
+      this.tools.size === 0
+    );
+  }
+
+  addUser(content: UserMessage["content"], entryId?: string): void {
+    if (entryId !== undefined) {
+      const id = `user:${entryId}`;
+      if (this.users.has(id)) return;
+      this.users.add(id);
+    }
+    this.group = undefined;
     appendUser(this.transcript, content, this.root);
     this.ensureWorking();
   }
 
-  updateAssistant(event: AssistantMessageEvent): void {
+  updateAssistant(event: AssistantMessageEvent, entryId?: string): void {
     if (event.type === "start" || event.type === "done" || event.type === "error") return;
-    const key = this.partKey(event.contentIndex);
+    const key = this.partKey(event.contentIndex, entryId);
     switch (event.type) {
       case "thinking_start": {
         break;
@@ -1119,17 +1533,8 @@ export class ConversationTurnBlock {
         break;
       }
       case "toolcall_end": {
-        const before = this.contentAnchor();
-        this.tools.set(
-          event.toolCall.id,
-          new ToolCard(
-            this.transcript,
-            event.toolCall.name,
-            event.toolCall.arguments,
-            this.root,
-            before,
-          ),
-        );
+        if (this.tools.has(event.toolCall.id)) break;
+        this.tools.set(event.toolCall.id, this.createToolCard(event.toolCall.name));
         break;
       }
       case "toolcall_start":
@@ -1138,10 +1543,20 @@ export class ConversationTurnBlock {
     }
   }
 
-  finishAssistant(message: AssistantMessage): void {
+  /** Append a streamed text delta at its part identity, as `watch` overlays carry it. */
+  appendAssistantDelta(contentIndex: number, delta: string, entryId?: string): void {
+    this.assistantBlock(this.partKey(contentIndex, entryId)).append(delta);
+  }
+
+  /** Append a streamed reasoning delta at its part identity. */
+  appendReasoningDelta(contentIndex: number, delta: string, entryId?: string): void {
+    this.reasoningBlock(this.partKey(contentIndex, entryId)).append(delta);
+  }
+
+  finishAssistant(message: AssistantMessage, entryId?: string): void {
     let hasToolCall = false;
     for (const [contentIndex, part] of message.content.entries()) {
-      const key = this.partKey(contentIndex);
+      const key = this.partKey(contentIndex, entryId);
       if (part.type === "thinking") {
         if (part.thinking === "") continue;
         const block = this.reasoningBlock(key);
@@ -1156,11 +1571,7 @@ export class ConversationTurnBlock {
       } else {
         hasToolCall = true;
         if (!this.tools.has(part.id)) {
-          const before = this.contentAnchor();
-          this.tools.set(
-            part.id,
-            new ToolCard(this.transcript, part.name, part.arguments, this.root, before),
-          );
+          this.tools.set(part.id, this.createToolCard(part.name));
         }
       }
     }
@@ -1171,72 +1582,85 @@ export class ConversationTurnBlock {
     }
   }
 
-  startTool(callId: string, toolName: string, args: unknown): void {
+  startTool(callId: string, toolName: string): void {
     if (!this.tools.has(callId)) {
-      this.tools.set(
-        callId,
-        new ToolCard(this.transcript, toolName, args, this.root, this.contentAnchor()),
-      );
+      this.tools.set(callId, this.createToolCard(toolName));
     }
   }
 
-  updateTool(callId: string, text: string): void {
-    this.tools.get(callId)?.update(text);
+  updateTool(callId: string, text: string, title?: string): void {
+    this.tools.get(callId)?.update(text, title);
   }
 
   finishTool(
     callId: string,
     toolName: string,
     text: string,
-    options: { isError?: boolean; details?: unknown } = {},
+    options: { isError?: boolean; details?: JsonValue; title?: string } = {},
   ): void {
     let card = this.tools.get(callId);
     if (card === undefined) {
-      card = new ToolCard(this.transcript, toolName, undefined, this.root, this.contentAnchor());
+      card = this.createToolCard(toolName);
       this.tools.set(callId, card);
     }
     card.complete(text, options);
   }
 
+  /**
+   * Draw one folded part. Every part is keyed by its core identity (entry id
+   * and content index, or the tool call id), so a part the live stream already
+   * drew is a no-op and repeating a sync never duplicates a block. Restore and
+   * live commits both land here: one projection, two arrival orders.
+   */
   addStoredPart(part: TurnPart): void {
     switch (part.kind) {
       case "user":
-        this.addUser(part.content);
+        this.addUser(part.content, part.entryId);
         break;
       case "thinking": {
+        const key = this.partKey(part.contentIndex, part.entryId);
+        if (this.reasoning.has(key)) break;
+        this.appended = true;
+        this.group = undefined;
         const block = new ReasoningBlock(this.transcript, this.root, this.contentAnchor());
+        this.reasoning.set(key, block);
         block.set(part.text);
         block.finish(this.transcript.theme);
         break;
       }
-      case "assistant":
-        new AssistantPartBlock(
+      case "assistant": {
+        const key = this.partKey(part.contentIndex, part.entryId);
+        if (this.assistants.has(key)) break;
+        this.appended = true;
+        this.group = undefined;
+        const block = new AssistantPartBlock(
           this.transcript,
           this.root,
           part.text,
           false,
           this.contentAnchor(),
-        ).finish();
-        break;
-      case "tool": {
-        const card = new ToolCard(
-          this.transcript,
-          part.toolName,
-          part.args,
-          this.root,
-          this.contentAnchor(),
         );
-        this.tools.set(part.callId, card);
-        if (part.result !== undefined) {
+        this.assistants.set(key, block);
+        block.finish();
+        break;
+      }
+      case "tool": {
+        let card = this.tools.get(part.callId);
+        if (card === undefined) {
+          card = this.createToolCard(part.toolName);
+          this.tools.set(part.callId, card);
+        }
+        if (part.result !== undefined && !card.completed) {
           card.complete(part.result.output, {
             isError: part.result.isError,
             details: part.result.details,
+            title: part.result.title,
           });
         }
         break;
       }
       case "note":
-        appendNote(this.transcript, part.text, undefined, this.root, this.contentAnchor());
+        this.addNote(part.text);
         break;
       default: {
         const _exhaustive: never = part;
@@ -1245,40 +1669,95 @@ export class ConversationTurnBlock {
     }
   }
 
+  /**
+   * One line per distinct text within a turn. The run error is the text that
+   * arrives twice, once from the record's note part and once from the run
+   * outcome, in either order.
+   */
   addNote(text: string, color?: string): void {
+    if (this.notes.has(text)) return;
+    this.notes.add(text);
+    this.appended = true;
+    this.group = undefined;
     appendNote(this.transcript, text, color, this.root, this.contentAnchor());
   }
 
-  addCompaction(summary: string, tokensBefore: number): void {
-    appendCompaction(this.transcript, summary, tokensBefore, this.root, this.contentAnchor());
-  }
-
   settle(outcome = this.outcome): void {
+    if (this.closed) return;
+    this.closed = true;
+    // A stream event that draws nothing, such as a message start or a done,
+    // still opens the block that owns whatever the message turns out to draw.
+    // When it draws nothing at all there is no request and no answer under the
+    // row, so the turn leaves rather than stamp a status line over nothing.
+    if (this.activity === undefined && this.root.getChildrenCount() === 0) {
+      this.discard();
+      return;
+    }
     for (const block of this.reasoning.values()) block.finish(this.transcript.theme);
     for (const block of this.assistants.values()) block.finish();
     this.ensureWorking().settle(outcome);
     this.activity = undefined;
   }
 
-  private partKey(contentIndex: number): string {
-    return `${String(this.step)}:${String(contentIndex)}`;
+  /**
+   * Take the turn off screen instead of settling it. Used when the message it
+   * carries goes back to the composer, where the record has to lose the turn
+   * too, so a settled line would only be a line the next reload contradicts.
+   */
+  discard(): void {
+    this.closed = true;
+    this.transcript.container.remove(this.root);
+    this.root.destroyRecursively();
+    this.activity = undefined;
+  }
+
+  private partKey(contentIndex: number, entryId?: string): string {
+    return `${entryId ?? "live"}:${String(contentIndex)}`;
+  }
+
+  private createToolCard(toolName: string): ToolCard {
+    const mode = this.transcript.toolCalls;
+    switch (mode) {
+      case "detailed":
+        break;
+      case "auto":
+        if (!DETAILED_TOOLS.has(toolName)) return this.groupedToolCard(toolName);
+        break;
+      case "compact":
+        return this.groupedToolCard(toolName);
+      default: {
+        const _exhaustive: never = mode;
+        return _exhaustive;
+      }
+    }
+    this.group = undefined;
+    return new ToolCard(this.transcript, toolName, this.root, this.contentAnchor());
+  }
+
+  private groupedToolCard(toolName: string): ToolCard {
+    this.group ??= new ToolCallGroup(this.transcript, this.root, this.contentAnchor());
+    return this.group.add(toolName);
   }
 
   private ensureWorking(): ActivityBlock {
-    this.activity ??= new ActivityBlock(this.transcript, this.root);
+    this.activity ??= new ActivityBlock(this.transcript, this.root, this.durationMs);
     return this.activity;
   }
 
-  private contentAnchor(): Renderable {
-    return this.ensureWorking().anchor;
+  /**
+   * Where the next block goes. An open turn keeps its status row last, so
+   * content lands above it. A closed turn has no status row to raise again.
+   */
+  private contentAnchor(): Renderable | undefined {
+    return this.closed ? undefined : this.ensureWorking().anchor;
   }
 
   private reasoningBlock(key: string): ReasoningBlock {
     const existing = this.reasoning.get(key);
     if (existing !== undefined) return existing;
-    const activity = this.ensureWorking();
-    const block = new ReasoningBlock(this.transcript, this.root, activity.anchor);
-    activity.beginThinking();
+    this.group = undefined;
+    const block = new ReasoningBlock(this.transcript, this.root, this.contentAnchor());
+    this.activity?.beginThinking();
     this.reasoning.set(key, block);
     return block;
   }
@@ -1286,6 +1765,7 @@ export class ConversationTurnBlock {
   private assistantBlock(key: string): AssistantPartBlock {
     const existing = this.assistants.get(key);
     if (existing !== undefined) return existing;
+    this.group = undefined;
     const block = new AssistantPartBlock(
       this.transcript,
       this.root,
@@ -1298,11 +1778,40 @@ export class ConversationTurnBlock {
   }
 }
 
+/** Append one non-turn item: a compaction card, a branch summary, or a marker note. */
+export function appendMarkerItem(
+  transcript: Transcript,
+  item: Exclude<Turn, { kind: "turn" }>,
+): void {
+  switch (item.kind) {
+    case "compaction":
+      appendCompaction(transcript, item.entry.summary, item.entry.tokensBefore);
+      break;
+    case "branch_summary":
+      appendBranchSummary(transcript, item.entry.summary, item.entry.fromId);
+      break;
+    case "model_change":
+    case "custom": {
+      const text = entryNote(item.entry);
+      if (text !== undefined) appendNote(transcript, text);
+      break;
+    }
+    default: {
+      const _exhaustive: never = item;
+      return _exhaustive;
+    }
+  }
+}
+
 /** Render restored turns with the same owner the live path uses. */
 export function renderItems(
   transcript: Transcript,
   items: readonly Turn[],
-  options: { openLastTurn?: boolean } = {},
+  options: {
+    openLastTurn?: boolean;
+    /** Reports each turn block by its core-owned id, for later commits to update. */
+    register?: (id: string, turn: ConversationTurnBlock) => void;
+  } = {},
 ): ConversationTurnBlock | undefined {
   let lastTurnIndex = -1;
   if (options.openLastTurn === true) {
@@ -1315,28 +1824,19 @@ export function renderItems(
   }
   let openTurn: ConversationTurnBlock | undefined;
   for (const [index, item] of items.entries()) {
-    switch (item.kind) {
-      case "turn": {
-        const turn = new ConversationTurnBlock(transcript, item.outcome);
-        for (const part of item.parts) turn.addStoredPart(part);
-        if (index === lastTurnIndex) openTurn = turn;
-        else turn.settle(item.outcome);
-        break;
-      }
-      case "compaction":
-        appendCompaction(transcript, item.entry.summary, item.entry.tokensBefore);
-        break;
-      case "model_change":
-      case "custom": {
-        const text = entryNote(item.entry);
-        if (text !== undefined) appendNote(transcript, text);
-        break;
-      }
-      default: {
-        const _exhaustive: never = item;
-        return _exhaustive;
-      }
+    if (item.kind !== "turn") {
+      appendMarkerItem(transcript, item);
+      continue;
     }
+    const turn = new ConversationTurnBlock(transcript, {
+      id: item.id,
+      outcome: item.outcome,
+      durationMs: item.durationMs,
+    });
+    for (const part of item.parts) turn.addStoredPart(part);
+    options.register?.(item.id, turn);
+    if (index === lastTurnIndex) openTurn = turn;
+    else turn.settle(item.outcome);
   }
   return openTurn;
 }
@@ -1345,24 +1845,12 @@ export function renderItems(
  * The line an entry draws on its own. A client that claims an entry before it
  * reaches the session draws the same text a reload would have produced.
  */
-export function entryNote(entry: ProvisionedEntry): string | undefined {
+function entryNote(entry: ProvisionedEntry): string | undefined {
   if (entry.type === "model_change") return `Model → ${entry.modelId}`;
   if (entry.type === "custom") return customEntryNote(entry);
   return undefined;
 }
 
 function customEntryNote(entry: ProvisionedEntry<CustomEntry>): string | undefined {
-  const { data } = entry;
-  if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
-  if (
-    entry.customType === "provider_change" &&
-    "providerId" in data &&
-    typeof data.providerId === "string"
-  ) {
-    return `Provider → ${data.providerId}`;
-  }
-  if (entry.customType === "cwd_change" && "cwd" in data && typeof data.cwd === "string") {
-    return `Directory → ${data.cwd}`;
-  }
-  return undefined;
+  return presenter.custom(entry)?.text;
 }

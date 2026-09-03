@@ -8,7 +8,7 @@
  * (`define({ id, effect(ctx) })`, a scope per plugin).
  */
 import type { JsonValue, Skill } from "@uji-ai/schema";
-import type { HarnessEvent, HarnessTool } from "../harness/agent-harness.ts";
+import type { HarnessTool } from "../harness/agent-harness.ts";
 import type { HookHandler, HookName } from "../harness/hooks.ts";
 
 export type Disposer = () => void;
@@ -28,7 +28,6 @@ export interface LoadedPlugin {
   readonly version: string;
   readonly source: PluginSource;
   readonly module: Plugin;
-  readonly options?: JsonValue;
   readonly path?: string;
 }
 
@@ -53,6 +52,49 @@ export interface ToolDraft extends Draft<HarnessTool> {
   wrap(id: string, wrap: (inner: HarnessTool["execute"]) => HarnessTool["execute"]): void;
 }
 
+/**
+ * The `tools` contribution registry, plus `list`: the materialized tools after
+ * the last rebuild. `tools` rebuilds before `prompt`, so the `system-prompt`
+ * builtin reads the real catalog and names it in the prompt rather than
+ * guessing at a fixed set.
+ */
+export interface ToolRegistry extends Registry<ToolDraft> {
+  list(): readonly HarnessTool[];
+}
+
+/**
+ * A declared agent: one record that describes the agent a user talks to, a
+ * delegate a parent invokes, or a hidden utility turn. There is no separate
+ * subagent type; `mode` is subtractive over a default of `all`. Argued in
+ * design.mdx, "Agents".
+ */
+export interface Agent {
+  readonly id: string;
+  /** Default `all`. `primary` withholds from parents; `subagent` from the user's picker. */
+  readonly mode?: "primary" | "subagent" | "all";
+  /** Hide from both the picker and the delegate list without changing run rights. */
+  readonly hidden?: boolean;
+  /** What a parent reads to decide whether to delegate. Also the `task` menu line. */
+  readonly description?: string;
+  /** A `provider/model` ref the catalog resolves; omitted inherits the run's fallback model. */
+  readonly model?: string;
+  /** Persona layered onto the base system prompt, never replacing it. */
+  readonly system?: string;
+  /** A step-count ceiling, not a wall-clock budget (design.mdx invariant 23). */
+  readonly steps?: number;
+  readonly disabled?: boolean;
+}
+
+/**
+ * The `agents` contribution registry. Like every registry a plugin `add`s to
+ * and `rebuild`s, plus `list`: the materialized agents after the last rebuild,
+ * so a plugin that projects agents (the `subagents` builtin) reads them while
+ * contributing its own tool.
+ */
+export interface AgentRegistry extends Registry<Draft<Agent>> {
+  list(): readonly Agent[];
+}
+
 export interface PromptSection {
   readonly text: string;
   /** Lower renders first. Default 100. */
@@ -74,19 +116,37 @@ export interface SettingChoice {
 }
 
 /**
- * A session policy a plugin exposes to clients: a label, the choices it can
- * take, and a durable value. Clients render settings generically; nothing
- * about a specific plugin leaks into them.
+ * A session policy a plugin declares to clients: a label, the choices it can
+ * take, and the storage key holding the current one. The harness resolves the
+ * value and performs the write, so listing settings is one storage scan and
+ * applying one is a fact append any host can make. Clients render settings
+ * generically; nothing about a specific plugin leaks into them.
  */
 export interface PluginSetting {
   readonly label: string;
   /** Non-empty by construction: a setting always has something to select. */
   readonly choices: readonly [SettingChoice, ...SettingChoice[]];
-  /** Current choice id. Async because the value lives in plugin storage, never in memory. */
-  read(): Promise<string>;
-  /** Persist a choice id. Callers re-read after applying; there is no cached value to patch. */
-  apply(choiceId: string): Promise<void>;
+  /** Key under this plugin's storage prefix holding the current choice id. */
+  readonly key: string;
+  /** Choice used when storage holds nothing or a choice that no longer exists. Defaults to the first. */
+  readonly fallback?: string;
 }
+
+/** A declared setting with its owner and current choice resolved. What a client renders. */
+export interface SettingInfo {
+  readonly id: string;
+  /** Plugin that contributed the setting's current shape. */
+  readonly owner: string;
+  readonly label: string;
+  readonly choices: readonly [SettingChoice, ...SettingChoice[]];
+  /** Choice id, read from plugin storage at list time. */
+  readonly current: string;
+}
+
+export type ApplySettingOutcome =
+  | { kind: "applied" }
+  | { kind: "not_found" }
+  | { kind: "invalid_choice" };
 
 export interface RegistryDiff {
   readonly added: readonly string[];
@@ -105,67 +165,31 @@ export interface Registry<D> {
 export interface PluginStorage {
   get(key: string): Promise<JsonValue | undefined>;
   set(key: string, value: JsonValue): Promise<void>;
-  remove(key: string): Promise<void>;
-  scan(prefix?: string): Promise<{ key: string; value: JsonValue }[]>;
 }
-
-export type AskRequest =
-  | { kind: "confirm"; title: string; message?: string; default?: boolean }
-  | {
-      kind: "select";
-      title: string;
-      message?: string;
-      options: readonly { value: string; label: string; description?: string }[];
-      default?: string;
-    }
-  | { kind: "input"; title: string; message?: string; placeholder?: string; default?: string };
-
-export type AskAnswer<TRequest extends AskRequest = AskRequest> = TRequest extends {
-  kind: "confirm";
-}
-  ? boolean
-  : string;
 
 export interface PluginEnv {
   readonly cwd: string;
 }
 
-export interface PluginOps {
-  list(): readonly PluginInfo[];
-}
-
 export interface Diagnostics {
   warn(message: string): void;
-  error(message: string): void;
 }
 
 export interface SessionApi {
-  readonly id: string;
-  readonly options: JsonValue;
   readonly env: PluginEnv;
 
   // 1. contribute
-  readonly tools: Registry<ToolDraft>;
+  readonly tools: ToolRegistry;
   readonly commands: Registry<Draft<Command>>;
   readonly prompt: Registry<Draft<PromptSection>>;
   readonly resources: Registry<Draft<Skill>>;
   readonly settings: Registry<Draft<PluginSetting>>;
+  readonly agents: AgentRegistry;
 
   // 2. hook: intercept a live operation and return a typed result
   hook<TName extends HookName>(name: TName, handler: HookHandler<TName>): Disposer;
 
-  // 3. observe: passive; a throw becomes a handler_error event
-  on<TType extends HarnessEvent["type"]>(
-    type: TType,
-    listener: (event: Extract<HarnessEvent, { type: TType }>) => void | Promise<void>,
-  ): Disposer;
-
-  // 4. effect: I/O and long-lived work. The signal aborts when the plugin is disposed.
-  effect(setup: (signal: AbortSignal) => void | Disposer | Promise<void | Disposer>): void;
-
   readonly storage: PluginStorage;
-  ask<TRequest extends AskRequest>(request: TRequest): Promise<AskAnswer<TRequest>>;
-  readonly plugins: PluginOps;
   readonly diagnostics: Diagnostics;
 }
 
@@ -174,24 +198,6 @@ export function definePlugin(plugin: Plugin): Plugin {
 }
 
 /** Wrap a plugin object for `AgentHarness.create({ plugins })` without a loader. */
-export function inlinePlugin(
-  plugin: Plugin,
-  options: { version?: string; options?: JsonValue } = {},
-): LoadedPlugin {
-  const version = options.version ?? "inline";
-  return options.options === undefined
-    ? { id: plugin.id, version, source: "inline", module: plugin }
-    : { id: plugin.id, version, source: "inline", module: plugin, options: options.options };
-}
-
-export function isPlugin(value: unknown): value is Plugin {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "id" in value &&
-    typeof value.id === "string" &&
-    value.id.length > 0 &&
-    "session" in value &&
-    typeof value.session === "function"
-  );
+export function inlinePlugin(plugin: Plugin, options: { version?: string } = {}): LoadedPlugin {
+  return { id: plugin.id, version: options.version ?? "inline", source: "inline", module: plugin };
 }

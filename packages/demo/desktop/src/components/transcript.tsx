@@ -1,4 +1,4 @@
-import type { PendingQueueItem, Turn, TurnPart } from "@uji-ai/core";
+import type { PendingItem, Turn, TurnPart } from "@uji-ai/core";
 import {
   IconArrowDown,
   IconBrain,
@@ -11,7 +11,7 @@ import {
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import type { Agent } from "../agents.ts";
-import type { LiveToolEvent } from "../desktop-api.ts";
+import type { LivePart } from "../desktop-api.ts";
 import { messageText } from "../messages.ts";
 
 export interface OptimisticMessage {
@@ -21,27 +21,21 @@ export interface OptimisticMessage {
 
 export function Transcript({
   agent,
-  intro,
-  liveThinking,
-  liveTools,
+  liveParts,
   loading,
   optimisticMessage,
   onCancelQueued,
   pending,
   running,
-  streamingText,
   turns,
 }: {
   agent: Agent;
-  intro: ReactNode;
-  liveThinking: string;
-  liveTools: readonly LiveToolEvent[];
+  liveParts: readonly LivePart[];
   loading: boolean;
   optimisticMessage?: OptimisticMessage;
   onCancelQueued: (entryId: string) => void;
-  pending: readonly PendingQueueItem[];
+  pending: readonly PendingItem[];
   running: boolean;
-  streamingText: string;
   turns: readonly Turn[];
 }) {
   const scroller = useRef<HTMLDivElement>(null);
@@ -57,14 +51,7 @@ export function Transcript({
       return;
     }
     node.scrollTop = node.scrollHeight;
-  }, [
-    liveThinking,
-    liveTools.length,
-    optimisticMessage,
-    pending.length,
-    streamingText,
-    turns.length,
-  ]);
+  }, [liveParts, optimisticMessage, pending.length, turns.length]);
 
   function trackScroll(node: HTMLDivElement): void {
     const bottom = node.scrollHeight - node.scrollTop - node.clientHeight < 96;
@@ -84,6 +71,8 @@ export function Transcript({
 
   const empty =
     turns.length === 0 && pending.length === 0 && optimisticMessage === undefined && !running;
+  const lastText = liveParts.findLast((part) => part.kind === "text");
+  const hasLiveText = lastText !== undefined;
 
   return (
     <div className="transcript-viewport">
@@ -95,9 +84,7 @@ export function Transcript({
         <div aria-label={`Conversation with ${agent.name}`} className="transcript" role="log">
           {loading ? (
             <TranscriptSkeleton />
-          ) : empty ? (
-            intro
-          ) : (
+          ) : empty ? null : (
             <>
               {turns.map((turn) => (
                 <TurnView key={turnKey(turn)} turn={turn} />
@@ -114,7 +101,7 @@ export function Transcript({
                   <IconClock aria-hidden="true" size={14} />
                   <span>
                     <strong>Queued</strong>
-                    {messageText(item.message.content)}
+                    {messageText(item.content)}
                   </span>
                   <button
                     aria-label="Cancel queued message"
@@ -126,35 +113,55 @@ export function Transcript({
                 </div>
               ))}
 
-              {(liveThinking !== "" || liveTools.length > 0) && (
-                <div className="live-activity">
-                  {liveThinking !== "" && (
-                    <details className="detail-row" open>
-                      <summary>
-                        <IconBrain aria-hidden="true" size={15} />
-                        <span>Reasoning</span>
-                        <span className="activity-status">Working</span>
-                      </summary>
-                      <pre>{liveThinking}</pre>
-                    </details>
-                  )}
-                  {liveTools.map((tool) => (
-                    <LiveTool key={tool.callId} tool={tool} />
-                  ))}
-                </div>
-              )}
+              {liveParts.map((part) => {
+                switch (part.kind) {
+                  case "thinking":
+                    return (
+                      <div
+                        className="live-activity"
+                        key={`thinking:${part.entryId}:${String(part.contentIndex)}`}
+                      >
+                        <details className="detail-row" open>
+                          <summary>
+                            <IconBrain aria-hidden="true" size={15} />
+                            <span>Reasoning</span>
+                            <span className="activity-status">Working</span>
+                          </summary>
+                          <pre>{part.text}</pre>
+                        </details>
+                      </div>
+                    );
+                  case "tool":
+                    return (
+                      <div className="live-activity" key={`tool:${part.callId}`}>
+                        <LiveTool tool={part} />
+                      </div>
+                    );
+                  case "text":
+                    return (
+                      <div
+                        className="message-row assistant-row live-assistant-row"
+                        key={`text:${part.entryId}:${String(part.contentIndex)}`}
+                      >
+                        <div className="assistant-copy">
+                          {part.text}
+                          {part === lastText && (
+                            <span aria-hidden="true" className="stream-caret" />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  default: {
+                    const exhaustive: never = part;
+                    return exhaustive;
+                  }
+                }
+              })}
 
-              {(running || streamingText !== "") && (
+              {running && !hasLiveText && (
                 <div className="message-row assistant-row live-assistant-row">
                   <div className="assistant-copy">
-                    {streamingText === "" ? (
-                      <TypingIndicator />
-                    ) : (
-                      <>
-                        {streamingText}
-                        <span aria-hidden="true" className="stream-caret" />
-                      </>
-                    )}
+                    <TypingIndicator />
                   </div>
                 </div>
               )}
@@ -213,10 +220,10 @@ function TurnView({ turn }: { turn: Turn }) {
       );
     case "model_change":
       return <TimelineMarker>Model changed to {turn.entry.modelId}</TimelineMarker>;
+    case "branch_summary":
+      return <TimelineMarker>Summarized an earlier branch</TimelineMarker>;
     case "custom":
-      return turn.entry.customType === "uji.demo.agent" ? null : (
-        <TimelineMarker>{humanize(turn.entry.customType)}</TimelineMarker>
-      );
+      return <TimelineMarker>{humanize(turn.entry.customType)}</TimelineMarker>;
     default: {
       const exhaustive: never = turn;
       return exhaustive;
@@ -290,25 +297,20 @@ function ToolPartView({ part }: { part: Extract<TurnPart, { kind: "tool" }> }) {
   );
 }
 
-function LiveTool({ tool }: { tool: LiveToolEvent }) {
-  const value =
-    tool.kind === "started"
-      ? undefined
-      : tool.kind === "updated"
-        ? tool.partialResult
-        : tool.result;
+function LiveTool({ tool }: { tool: Extract<LivePart, { kind: "tool" }> }) {
   return (
     <details className="detail-row tool-row">
       <summary>
         <IconHammer aria-hidden="true" size={15} />
-        <span>{humanize(tool.name)}</span>
-        <span className="activity-status" data-error={tool.kind === "finished" && tool.isError}>
-          {tool.kind === "finished" ? (tool.isError ? "Failed" : "Done") : "Running"}
-        </span>
+        <span>{tool.progress.title ?? "Tool"}</span>
+        <span className="activity-status">Running</span>
       </summary>
-      {value !== undefined && (
+      {(tool.progress.text !== "" || tool.progress.details !== undefined) && (
         <div className="tool-details">
-          <DetailBlock label={tool.kind === "updated" ? "Progress" : "Result"} value={value} />
+          {tool.progress.text !== "" && <DetailBlock label="Progress" value={tool.progress.text} />}
+          {tool.progress.details !== undefined && (
+            <DetailBlock label="Details" value={tool.progress.details} />
+          )}
         </div>
       )}
     </details>
@@ -375,6 +377,6 @@ function prettyValue(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2);
   } catch {
-    return String(value);
+    return "Unserializable value";
   }
 }

@@ -72,7 +72,7 @@ export function updateSeverity(outcome: UpdateOutcome): Severity {
   }
 }
 
-export interface AlignedRow {
+interface AlignedRow {
   label: string;
   detail: string;
 }

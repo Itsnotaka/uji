@@ -3,22 +3,27 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "turbo build",
     "build:cli": "pnpm --dir packages/tui build:binary",
-    "dev": "pnpm --dir packages/demo/desktop dev",
+    "dev": "turbo dev",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "format": "oxfmt --check",
     "format:fix": "oxfmt .",
     "lint": "oxlint .",
     "lint:fix": "oxlint --fix .",
+    "models:check": "pnpm --dir packages/ai models:check",
+    "models:generate": "pnpm --dir packages/ai models:generate",
+    "models:opencode:snapshot": "pnpm --dir packages/ai models:opencode:snapshot",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
-    "oxfmt": "^0.63.0",
-    "oxlint": "^1.79.0",
+    "@oxlint/plugins": "1.80.0",
+    "@types/node": "^26.4.0",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0",
     "oxlint-tsgolint": "^7.0.2001",
-    "turbo": "^2.10.9",
+    "turbo": "^2.10.12",
     "typescript": "^7.0.2"
   },
-  "packageManager": "pnpm@11.22.0"
+  "packageManager": "pnpm@11.25.0"
 }

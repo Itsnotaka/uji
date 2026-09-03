@@ -5,17 +5,17 @@ import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import type { AssistantMessage, AssistantMessageEvent, Model, Usage } from "@uji-ai/ai";
 import { EventStream } from "@uji-ai/ai";
-import {
-  AgentHarness,
-  formatSkillInvocation,
-  formatSkillsForPrompt,
-  inlinePlugin,
-  loadSkills,
-  skillsPlugin,
-  SqliteSessionRepo,
-  systemPromptPlugin,
-} from "../src/index.ts";
 import type { StreamFn } from "../src/types.ts";
+import { AgentHarness } from "../src/harness/agent-harness.ts";
+import { formatSkillsForPrompt, loadSkills } from "../src/skills.ts";
+import {
+  formatSkillInvocation,
+  inlinePlugin,
+  skillsPlugin,
+  systemPromptPlugin,
+} from "../src/plugins/index.ts";
+import { SqliteSessionRepo } from "../src/store.ts";
+import { prompt } from "./harness-driver.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -154,7 +154,7 @@ void test("the skills plugin exposes resources and explicit invocation runs a sk
   const repo = new SqliteSessionRepo(join(root, "sessions.db"));
   const session = await repo.create();
   const prompts: string[] = [];
-  const { harness } = await AgentHarness.create({
+  const harness = await AgentHarness.create({
     session,
     streamFn: stopStream(prompts),
     plugins: [
@@ -164,18 +164,19 @@ void test("the skills plugin exposes resources and explicit invocation runs a sk
     env: { cwd: root },
     model,
   });
+  harness.attach();
   try {
     assert.equal(harness.getResources().get("review")?.filePath, skillPath);
     assert.match(harness.getSystemPrompt(), /<name>review<\/name>/);
 
-    const result = await harness.skill("review", "Check the parser");
-    assert.equal(result.ok, true);
+    const review = harness.getResources().get("review");
+    assert.ok(review);
+    const result = await prompt(harness, formatSkillInvocation(review, "Check the parser"));
+    assert.equal(result.outcome.kind, "completed");
     assert.match(prompts[0] ?? "", /Inspect the types first\./);
     assert.match(prompts[0] ?? "", /Check the parser/);
 
-    const unknown = await harness.skill("missing");
-    assert.equal(unknown.ok, false);
-    if (!unknown.ok) assert.equal(unknown.error._tag, "UnknownSkill");
+    assert.equal(harness.getResources().get("missing"), undefined);
   } finally {
     await harness.close();
     await session.close();

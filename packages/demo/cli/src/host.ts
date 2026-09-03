@@ -9,14 +9,10 @@ import {
   openaiProvider,
 } from "@uji-ai/ai";
 import type { Api, CredentialStore, Model, Models } from "@uji-ai/ai";
-import {
-  AgentHarness,
-  inlinePlugin,
-  SqliteSessionRepo,
-  systemPromptPlugin,
-  toolsFsPlugin,
-} from "@uji-ai/core";
-import type { AgentHarness as Harness, StreamFn } from "@uji-ai/core";
+import { createUji } from "@uji-ai/core";
+import type { Disposer, RunEnd, SessionId, SessionInfo, StreamFn, Uji } from "@uji-ai/core";
+import { inlinePlugin, systemPromptPlugin, toolsFsPlugin } from "@uji-ai/core/plugins";
+import { SqliteSessionRepo } from "@uji-ai/core/store";
 
 export interface Runtime {
   models: Models;
@@ -24,10 +20,11 @@ export interface Runtime {
 }
 
 export interface Host {
-  harness: Harness;
-  repo: SqliteSessionRepo;
+  sdk: Uji;
   runtime: Runtime;
-  sessionId: string;
+  sessionId: SessionId;
+  /** The composition fallback; the session's declared config wins per run. */
+  model: Model<Api>;
   /** Every model the stored credentials can reach, provider order preserved. */
   listModels: () => Promise<readonly Model<Api>[]>;
   close: () => Promise<void>;
@@ -88,14 +85,21 @@ export async function resolveRuntime(): Promise<Runtime> {
   throw new Error("No provider is signed in. Run: uji login");
 }
 
+async function targetSession(uji: Uji, resume: boolean): Promise<SessionInfo> {
+  if (resume) {
+    const { items } = await uji.sessions.list();
+    const latest = items.at(-1);
+    if (latest !== undefined) return latest;
+  }
+  return uji.sessions.create();
+}
+
 export async function openHost(options: HostOptions): Promise<Host> {
   const cwd = options.cwd ?? process.cwd();
-  const repo = new SqliteSessionRepo(options.dbPath ?? join(cwd, ".uji", "sessions.db"));
+  const store = new SqliteSessionRepo(options.dbPath ?? join(cwd, ".uji", "sessions.db"));
+  let sdk: Uji | undefined;
+  let detach: Disposer | undefined;
   try {
-    const listed = options.resume ? await repo.list() : [];
-    const latest = listed.at(-1);
-    const session =
-      options.resume && latest !== undefined ? await repo.open(latest.id) : await repo.create();
     const runtime =
       options.streamFn === undefined || options.model === undefined
         ? await resolveRuntime()
@@ -105,87 +109,107 @@ export async function openHost(options: HostOptions): Promise<Host> {
       options.streamFn ??
       ((requestedModel, context, streamOptions) =>
         runtime.models.streamSimple(requestedModel, context, streamOptions));
-    const { harness, suspended } = await AgentHarness.create({
-      session,
+    sdk = await createUji({
+      store,
       streamFn,
+      models: runtime.models,
+      model,
       plugins: [inlinePlugin(systemPromptPlugin()), inlinePlugin(toolsFsPlugin())],
       env: { cwd },
-      model,
     });
-    if (suspended.length > 0) await harness.resume();
-    const sessionId = (await session.getMetadata()).id;
+    // Volunteering as a runner also resumes any orphaned operation.
+    detach = sdk.attach();
+    const info = await targetSession(sdk, options.resume);
+    const opened = sdk;
+    const stop = detach;
     return {
-      harness,
-      repo,
+      sdk: opened,
       runtime: { models: runtime.models, providerId: runtime.providerId },
-      sessionId,
+      sessionId: info.sessionId,
+      model,
       listModels: () => availableModels(runtime.models),
       close: async () => {
-        await harness.close().catch(() => undefined);
-        await repo.close().catch(() => undefined);
+        stop();
+        await opened.close().catch(() => undefined);
+        await store.close().catch(() => undefined);
       },
     };
   } catch (error) {
-    await repo.close().catch(() => undefined);
+    detach?.();
+    await sdk?.close().catch(() => undefined);
+    await store.close().catch(() => undefined);
     throw error;
   }
 }
 
-export function subscribePrint(harness: Harness, write: (chunk: string) => void): () => void {
-  let needsNewline = false;
-  return harness.subscribe((event) => {
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      write(event.assistantMessageEvent.delta);
-      needsNewline = true;
-      return;
-    }
-    if (event.type === "tool_execution_start") {
-      if (needsNewline) write("\n");
-      needsNewline = false;
-      write(`${event.toolName}\n`);
-    }
-  });
+/** The most recent run's terminal outcome, from a durable replay. */
+export async function lastRunEnd(
+  host: Pick<Host, "sdk" | "sessionId">,
+): Promise<RunEnd | undefined> {
+  let end: RunEnd | undefined;
+  for await (const event of host.sdk.watch({ sessionId: host.sessionId })) {
+    if (event.kind === "synced") break;
+    if (event.kind === "run_finished") end = event.outcome;
+  }
+  return end;
 }
 
 export async function runPrint(command: { resume: boolean; prompt: string }): Promise<void> {
-  const opened = await openHost({ resume: command.resume });
-  const unsubscribe = subscribePrint(opened.harness, (chunk) => {
-    process.stdout.write(chunk);
-  });
+  const host = await openHost({ resume: command.resume });
   let signalExitCode: number | undefined;
-  const onSigint = () => {
-    signalExitCode = 130;
-    void opened.harness.close().catch(() => undefined);
+  const controller = new AbortController();
+  const abortRun = (code: number): void => {
+    signalExitCode = code;
+    void host.sdk.runs.abort({ sessionId: host.sessionId }).catch(() => undefined);
+    controller.abort();
   };
-  const onSigterm = () => {
-    signalExitCode = 143;
-    void opened.harness.close().catch(() => undefined);
-  };
+  const onSigint = (): void => abortRun(130);
+  const onSigterm = (): void => abortRun(143);
   process.on("SIGINT", onSigint);
   process.on("SIGTERM", onSigterm);
+  let needsNewline = false;
   try {
-    const result = await opened.harness.prompt(command.prompt);
+    const watcher = (async (): Promise<void> => {
+      for await (const event of host.sdk.watch({
+        sessionId: host.sessionId,
+        live: true,
+        signal: controller.signal,
+      })) {
+        if (event.kind === "text_delta") {
+          process.stdout.write(event.delta);
+          needsNewline = true;
+          continue;
+        }
+        // A tool call announces on its assistant entry, before it settles.
+        if (event.kind !== "message" || event.turn.kind !== "turn") continue;
+        for (const part of event.turn.parts) {
+          if (part.kind !== "tool" || part.result !== undefined) continue;
+          if (needsNewline) process.stdout.write("\n");
+          needsNewline = false;
+          process.stdout.write(`${part.toolName}\n`);
+        }
+      }
+    })();
+    await host.sdk.messages.send({ sessionId: host.sessionId, content: command.prompt });
+    await host.sdk.runs.wait({ sessionId: host.sessionId, signal: controller.signal });
+    controller.abort();
+    await watcher.catch(() => undefined);
+    if (needsNewline) process.stdout.write("\n");
     if (signalExitCode !== undefined) {
       process.exitCode = signalExitCode;
       return;
     }
-    if (!result.ok) {
-      console.error(result.error.message);
+    const end = await lastRunEnd(host);
+    if (end === undefined || end.kind === "failed") {
+      console.error(end?.kind === "failed" ? end.error.message : "run did not complete");
       process.exitCode = 1;
       return;
     }
-    if (result.value.kind === "failed") {
-      console.error(result.value.error.message);
-      process.exitCode = 1;
-    }
-    console.error(
-      `session ${opened.sessionId.slice(0, 8)} · ${opened.harness.state.model.name} · ${result.value.kind}`,
-    );
+    console.error(`session ${host.sessionId.slice(0, 8)} · ${host.model.name} · ${end.kind}`);
     console.error("resume with: uji -c");
   } finally {
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
-    unsubscribe();
-    await opened.close();
+    await host.close();
   }
 }

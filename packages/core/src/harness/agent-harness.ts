@@ -10,63 +10,70 @@
  */
 import { acquireSessionResources } from "@uji-ai/ai/session-resources";
 import type { RetryPolicy } from "@uji-ai/ai/utils/retry";
-import type { Api, Message, Model, Skill } from "@uji-ai/schema";
-import type {
-  AgentEvent,
-  AgentTool,
-  QueueMode,
-  StreamFn,
-  ThinkingLevel,
-  ToolExecutionMode,
+import type { Api, Model, Skill } from "@uji-ai/schema";
+import {
+  isThinkingLevel,
+  type AgentTool,
+  type QueueMode,
+  type StreamFn,
+  type ThinkingLevel,
 } from "../types.ts";
 import { createRegistries, PluginHost, type HarnessRegistries } from "../plugins/host.ts";
+import { pluginFactKey } from "../plugins/storage.ts";
 import type {
-  AskAnswer,
-  AskRequest,
+  Agent,
+  ApplySettingOutcome,
   Command,
   LoadedPlugin,
   PluginEnv,
-  PluginInfo,
-  PluginSetting,
+  SettingInfo,
 } from "../plugins/types.ts";
-import { formatSkillInvocation } from "../skills.ts";
+import type {
+  AbortOutcome,
+  CancelOutcome,
+  CompactOutcome,
+  EphemeralEvent,
+  MoveOutcome,
+  RedeliverOutcome,
+} from "../sdk/types.ts";
 import {
   DEFAULT_COMPACTION_SETTINGS,
   prepareCompaction,
   type CompactionSettings,
 } from "./compaction/compaction.ts";
 import { DEFAULT_RETRY_POLICY, validateCompactionSettings, validateRetryPolicy } from "./config.ts";
-import { type HookName, HookRegistry } from "./hooks.ts";
-import { Result, TaggedError, type Result as ResultValue } from "./result.ts";
+import { HookRegistry } from "./hooks.ts";
 import {
   drive,
-  resume as resumeRunner,
-  type CompactionOutcome,
-  type OperationError,
+  finishedFromRecord,
+  resumeDrive,
   type RunnerFinished,
   type RunnerOptions,
   type RunOutcome,
   type StepResult,
 } from "./runner.ts";
-import type { SendReceipt } from "./session/store.ts";
+import type { RunWriter } from "./session/store.ts";
 import { newId } from "./session/types.ts";
 import type {
-  CompactionEntry,
   Entry,
   MessageEntry,
-  OperationFinishedRecord,
-  ProvisionedEntry,
+  NavigationIntent,
   QueueEnqueuedRecord,
+  RunConfig,
   RunIntent,
-  RunState,
   SessionStorage,
 } from "./session/types.ts";
+import { readSessionConfig } from "./session/context.ts";
+import { hasWakeInput } from "./session/run-state.ts";
 import type { AgentHarnessStreamOptions } from "./types.ts";
+import { navigationTarget } from "../views/tree.ts";
 
-export type { CompactionOutcome, OperationError, RunOutcome } from "./runner.ts";
+export type { CompactionOutcome, NavigationOutcome, OperationError, RunOutcome } from "./runner.ts";
 
 const HEAD = "main";
 const REGISTRY_PROPERTIES = [
+  // `agents` first: the `subagents` builtin reads it while contributing `tools`.
+  "agents",
   "tools",
   "commands",
   "prompt",
@@ -74,55 +81,14 @@ const REGISTRY_PROPERTIES = [
   "settings",
 ] satisfies readonly (keyof HarnessRegistries)[];
 
-const NoActiveRunBase = TaggedError("NoActiveRun");
-export class NoActiveRun extends NoActiveRunBase<{ head: string; message: string }> {}
-const NothingToResumeBase = TaggedError("NothingToResume");
-export class NothingToResume extends NothingToResumeBase<{ head: string; message: string }> {}
-const NothingToCompactBase = TaggedError("NothingToCompact");
-export class NothingToCompact extends NothingToCompactBase<{ head: string; message: string }> {}
-const ClosedBase = TaggedError("Closed");
-export class Closed extends ClosedBase<{ message: string }> {}
-const UnknownSkillBase = TaggedError("UnknownSkill");
-export class UnknownSkill extends UnknownSkillBase<{ name: string; message: string }> {}
-const NotQueuedBase = TaggedError("NotQueued");
-export class NotQueued extends NotQueuedBase<{ entryId: string; message: string }> {}
-
-export type RunResult = ResultValue<{ runId: string } & RunOutcome, Closed>;
-export type SkillResult = ResultValue<{ runId: string } & RunOutcome, Closed | UnknownSkill>;
-export type CompactionResult = ResultValue<
-  { operation: "compaction"; runId: string } & CompactionOutcome,
-  NothingToCompact | Closed
->;
-export type QueueResult = ResultValue<{ entryId: string }, Closed>;
-export type QueueCancelResult = ResultValue<{ entryId: string }, NotQueued | Closed>;
-export type MessageDelivery = "steer" | "queue";
-export interface PendingQueueItem {
-  readonly entryId: string;
-  readonly delivery: MessageDelivery | "nextRun";
-  readonly message: Message;
+export interface NavigateOptions {
+  /** The entry selected in the tree, or null for the start of the chat. */
+  readonly entryId: string | null;
+  /** Summarize the branch being left; the summary lands at the destination. */
+  readonly summary?: { readonly customInstructions?: string };
 }
-export type SubmitResult = ResultValue<
-  | { disposition: "started"; runId: string }
-  | { disposition: "queued"; entryId: string; runId: string; delivery: MessageDelivery },
-  Closed
->;
-export type AbortResult = ResultValue<{ runId: string }, NoActiveRun | Closed>;
-export type ResumeOutcome =
-  | ({ operation: "run"; runId: string } & RunOutcome)
-  | ({ operation: "compaction"; runId: string } & CompactionOutcome);
-export type ResumeResult = ResultValue<ResumeOutcome, NothingToResume | Closed>;
 
-export type SuspendedOperation =
-  | { head: string; id: string; startedAt: number; kind: "run"; prompt: Message[] }
-  | {
-      head: string;
-      id: string;
-      startedAt: number;
-      kind: "compaction";
-      customInstructions?: string;
-    };
-
-/** A loop tool plus its crash-replay policy (pi HarnessTool). */
+/** A loop tool plus its crash-replay policy and durable wake handler (pi HarnessTool). */
 export type HarnessTool = AgentTool;
 
 export interface AgentHarnessOptions {
@@ -131,9 +97,14 @@ export interface AgentHarnessOptions {
   /** Everything the harness exposes to the model comes from these. Built-ins are plugins too. */
   plugins: readonly LoadedPlugin[];
   env: PluginEnv;
+  /** Fallback: the model a run uses when the branch's config names none. */
   model: Model<Api>;
-  /** How long an `ask` waits for a client before taking the request's default. */
-  askTimeoutMs?: number;
+  /**
+   * Resolves a branch-config model ref against the host's catalog. A ref
+   * without a provider matches by id alone. Omitted, or returning undefined,
+   * falls back to `model`: an unknown ref degrades, never fails a run.
+   */
+  resolveModel?: (ref: { provider?: string; id: string }) => Model<Api> | undefined;
   thinkingLevel?: ThinkingLevel;
   retry?: RetryPolicy;
   compaction?: CompactionSettings;
@@ -141,185 +112,25 @@ export interface AgentHarnessOptions {
   streamOptions?: AgentHarnessStreamOptions;
   steeringMode?: QueueMode;
   followUpMode?: QueueMode;
-  toolExecution?: ToolExecutionMode;
+  /**
+   * A run this process drove reached its terminal record. A park on waiting
+   * calls is not an end; a lost claim is, reported as `claim_lost`.
+   */
+  onRunEnd?: (finished: RunnerFinished) => void;
 }
 
-export interface HarnessState {
-  readonly isStreaming: boolean;
-  readonly isCompacting: boolean;
-  readonly isBusy: boolean;
-  readonly streamingText?: string;
-  readonly model: Model<Api>;
-  readonly thinkingLevel?: ThinkingLevel;
-  readonly errorMessage?: string;
-}
-
-export type CompactionReason = "manual" | "threshold" | "overflow";
-export type CompactionEvent =
-  | { type: "compaction_start"; runId: string; reason: CompactionReason }
-  | ({ type: "compaction_end"; runId: string; reason: CompactionReason } & (
-      | { outcome: "completed"; entry: CompactionEntry; fromHook: boolean }
-      | { outcome: "aborted" }
-      | { outcome: "failed"; error: OperationError }
-    ));
-export type HandlerErrorEvent = { type: "handler_error"; error: string; stack?: string } & (
-  | { kind: "hook"; hook: HookName }
-  | { kind: "event"; event: string }
-  | { kind: "plugin"; plugin: string }
-);
-export type HostEvent =
-  | { type: "plugin_updated"; plugins: readonly PluginInfo[] }
-  | { type: "config_update"; property: (typeof REGISTRY_PROPERTIES)[number] }
-  | { type: "queue_update"; items: readonly PendingQueueItem[] }
-  | { type: "diagnostic"; level: "warn" | "error"; owner: string; message: string }
-  | { type: "ask"; askId: string; pluginId: string; request: AskRequest }
-  | { type: "ask_answered"; askId: string; answer: AskAnswer; source: "client" | "default" };
-type MessageOverlayEvent = Extract<AgentEvent, { type: "message_update" }> & { entryId: string };
-type ToolOverlayEvent = Extract<
-  AgentEvent,
-  { type: "tool_execution_start" | "tool_execution_update" | "tool_execution_end" }
-> & { entryId: string };
-export type HarnessEvent =
-  | Exclude<
-      AgentEvent,
-      {
-        type:
-          | "agent_end"
-          | "message_update"
-          | "message_end"
-          | "tool_execution_start"
-          | "tool_execution_update"
-          | "tool_execution_end";
-      }
-    >
-  | { type: "agent_end" }
-  | MessageOverlayEvent
-  | ToolOverlayEvent
-  | { type: "message_end"; message: AgentEventMessage; entryId: string }
-  | CompactionEvent
-  | HandlerErrorEvent
-  | HostEvent;
-type AgentEventMessage = Extract<AgentEvent, { type: "message_end" }>["message"];
-export type HarnessListener = (event: HarnessEvent) => void | Promise<void>;
-
-interface PendingAsk {
-  answer(answer: AskAnswer, source: "client" | "default"): boolean;
-  cancel(error: Error): void;
-}
-
-type Admission =
-  | { kind: "started"; runId: string; completion: Promise<RunnerFinished> }
-  | { kind: "joined"; runId: string; completion: Promise<RunnerFinished> }
-  | {
-      kind: "queued";
-      runId: string;
-      receipt: Extract<SendReceipt, { disposition: "queued" }>;
-      completion: Promise<RunnerFinished>;
-    };
-
-interface ActivityProjection {
-  read(model: Model<Api>, thinkingLevel: ThinkingLevel | undefined): HarnessState;
-  apply(event: HarnessEvent): void;
-}
-
-function isUserMessageEntry(entry: Entry): boolean {
+function isUserMessageEntry(entry: Entry): entry is MessageEntry {
   return entry.type === "message" && entry.message.role === "user";
 }
 
-function createActivityProjection(): ActivityProjection {
-  let activity: "idle" | "streaming" | "compacting" = "idle";
-  let streamingText: string | undefined;
-  let errorMessage: string | undefined;
-  return {
-    read(model, thinkingLevel) {
-      return {
-        isStreaming: activity === "streaming",
-        isCompacting: activity === "compacting",
-        isBusy: activity !== "idle",
-        streamingText,
-        model,
-        thinkingLevel,
-        errorMessage,
-      };
-    },
-    apply(event) {
-      switch (event.type) {
-        case "compaction_start":
-          activity = "compacting";
-          break;
-        case "compaction_end":
-          activity = "idle";
-          if (event.outcome === "failed") errorMessage = event.error.message;
-          break;
-        case "agent_start":
-          activity = "streaming";
-          errorMessage = undefined;
-          break;
-        case "turn_start":
-          streamingText = undefined;
-          break;
-        case "message_update":
-          if (event.assistantMessageEvent.type === "text_delta") {
-            streamingText = (streamingText ?? "") + event.assistantMessageEvent.delta;
-          }
-          break;
-        case "turn_end":
-          if (
-            event.message.role === "assistant" &&
-            event.message.stopReason !== "aborted" &&
-            event.message.errorMessage !== undefined
-          ) {
-            errorMessage = event.message.errorMessage;
-          }
-          break;
-        case "agent_end":
-          activity = "idle";
-          streamingText = undefined;
-          break;
-        case "ask":
-        case "ask_answered":
-        case "config_update":
-        case "diagnostic":
-        case "handler_error":
-        case "message_end":
-        case "message_start":
-        case "plugin_updated":
-        case "queue_update":
-        case "tool_execution_end":
-        case "tool_execution_start":
-        case "tool_execution_update":
-          break;
-        default: {
-          const _exhaustive: never = event;
-          void _exhaustive;
-        }
-      }
-    },
-  };
-}
-
-function matchesAskRequest<TRequest extends AskRequest>(
-  request: TRequest,
-  answer: AskAnswer,
-): answer is AskAnswer<TRequest> {
-  switch (request.kind) {
-    case "confirm":
-      return typeof answer === "boolean";
-    case "select":
-      return (
-        typeof answer === "string" && request.options.some((option) => option.value === answer)
-      );
-    case "input":
-      return typeof answer === "string";
-    default: {
-      const _exhaustive: never = request;
-      return _exhaustive;
-    }
-  }
+/** An agent's `provider/model` ref; a bare id resolves against every provider. */
+function parseModelRef(ref: string): { provider?: string; id: string } {
+  const slash = ref.indexOf("/");
+  if (slash <= 0 || slash === ref.length - 1) return { id: ref };
+  return { provider: ref.slice(0, slash), id: ref.slice(slash + 1) };
 }
 
 export class AgentHarness {
-  readonly name = HEAD;
   readonly session: SessionStorage;
   readonly hooks: HookRegistry;
   readonly plugins: PluginHost;
@@ -327,14 +138,17 @@ export class AgentHarness {
   readonly registries: HarnessRegistries = createRegistries();
 
   private readonly options: AgentHarnessOptions;
-  private readonly listeners = new Set<HarnessListener>();
-  /** Slice 7 makes asks durable; until then only this compatibility path stays in memory. */
-  private readonly pendingAsks = new Map<string, PendingAsk>();
-  private readonly activity = createActivityProjection();
+  private readonly listeners = new Set<(event: EphemeralEvent) => void | Promise<void>>();
   private readonly releaseSessionResources: () => void;
   private closed = false;
   private closePromise?: Promise<void>;
   private readonly attachments = new Set<AbortController>();
+  /**
+   * Operations this process is driving right now, by run id. What separates
+   * work this harness owns — aborted and awaited on close — from work another
+   * process owns, which close must leave alone (claim-neutral close).
+   */
+  private readonly localDrives = new Map<string, Promise<void>>();
 
   private constructor(options: AgentHarnessOptions, releaseSessionResources: () => void) {
     validateRetryPolicy(options.retry ?? DEFAULT_RETRY_POLICY);
@@ -345,68 +159,23 @@ export class AgentHarness {
     this.env = options.env;
     this.plugins = new PluginHost(this);
     this.hooks = new HookRegistry((error, hook) =>
-      this.emit({
-        type: "handler_error",
-        kind: "hook",
-        hook,
-        error: error.message,
-        ...(error.stack === undefined ? {} : { stack: error.stack }),
-      }),
+      this.emit({ kind: "diagnostic", owner: `hook ${hook}`, level: "error", message: error.message }),
     );
   }
 
-  static async create(
-    options: AgentHarnessOptions,
-  ): Promise<{ harness: AgentHarness; suspended: SuspendedOperation[] }> {
+  static async create(options: AgentHarnessOptions): Promise<AgentHarness> {
     const sessionId = (await options.session.getMetadata()).id;
     const harness = new AgentHarness(options, acquireSessionResources(sessionId));
     try {
       await harness.plugins.activate(options.plugins);
-      const open = await options.session.findOpenOperations(HEAD);
-      const suspended = open.map((record): SuspendedOperation => {
-        switch (record.intent.kind) {
-          case "run":
-            return {
-              kind: "run",
-              head: record.head,
-              id: record.id,
-              startedAt: record.timestamp,
-              prompt: record.intent.originalPrompt,
-            };
-          case "compaction":
-            return {
-              kind: "compaction",
-              head: record.head,
-              id: record.id,
-              startedAt: record.timestamp,
-              ...(record.intent.customInstructions === undefined
-                ? {}
-                : { customInstructions: record.intent.customInstructions }),
-            };
-          default: {
-            const _exhaustive: never = record.intent;
-            return _exhaustive;
-          }
-        }
-      });
-      return { harness, suspended };
+      return harness;
     } catch (error) {
       await harness.close().catch(() => undefined);
       throw error;
     }
   }
 
-  reportPluginError(pluginId: string, error: Error): void {
-    void this.emit({
-      type: "handler_error",
-      kind: "plugin",
-      plugin: pluginId,
-      error: error.message,
-      ...(error.stack === undefined ? {} : { stack: error.stack }),
-    });
-  }
-
-  subscribe(listener: HarnessListener): () => void {
+  subscribe(listener: (event: EphemeralEvent) => void | Promise<void>): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -415,16 +184,50 @@ export class AgentHarness {
     return this.registries.tools.values();
   }
 
+  /** The declared agents. A client renders these; the `subagents` builtin projects them. */
+  getAgents(): readonly Agent[] {
+    return this.registries.agents.values();
+  }
+
   getCommands(): ReadonlyMap<string, Command> {
     return this.registries.commands.current();
+  }
+
+  /** Plugin that contributed a command's current shape, for provenance a client renders. */
+  commandOwner(name: string): string | undefined {
+    return this.registries.commands.owner(name);
   }
 
   getResources(): ReadonlyMap<string, Skill> {
     return this.registries.resources.current();
   }
 
-  getSettings(): ReadonlyMap<string, PluginSetting> {
-    return this.registries.settings.current();
+  /** Every setting with its owner and current choice, for a client to render. */
+  async listSettings(): Promise<readonly SettingInfo[]> {
+    const settings: SettingInfo[] = [];
+    for (const [id, setting] of this.registries.settings.current()) {
+      const owner = this.registries.settings.owner(id);
+      if (owner === undefined) continue;
+      const stored = await this.session.getFact(pluginFactKey(owner, setting.key));
+      const current =
+        typeof stored === "string" && setting.choices.some((choice) => choice.id === stored)
+          ? stored
+          : (setting.fallback ?? setting.choices[0].id);
+      settings.push({ id, owner, label: setting.label, choices: setting.choices, current });
+    }
+    return settings;
+  }
+
+  /** Write a setting's choice to its owner's storage. Callers re-list; there is no cached value. */
+  async applySetting(id: string, choiceId: string): Promise<ApplySettingOutcome> {
+    const setting = this.registries.settings.get(id);
+    const owner = this.registries.settings.owner(id);
+    if (setting === undefined || owner === undefined) return { kind: "not_found" };
+    if (!setting.choices.some((choice) => choice.id === choiceId)) {
+      return { kind: "invalid_choice" };
+    }
+    await this.session.setFact(pluginFactKey(owner, setting.key), choiceId);
+    return { kind: "applied" };
   }
 
   getSystemPrompt(): string {
@@ -447,112 +250,14 @@ export class AgentHarness {
 
   rebuildAll(): void {
     for (const property of REGISTRY_PROPERTIES) {
-      const diff = this.registries[property].rebuild();
-      for (const failure of diff.errors) {
+      for (const failure of this.registries[property].rebuild().errors) {
         void this.emit({
-          type: "diagnostic",
+          kind: "diagnostic",
           level: "error",
           owner: failure.owner,
           message: failure.message,
         });
       }
-      if (diff.added.length + diff.removed.length + diff.changed.length > 0) {
-        void this.emit({ type: "config_update", property });
-      }
-    }
-  }
-
-  async ask<TRequest extends AskRequest>(
-    pluginId: string,
-    request: TRequest,
-  ): Promise<AskAnswer<TRequest>> {
-    if (this.closed) throw new Closed({ message: "harness is closed" });
-    const askId = newId("a");
-    const timeoutMs = this.options.askTimeoutMs ?? 120_000;
-    const answered = new Promise<{
-      answer: AskAnswer<TRequest>;
-      source: "client" | "default";
-    }>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAsks.delete(askId);
-        if (request.default === undefined) reject(new Error(`no answer to "${request.title}"`));
-        else if (!matchesAskRequest(request, request.default)) {
-          reject(new Error(`invalid default answer to "${request.title}"`));
-        } else resolve({ answer: request.default, source: "default" });
-      }, timeoutMs);
-      timer.unref?.();
-      this.pendingAsks.set(askId, {
-        answer: (answer, source) => {
-          if (!matchesAskRequest(request, answer)) return false;
-          clearTimeout(timer);
-          this.pendingAsks.delete(askId);
-          resolve({ answer, source });
-          return true;
-        },
-        cancel: (error) => {
-          clearTimeout(timer);
-          this.pendingAsks.delete(askId);
-          reject(error);
-        },
-      });
-    });
-    void answered.catch(() => undefined);
-    await this.emit({ type: "ask", askId, pluginId, request });
-    const result = await answered;
-    await this.emit({
-      type: "ask_answered",
-      askId,
-      answer: result.answer,
-      source: result.source,
-    });
-    return result.answer;
-  }
-
-  answer(askId: string, answer: AskAnswer): boolean {
-    return this.pendingAsks.get(askId)?.answer(answer, "client") ?? false;
-  }
-
-  dismissAsk(askId: string): boolean {
-    const pending = this.pendingAsks.get(askId);
-    if (pending === undefined) return false;
-    pending.cancel(new Error("ask dismissed by client"));
-    return true;
-  }
-
-  setModel(model: Model<Api>): void {
-    this.options.model = model;
-  }
-
-  setCompactionSettings(settings: CompactionSettings): void {
-    validateCompactionSettings(settings);
-    this.options.compaction = { ...settings };
-  }
-
-  setStreamOptions(options: AgentHarnessStreamOptions): void {
-    this.options.streamOptions = {
-      ...options,
-      ...(options.headers === undefined ? {} : { headers: { ...options.headers } }),
-      ...(options.samplingParams === undefined
-        ? {}
-        : { samplingParams: { ...options.samplingParams } }),
-    };
-  }
-
-  get state(): HarnessState {
-    return this.activity.read(this.options.model, this.options.thinkingLevel);
-  }
-
-  async waitForIdle(): Promise<RunResult | CompactionResult | void> {
-    while (true) {
-      const open = await this.session.findOpenOperations(HEAD);
-      const operation = open[0];
-      if (operation !== undefined) {
-        const finished = await this.awaitFinished(operation.id);
-        return this.facadeResult(finished);
-      }
-      const claim = await this.session.getLiveClaim(HEAD);
-      if (claim === undefined) return;
-      await this.waitForOperationStart(claim.runId);
     }
   }
 
@@ -560,18 +265,23 @@ export class AgentHarness {
     if (this.closePromise !== undefined) return this.closePromise;
     this.closed = true;
     for (const attachment of this.attachments) attachment.abort();
-    this.cancelPendingAsks(new Closed({ message: "harness is closed" }));
     this.closePromise = this.closeResources();
     return this.closePromise;
   }
 
   private async closeResources(): Promise<void> {
     const errors: unknown[] = [];
-    await this.abortOperation().catch((error: unknown) => errors.push(error));
-    await this.waitForIdle().catch((error: unknown) => errors.push(error));
+    // Claim-neutral close (design record, "Who runs?"): only work this
+    // process is driving is aborted and awaited. An operation another process
+    // owns — or an orphan nobody owns — is left exactly as it stands; a mere
+    // observer closing must not stop a live run or hang on one.
+    if (this.localDrives.size > 0) {
+      await this.abortOperation().catch((error: unknown) => errors.push(error));
+      await Promise.all(this.localDrives.values()).catch(() => undefined);
+    }
     await this.plugins.close().catch((error: unknown) => errors.push(error));
     try {
-      this.hooks.close(new Closed({ message: "harness is closed" }));
+      this.hooks.close(new Error("harness is closed"));
     } catch (error) {
       errors.push(error);
     }
@@ -583,175 +293,200 @@ export class AgentHarness {
     if (errors.length > 0) throw new AggregateError(errors, "Failed to close harness");
   }
 
-  private cancelPendingAsks(error: Error): void {
-    for (const pending of [...this.pendingAsks.values()]) pending.cancel(error);
+  private assertOpen(): void {
+    if (this.closed) throw new Error("harness is closed");
   }
 
-  async submit(
-    input: string | Message,
-    options: { delivery?: MessageDelivery } = {},
-  ): Promise<SubmitResult> {
-    if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
-    const delivery = options.delivery ?? "steer";
-    const admission = await this.admit([this.normalizeOne(input)], delivery);
-    void admission.completion.catch((error: unknown) =>
-      this.emit({
-        type: "diagnostic",
-        level: "error",
-        owner: "runner",
-        message: error instanceof Error ? error.message : String(error),
-      }),
+  async cancelQueued(entryId: string): Promise<CancelOutcome> {
+    this.assertOpen();
+    const known = (await this.session.findRecords({ type: "queue_enqueued" })).some(
+      (record) => record.target.id === entryId,
     );
-    switch (admission.kind) {
-      case "started":
-      case "joined":
-        return Result.ok({ disposition: "started", runId: admission.runId });
-      case "queued":
-        return Result.ok({
-          disposition: "queued",
-          entryId: admission.receipt.entryId,
-          runId: admission.runId,
-          delivery,
-        });
-      default: {
-        const _exhaustive: never = admission;
-        return _exhaustive;
-      }
-    }
-  }
-
-  /** Submit through multiplayer admission, then await the accepted run's completion. */
-  async prompt(input: string | Message | Message[]): Promise<RunResult> {
-    if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
-    const admission = await this.admit(this.normalize(input), "steer");
-    const finished = await admission.completion;
-    if (finished.operation !== "run") {
-      throw new Error(`Prompt joined non-run operation ${finished.runId}`);
-    }
-    return Result.ok({ runId: finished.runId, ...finished.outcome });
-  }
-
-  async skill(name: string, additionalInstructions?: string): Promise<SkillResult> {
-    const skill = this.registries.resources.get(name);
-    if (skill === undefined) {
-      return Result.err(new UnknownSkill({ name, message: `unknown skill: ${name}` }));
-    }
-    return this.prompt(formatSkillInvocation(skill, additionalInstructions));
-  }
-
-  async steer(input: string | Message): Promise<QueueResult> {
-    return this.sendParticipant(input, "steer");
-  }
-
-  async followUp(input: string | Message): Promise<QueueResult> {
-    return this.sendParticipant(input, "queue");
-  }
-
-  async nextRun(input: string | Message): Promise<QueueResult> {
-    return this.sendParticipant(input, "queue");
-  }
-
-  private async sendParticipant(
-    input: string | Message,
-    delivery: MessageDelivery,
-  ): Promise<QueueResult> {
-    const submitted = await this.submit(input, { delivery });
-    if (!submitted.ok) return submitted;
-    return Result.ok({
-      entryId:
-        submitted.value.disposition === "queued"
-          ? submitted.value.entryId
-          : ((await this.session.getLeafId(HEAD)) ?? submitted.value.runId),
-    });
-  }
-
-  async pendingQueue(): Promise<readonly PendingQueueItem[]> {
-    const records = await this.pendingQueueRecords();
-    return records.map((record) => ({
-      entryId: record.target.id,
-      delivery:
-        record.queue === "followUp" ? "queue" : record.queue === "steer" ? "steer" : "nextRun",
-      message: record.target.message,
-    }));
-  }
-
-  async cancelQueued(entryId: string): Promise<QueueCancelResult> {
-    if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
+    if (!known) return { kind: "not_found" };
     const pending = (await this.pendingQueueRecords()).some(
       (record) => record.target.id === entryId,
     );
-    if (!pending) {
-      return Result.err(new NotQueued({ entryId, message: "queue item is not pending" }));
-    }
+    if (!pending) return { kind: "already_consumed" };
     await this.session.appendRecord({
       type: "queue_cancelled",
       id: newId("r"),
       head: HEAD,
       entryId,
     });
-    await this.emitQueueUpdate();
-    return Result.ok({ entryId });
+    return { kind: "cancelled" };
   }
 
-  async compact(options?: { customInstructions?: string }): Promise<CompactionResult> {
+  /**
+   * Move a message that is still waiting between lanes: a follow-up becomes a
+   * steer the running turn takes at its next boundary, a steer falls back
+   * behind the run. Delivery is a property of a pending item, not a decision
+   * frozen when it was sent, so a client can offer "send this one now" without
+   * cancelling and re-typing — which would lose the message's place in line and
+   * its entry id.
+   *
+   * It is a second `queue_enqueued` for the same provisioned entry rather than
+   * a new record type: both projections that read the queue already keep the
+   * last record per target id, and the first record still fixes the item's
+   * position, so a re-delivered message keeps the place it has always held.
+   *
+   * Based on OpenCode v2's inbox, where `steer`, `queue`, and `cancel` are
+   * three verbs over one pending item:
+   * https://github.com/anomalyco/opencode/blob/v2/packages/core/src/session/inbox.ts
+   */
+  async redeliverQueued(entryId: string, delivery: "steer" | "queue"): Promise<RedeliverOutcome> {
+    this.assertOpen();
+    const known = (await this.session.findRecords({ type: "queue_enqueued" })).some(
+      (record) => record.target.id === entryId,
+    );
+    if (!known) return { kind: "not_found" };
+    const record = (await this.pendingQueueRecords()).find(
+      (candidate) => candidate.target.id === entryId,
+    );
+    if (record === undefined) return { kind: "already_consumed" };
+    const queue = delivery === "queue" ? "followUp" : "steer";
+    // Moving a lane is a compare-and-set on the lane it is leaving, so an item
+    // already there means the caller's view of the queue was stale.
+    if (record.queue === queue) return { kind: "unchanged", delivery };
+    await this.session.appendRecord({
+      type: "queue_enqueued",
+      id: newId("r"),
+      head: HEAD,
+      queue,
+      ...(record.runId === undefined ? {} : { runId: record.runId }),
+      target: record.target,
+    });
+    // A steer with no live run has nothing to drain it, so the re-delivery is
+    // also the wake: the same nudge `abort({ continue: true })` relies on. The
+    // caller asked to change a lane, not to sit through the turn, so the drive
+    // detaches; it does wait for the claim, so a run is already running by the
+    // time this resolves.
+    if (delivery === "steer") await this.wakePendingSteers({ detach: true });
+    return { kind: "redelivered", delivery };
+  }
+
+  async compact(options: { customInstructions?: string } = {}): Promise<CompactOutcome> {
     while (true) {
-      if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
+      this.assertOpen();
       const branch = await this.session.getBranch(HEAD);
       const preparation = prepareCompaction(
         branch,
         this.options.compaction ?? DEFAULT_COMPACTION_SETTINGS,
       );
-      if (!preparation.ok) {
-        return Result.err(new NothingToCompact({ head: HEAD, message: preparation.error.message }));
-      }
-      if (preparation.value === undefined) {
-        return Result.err(
-          new NothingToCompact({
-            head: HEAD,
-            message:
-              branch.at(-1)?.type === "compaction"
-                ? "conversation is already compacted"
-                : "nothing to compact",
-          }),
-        );
+      if (!preparation.ok || preparation.value === undefined) {
+        return { kind: "nothing_to_compact" };
       }
 
       const runId = newId("compact");
-      const claimed = await this.session.claimRun(HEAD, runId);
+      const claimed = await this.session.beginOperation(HEAD, runId, {
+        intent: {
+          kind: "compaction",
+          ...(options.customInstructions === undefined
+            ? {}
+            : { customInstructions: options.customInstructions }),
+        },
+        ...(await this.operationConfig()),
+      });
       if (!claimed.ok) {
         await this.awaitFinished(claimed.holder.runId);
         continue;
       }
-      try {
-        await claimed.writer.appendRecord({
-          type: "operation_started",
-          id: runId,
-          head: HEAD,
-          sourceLeafId: await this.session.getLeafId(HEAD),
-          intent: {
-            kind: "compaction",
-            ...(options?.customInstructions === undefined
-              ? {}
-              : { customInstructions: options.customInstructions }),
-          },
-        });
-      } finally {
-        await claimed.writer.release();
-      }
-      const finished = await this.startDrive(runId, "compaction");
+      const finished = await this.startDrive(runId, { recover: false, writer: claimed.writer });
       if (finished.operation !== "compaction") {
         throw new Error(`Compaction ${runId} finished as ${finished.operation}`);
       }
-      return Result.ok({ operation: "compaction", runId, ...finished.outcome });
+      switch (finished.outcome.kind) {
+        case "completed":
+          return { kind: "compacted", entryId: finished.outcome.entry.id };
+        case "aborted":
+          return { kind: "failed", message: "compaction aborted" };
+        case "failed":
+          return { kind: "failed", message: finished.outcome.error.message };
+        default: {
+          const _exhaustive: never = finished.outcome;
+          return _exhaustive;
+        }
+      }
     }
   }
 
-  async abort(options: { continue?: boolean } = {}): Promise<AbortResult> {
-    if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
+  /**
+   * Re-point the head as a durable structural run (design record: "Heads are
+   * named pointers"). A user message hands itself back through `restored`
+   * while the head parks on its parent; anything else becomes the leaf. With
+   * `summary`, the branch being left is summarized and the summary entry is
+   * appended at the destination, so the next send parents on it. Abandoned
+   * entries are never deleted.
+   */
+  async navigate(options: NavigateOptions): Promise<MoveOutcome> {
+    while (true) {
+      this.assertOpen();
+      const selected =
+        options.entryId === null ? undefined : await this.session.getEntry(options.entryId);
+      if (options.entryId !== null && selected === undefined) return { kind: "not_found" };
+      const target = navigationTarget(selected);
+      // The summary decision needs the leaf; beginOperation re-reads it in-tx
+      // for the record itself.
+      const sourceLeafId = await this.session.getLeafId(HEAD);
+      // Already there: the asked-for state holds, so the move is a no-op success.
+      if (target.kind === "move" && target.targetId === sourceLeafId) {
+        return { kind: "moved", seq: await this.session.lastSeq() };
+      }
+
+      const runId = newId("nav");
+      const intent: NavigationIntent = {
+        kind: "navigation",
+        selectedId: options.entryId,
+        targetId: target.targetId,
+        ...(options.summary === undefined || sourceLeafId === null
+          ? {}
+          : {
+              summary: {
+                entryId: newId("e"),
+                ...(options.summary.customInstructions === undefined
+                  ? {}
+                  : { customInstructions: options.summary.customInstructions }),
+              },
+            }),
+      };
+      const claimed = await this.session.beginOperation(HEAD, runId, {
+        intent,
+        ...(await this.operationConfig()),
+      });
+      if (!claimed.ok) {
+        await this.awaitFinished(claimed.holder.runId);
+        continue;
+      }
+      const finished = await this.startDrive(runId, { recover: false, writer: claimed.writer });
+      if (finished.operation !== "navigation") {
+        throw new Error(`Navigation ${runId} finished as ${finished.operation}`);
+      }
+      switch (finished.outcome.kind) {
+        case "completed":
+          return {
+            kind: "moved",
+            seq: await this.session.lastSeq(),
+            ...(target.kind === "restore" && target.entry.message.role === "user"
+              ? {
+                  restored: { entryId: target.entry.id, content: target.entry.message.content },
+                }
+              : {}),
+          };
+        case "aborted":
+          return { kind: "aborted" };
+        case "failed":
+          return { kind: "failed", message: finished.outcome.error.message };
+        default: {
+          const _exhaustive: never = finished.outcome;
+          return _exhaustive;
+        }
+      }
+    }
+  }
+
+  async abort(options: { continue?: boolean } = {}): Promise<AbortOutcome> {
+    this.assertOpen();
     const runId = await this.abortOperation(options);
-    return runId === undefined
-      ? Result.err(new NoActiveRun({ head: HEAD, message: "no active operation to abort" }))
-      : Result.ok({ runId });
+    return runId === undefined ? { kind: "not_running" } : { kind: "requested", runId };
   }
 
   private async abortOperation(options: { continue?: boolean } = {}): Promise<string | undefined> {
@@ -761,7 +496,6 @@ export class AgentHarness {
       if (claim === undefined) return undefined;
       operation = await this.waitForOperationStart(claim.runId);
     }
-    this.cancelPendingAsks(new Error("operation aborted"));
     try {
       await this.session.appendRecord({
         type: "abort_requested",
@@ -777,21 +511,27 @@ export class AgentHarness {
     return operation.id;
   }
 
-  async resume(): Promise<ResumeResult> {
-    if (this.closed) return Result.err(new Closed({ message: "harness is closed" }));
+  /**
+   * Drive the head's open operation in this process, or report who holds it.
+   * Resume is for orphans (design record, "Who runs?"): an open operation
+   * under a live claim is running in some process, and this harness must not
+   * contest it; the claim CAS in the runner still guards the window between
+   * this read and the claim, and losing it is a value, never a failed run.
+   * `undefined` means nothing is open.
+   */
+  async resume(): Promise<Exclude<StepResult, { kind: "continue" }> | undefined> {
+    this.assertOpen();
     const operation = (await this.session.findOpenOperations(HEAD))[0];
-    if (operation === undefined) {
-      return Result.err(new NothingToResume({ head: HEAD, message: "no suspended operation" }));
+    if (operation === undefined) return undefined;
+    const live = await this.session.getLiveClaim(HEAD);
+    if (live !== undefined) {
+      return {
+        kind: "claimed_elsewhere",
+        head: HEAD,
+        holder: { runId: live.runId, ownerId: live.ownerId, expiresAtMs: live.expiresAtMs },
+      };
     }
-    const isRun = operation.intent.kind === "run";
-    if (isRun) await this.emit({ type: "agent_start" });
-    const first = await resumeRunner(this.runnerOptions(operation.id));
-    const stopped =
-      first.kind === "continue" ? await drive(this.runnerOptions(operation.id)) : first;
-    const finished = await this.toFacadeFinished(operation.id, stopped);
-    if (isRun) await this.emit({ type: "agent_end" });
-    await this.afterDrive(finished);
-    return Result.ok(this.resumeOutcome(finished));
+    return this.driveLocal(operation.id, { recover: true });
   }
 
   /**
@@ -834,7 +574,12 @@ export class AgentHarness {
     let placedSeq = -1;
     for (const item of log) {
       cursor = item.seq;
-      if (item.kind === "entry" && item.head === HEAD && isUserMessageEntry(item.entry)) {
+      if (
+        item.kind === "entry" &&
+        item.head === HEAD &&
+        isUserMessageEntry(item.entry) &&
+        item.entry.wake !== false
+      ) {
         placedSeq = item.seq;
       }
       if (
@@ -844,178 +589,133 @@ export class AgentHarness {
         afterOperation = item.seq;
       }
     }
-    if (this.closed) return { cursor, afterOperation };
-    if ((await this.session.getLiveClaim(HEAD)) !== undefined) return { cursor, afterOperation };
-    const openOperation = (await this.session.findOpenOperations(HEAD))[0];
-    if (openOperation !== undefined) {
-      void this.resume().catch((error: unknown) => this.reportRunnerError(error));
-    } else if (placedSeq > afterOperation) {
-      const runId = await this.startRun({ kind: "run", originalPrompt: [], initialMessages: [] });
-      if (runId !== undefined) {
-        void this.startDrive(runId, "run").catch((error: unknown) => this.reportRunnerError(error));
-      }
-    } else {
-      await this.wakePendingSteers();
-    }
+    await this.wakeHead(placedSeq > afterOperation);
     return { cursor, afterOperation };
+  }
+
+  /**
+   * Volunteer this process as the runner for an idle head: pick up an
+   * orphaned open operation, start a run for placed input, or wake queued
+   * steers. The drive it starts runs detached; its failure is a diagnostic.
+   * Attached hosts race on the claim CAS and losers do nothing, so calling
+   * this from several processes is safe.
+   */
+  private async wakeHead(placed: boolean): Promise<void> {
+    if (this.closed || (await this.session.getLiveClaim(HEAD)) !== undefined) return;
+    const open = (await this.session.findOpenOperations(HEAD))[0];
+    let started: Promise<RunnerFinished> | undefined;
+    if (open !== undefined) {
+      if (!(await this.shouldWake(open.id))) return;
+      started = this.startDrive(open.id, { recover: true });
+    } else if (!placed) {
+      await this.wakePendingSteers();
+      return;
+    } else {
+      const run = await this.startRun({ kind: "run", originalPrompt: [], initialMessages: [] });
+      if (run === undefined) return;
+      started = this.startDrive(run.runId, { recover: false, writer: run.writer });
+    }
+    void started.catch((error: unknown) => this.reportRunnerError(error));
+  }
+
+  /**
+   * An orphan always resumes. A waiting run resumes only when wake input
+   * arrived after its claim released, or an abort is pending, so the attach
+   * loop does not spin on a run that is parked on purpose.
+   */
+  private async shouldWake(runId: string): Promise<boolean> {
+    const state = await this.session.runState(runId);
+    if (state.kind !== "running") return false;
+    if (state.waitingCalls.length === 0) return true;
+    return hasWakeInput(state);
   }
 
   private reportRunnerError(error: unknown): Promise<void> {
     return this.emit({
-      type: "diagnostic",
+      kind: "diagnostic",
       level: "error",
       owner: "runner",
       message: error instanceof Error ? error.message : String(error),
     });
   }
 
-  async emit(event: HarnessEvent): Promise<void> {
-    this.activity.apply(event);
+  async emit(event: EphemeralEvent): Promise<void> {
     for (const listener of this.listeners) {
       try {
         await listener(event);
       } catch (error) {
-        if (event.type === "handler_error") continue;
-        const normalized = error instanceof Error ? error : new Error(String(error));
+        // A listener failure is contained (invariant 21) and reported once;
+        // a diagnostic that fails to deliver is not reported again.
+        if (event.kind === "diagnostic") continue;
         await this.emit({
-          type: "handler_error",
-          kind: "event",
-          event: event.type,
-          error: normalized.message,
-          ...(normalized.stack === undefined ? {} : { stack: normalized.stack }),
-        });
-      }
-    }
-  }
-
-  private async admit(messages: readonly Message[], delivery: MessageDelivery): Promise<Admission> {
-    const openOperation = (await this.session.findOpenOperations(HEAD))[0];
-    const runId = openOperation?.id ?? newId("run");
-    const claimed = await this.session.claimRun(HEAD, runId);
-    if (!claimed.ok) {
-      let queued: Extract<SendReceipt, { disposition: "queued" }> | undefined;
-      const placed: Array<{
-        message: Message;
-        receipt: Extract<SendReceipt, { disposition: "placed" }>;
-      }> = [];
-      for (const message of messages) {
-        const receipt = await this.session.send(message, { delivery });
-        if (receipt.disposition === "queued") queued ??= receipt;
-        else placed.push({ message, receipt });
-      }
-      for (const item of placed) {
-        await this.emit({ type: "message_start", message: item.message });
-        await this.emit({
-          type: "message_end",
-          message: item.message,
-          entryId: item.receipt.entryId,
-        });
-      }
-      if (queued !== undefined) {
-        await this.emitQueueUpdate();
-        return {
-          kind: "queued",
-          runId: queued.runId,
-          receipt: queued,
-          completion: this.awaitFinished(queued.runId),
-        };
-      }
-      const retry = await this.session.claimRun(HEAD, runId);
-      if (!retry.ok) {
-        return {
-          kind: "joined",
-          runId: retry.holder.runId,
-          completion: this.awaitFinished(retry.holder.runId),
-        };
-      }
-      try {
-        await retry.writer.appendRecord({
-          type: "operation_started",
-          id: runId,
-          head: HEAD,
-          sourceLeafId: await this.session.getLeafId(HEAD),
-          intent: { kind: "run", originalPrompt: [...messages], initialMessages: [] },
-        });
-      } finally {
-        await retry.writer.release();
-      }
-      return { kind: "started", runId, completion: this.startDrive(runId, "run") };
-    }
-
-    if (openOperation !== undefined) {
-      let receipt: Extract<SendReceipt, { disposition: "queued" }> | undefined;
-      try {
-        for (const message of messages) {
-          const admitted = await this.session.send(message, { delivery });
-          if (admitted.disposition !== "queued" || admitted.runId !== runId) {
-            throw new Error(`Admission escaped open run ${runId}`);
-          }
-          receipt ??= admitted;
-        }
-      } finally {
-        await claimed.writer.release();
-      }
-      if (receipt === undefined) throw new Error(`Open run ${runId} received no input`);
-      await this.emitQueueUpdate();
-      void this.startDrive(runId, "run").catch((error: unknown) =>
-        this.emit({
-          type: "diagnostic",
+          kind: "diagnostic",
           level: "error",
-          owner: "runner",
+          owner: `listener ${event.kind}`,
           message: error instanceof Error ? error.message : String(error),
-        }),
-      );
-      return {
-        kind: "queued",
-        runId,
-        receipt,
-        completion: this.awaitFinished(runId),
-      };
-    }
-
-    const initialMessages: ProvisionedEntry<MessageEntry>[] = [];
-    try {
-      for (const message of messages) {
-        initialMessages.push({ type: "message", id: newId("e"), message });
-      }
-      await claimed.writer.appendRecord({
-        type: "operation_started",
-        id: runId,
-        head: HEAD,
-        sourceLeafId: await this.session.getLeafId(HEAD),
-        intent: {
-          kind: "run",
-          originalPrompt: messages.map((message) => structuredClone(message)),
-          initialMessages,
-        },
-      });
-      for (const provisioned of initialMessages) {
-        await claimed.writer.appendEntry(provisioned);
-        await this.emit({ type: "message_start", message: provisioned.message });
-        await this.emit({
-          type: "message_end",
-          message: provisioned.message,
-          entryId: provisioned.id,
         });
       }
-    } finally {
-      await claimed.writer.release();
     }
-    return { kind: "started", runId, completion: this.startDrive(runId, "run") };
   }
 
-  private async startDrive(runId: string, kind: "run" | "compaction"): Promise<RunnerFinished> {
-    if (kind === "run") await this.emit({ type: "agent_start" });
-    const stopped = await drive(this.runnerOptions(runId));
-    const finished = await this.toFacadeFinished(runId, stopped);
-    if (kind === "run") await this.emit({ type: "agent_end" });
-    await this.afterDrive(finished);
-    return finished;
+  /**
+   * Drive one operation to its terminal record in this process. A writer from
+   * admission rides in so the claim is held from `operation_started` to the
+   * terminal record with no orphan-shaped gap. A waiting run parked durably:
+   * local driving is over (so close stays claim-neutral), and the caller's
+   * completion resolves on the terminal record whichever process eventually
+   * writes it.
+   */
+  private async startDrive(runId: string, mode: DriveMode): Promise<RunnerFinished> {
+    const stopped = await this.driveLocal(runId, mode);
+    switch (stopped.kind) {
+      case "waiting":
+        return this.awaitFinished(runId);
+      case "finished":
+        return stopped;
+      case "claimed_elsewhere":
+        return this.toFacadeFinished(runId, stopped);
+      default: {
+        const _exhaustive: never = stopped;
+        return _exhaustive;
+      }
+    }
+  }
+
+  /**
+   * Run the runner under this process's ownership, tracked in `localDrives`
+   * so close can tell work it owns from work another process owns. `recover`
+   * repairs an orphan's effect sandwich first.
+   */
+  private async driveLocal(
+    runId: string,
+    mode: DriveMode,
+  ): Promise<Exclude<StepResult, { kind: "continue" }>> {
+    const driven = (async () => {
+      const options = await this.runnerOptions(runId);
+      return mode.recover ? resumeDrive(options) : drive(options, { writer: mode.writer });
+    })();
+    this.localDrives.set(
+      runId,
+      driven.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    try {
+      const stopped = await driven;
+      if (stopped.kind === "waiting") return stopped;
+      const finished = await this.toFacadeFinished(runId, stopped);
+      if (finished.operation === "run") this.options.onRunEnd?.(finished);
+      await this.afterDrive(finished);
+      return stopped;
+    } finally {
+      this.localDrives.delete(runId);
+    }
   }
 
   private async toFacadeFinished(
     runId: string,
-    stopped: Exclude<StepResult, { kind: "continue" }>,
+    stopped: Exclude<StepResult, { kind: "continue" | "waiting" }>,
   ): Promise<RunnerFinished> {
     switch (stopped.kind) {
       case "finished":
@@ -1037,6 +737,8 @@ export class AgentHarness {
             return { kind: "finished", operation: "run", runId, outcome };
           case "compaction":
             return { kind: "finished", operation: "compaction", runId, outcome };
+          case "navigation":
+            return { kind: "finished", operation: "navigation", runId, outcome };
           default: {
             const _exhaustive: never = state.operation.intent;
             return _exhaustive;
@@ -1050,8 +752,13 @@ export class AgentHarness {
     }
   }
 
+  /**
+   * A run wakes the steers it left behind. So does a navigation: a message
+   * sent while the head was being re-pointed was queued behind that claim in
+   * admission order, and it belongs to the branch the head now points at.
+   */
   private async afterDrive(finished: RunnerFinished): Promise<void> {
-    if (finished.operation !== "run" || this.closed) return;
+    if (finished.operation === "compaction" || this.closed) return;
     const state = await this.session.runState(finished.runId);
     const continueSteers =
       state.kind !== "missing" && state.abortRequested?.continueSteers === true;
@@ -1061,60 +768,126 @@ export class AgentHarness {
     }
   }
 
-  private async wakePendingSteers(): Promise<void> {
+  /**
+   * `detach` starts the run without sitting through it. A run that ended wants
+   * the next one chained onto its own completion; a participant that only
+   * moved a message between lanes wants the run observable and its own call
+   * back.
+   */
+  private async wakePendingSteers(options: { detach?: boolean } = {}): Promise<void> {
     if (this.closed || (await this.session.getLiveClaim(HEAD)) !== undefined) return;
     if (!(await this.pendingQueueRecords()).some((record) => record.queue === "steer")) return;
-    const runId = await this.startRun({
-      kind: "run",
-      originalPrompt: [],
-      initialMessages: [],
-      promotionScope: "steer",
-    });
-    if (runId !== undefined) await this.startDrive(runId, "run");
-  }
-
-  /** Claim the head and record operation_started; undefined when another runner won the claim. */
-  private async startRun(intent: RunIntent): Promise<string | undefined> {
-    const runId = newId("run");
-    const claimed = await this.session.claimRun(HEAD, runId);
-    if (!claimed.ok) return undefined;
-    try {
-      await claimed.writer.appendRecord({
-        type: "operation_started",
-        id: runId,
-        head: HEAD,
-        sourceLeafId: await this.session.getLeafId(HEAD),
-        intent,
+    const open = (await this.session.findOpenOperations(HEAD))[0];
+    let woken: Promise<unknown>;
+    if (open !== undefined) {
+      // An orphan resumes for its pending input; a waiting run does not,
+      // because steers are not wake input (they drain after the settlement).
+      if (!(await this.shouldWake(open.id))) return;
+      woken = this.resume();
+    } else {
+      const started = await this.startRun({
+        kind: "run",
+        originalPrompt: [],
+        initialMessages: [],
+        promotionScope: "steer",
       });
-    } finally {
-      await claimed.writer.release();
+      if (started === undefined) return;
+      woken = this.startDrive(started.runId, { recover: false, writer: started.writer });
     }
-    return runId;
+    if (options.detach === true) {
+      void woken.catch((error: unknown) => this.reportRunnerError(error));
+      return;
+    }
+    await woken;
   }
 
-  private runnerOptions(runId: string): RunnerOptions {
+  /**
+   * Claim the head and record operation_started; undefined when another
+   * runner won the claim. The claim stays held and rides into the drive.
+   */
+  private async startRun(
+    intent: RunIntent,
+  ): Promise<{ runId: string; writer: RunWriter } | undefined> {
+    const runId = newId("run");
+    const claimed = await this.session.beginOperation(HEAD, runId, {
+      intent,
+      ...(await this.operationConfig()),
+    });
+    if (!claimed.ok) return undefined;
+    return { runId, writer: claimed.writer };
+  }
+
+  /**
+   * The branch's run inputs at operation start, spreadable into the record.
+   * Empty config stays off the record entirely, so a session that never
+   * configured anything writes the same record it always did.
+   */
+  private async operationConfig(): Promise<{ config?: RunConfig }> {
+    const config = readSessionConfig(await this.session.getBranch(HEAD));
+    return config.model === undefined &&
+      config.thinkingLevel === undefined &&
+      config.agent === undefined
+      ? {}
+      : { config };
+  }
+
+  /**
+   * Run inputs come from the operation record, re-resolved against this
+   * host's catalog: the durable artifact is the name, and an unknown name
+   * degrades to the fallback instead of failing the run.
+   */
+  private async runnerOptions(runId: string): Promise<RunnerOptions> {
+    const state = await this.session.runState(runId);
+    const config = state.kind === "missing" ? undefined : state.operation.config;
+    // The driving agent re-resolves against this host's registry (invariant
+    // 29); an unknown or disabled id degrades to the fallbacks. An explicit
+    // branch declaration outranks the agent's default model: the agent record
+    // fixes its default, the user's `model_change` is the stronger declaration.
+    const agent =
+      config?.agent === undefined
+        ? undefined
+        : this.getAgents().find(
+            (candidate) => candidate.id === config.agent && candidate.disabled !== true,
+          );
+    const model =
+      config?.model !== undefined
+        ? (this.options.resolveModel?.(config.model) ?? this.options.model)
+        : agent?.model !== undefined
+          ? (this.options.resolveModel?.(parseModelRef(agent.model)) ?? this.options.model)
+          : this.options.model;
+    const thinkingLevel =
+      config?.thinkingLevel !== undefined && isThinkingLevel(config.thinkingLevel)
+        ? config.thinkingLevel
+        : this.options.thinkingLevel;
+    const steps = agent?.steps;
+    const systemPrompt =
+      agent?.system === undefined
+        ? this.getSystemPrompt()
+        : `${this.getSystemPrompt()}\n\n${agent.system}`;
     return {
       session: this.session,
       runId,
       hooks: this.hooks,
       streamFn: this.options.streamFn,
       tools: this.getTools(),
-      model: this.options.model,
-      systemPrompt: this.getSystemPrompt(),
+      model,
+      systemPrompt,
       emit: (event) => this.emit(event),
-      thinkingLevel: this.options.thinkingLevel,
+      thinkingLevel,
+      ...(steps === undefined ? {} : { steps }),
       retry: this.options.retry,
       compaction: this.options.compaction,
       streamOptions: this.options.streamOptions,
       steeringMode: this.options.steeringMode,
       followUpMode: this.options.followUpMode,
-      toolExecution: this.options.toolExecution,
     };
   }
 
   private async awaitFinished(runId: string): Promise<RunnerFinished> {
     const initial = await this.session.runState(runId);
-    if (initial.kind === "finished") return this.finishedFromState(initial);
+    if (initial.kind === "finished") {
+      return finishedFromRecord(initial, await this.session.getLeafId(HEAD));
+    }
     for await (const item of this.session.watch()) {
       if (
         item.kind !== "record" ||
@@ -1124,7 +897,9 @@ export class AgentHarness {
         continue;
       }
       const state = await this.session.runState(runId);
-      if (state.kind === "finished") return this.finishedFromState(state);
+      if (state.kind === "finished") {
+        return finishedFromRecord(state, await this.session.getLeafId(HEAD));
+      }
     }
     throw new Error(`Session closed before ${runId} finished`);
   }
@@ -1144,91 +919,6 @@ export class AgentHarness {
     throw new Error(`Session closed before ${runId} started`);
   }
 
-  private finishedFromState(state: Extract<RunState, { kind: "finished" }>): RunnerFinished {
-    const leafId =
-      state.finished.leafId ??
-      (state.operation.intent.kind === "compaction" && state.compaction.kind === "compacted"
-        ? state.compaction.entry.id
-        : state.operation.sourceLeafId);
-    const outcome = this.recordOutcome(state.finished, leafId);
-    if (state.operation.intent.kind === "run") {
-      return { kind: "finished", operation: "run", runId: state.operation.id, outcome };
-    }
-    if (outcome.kind === "completed" && state.compaction.kind === "compacted") {
-      return {
-        kind: "finished",
-        operation: "compaction",
-        runId: state.operation.id,
-        outcome: {
-          kind: "completed",
-          leafId: state.compaction.entry.id,
-          entry: state.compaction.entry,
-        },
-      };
-    }
-    if (outcome.kind === "completed") {
-      return {
-        kind: "finished",
-        operation: "compaction",
-        runId: state.operation.id,
-        outcome: {
-          kind: "failed",
-          leafId,
-          error: { code: "compaction", message: "compaction finished without a checkpoint" },
-        },
-      };
-    }
-    return { kind: "finished", operation: "compaction", runId: state.operation.id, outcome };
-  }
-
-  private recordOutcome(record: OperationFinishedRecord, leafId: string | null): RunOutcome {
-    switch (record.outcome) {
-      case "completed":
-      case "aborted":
-        return { kind: record.outcome, leafId };
-      case "failed":
-        return {
-          kind: "failed",
-          leafId,
-          error: normalizeOperationError(record.error),
-        };
-      default: {
-        const _exhaustive: never = record.outcome;
-        return _exhaustive;
-      }
-    }
-  }
-
-  private facadeResult(finished: RunnerFinished): RunResult | CompactionResult {
-    switch (finished.operation) {
-      case "run":
-        return Result.ok({ runId: finished.runId, ...finished.outcome });
-      case "compaction":
-        return Result.ok({
-          operation: "compaction",
-          runId: finished.runId,
-          ...finished.outcome,
-        });
-      default: {
-        const _exhaustive: never = finished;
-        return _exhaustive;
-      }
-    }
-  }
-
-  private resumeOutcome(finished: RunnerFinished): ResumeOutcome {
-    switch (finished.operation) {
-      case "run":
-        return { operation: "run", runId: finished.runId, ...finished.outcome };
-      case "compaction":
-        return { operation: "compaction", runId: finished.runId, ...finished.outcome };
-      default: {
-        const _exhaustive: never = finished;
-        return _exhaustive;
-      }
-    }
-  }
-
   private async pendingQueueRecords(): Promise<QueueEnqueuedRecord[]> {
     const latestByEntry = new Map<string, QueueEnqueuedRecord>();
     for (const record of await this.session.findRecords({ type: "queue_enqueued" })) {
@@ -1245,39 +935,11 @@ export class AgentHarness {
     }
     return pending;
   }
-
-  private async emitQueueUpdate(): Promise<void> {
-    await this.emit({ type: "queue_update", items: await this.pendingQueue() });
-  }
-
-  private normalize(input: string | Message | Message[]): Message[] {
-    if (Array.isArray(input)) return input;
-    return [this.normalizeOne(input)];
-  }
-
-  private normalizeOne(input: string | Message): Message {
-    return typeof input === "string"
-      ? { role: "user", content: input, timestamp: Date.now() }
-      : input;
-  }
 }
 
+/** Recover an orphan under a fresh claim, or drive under the claim admission already holds. */
+type DriveMode = { recover: true } | { recover: false; writer: RunWriter };
 type OperationStarted = Extract<
   Awaited<ReturnType<SessionStorage["findOpenOperations"]>>[number],
   { type: "operation_started" }
 >;
-
-function normalizeOperationError(error: OperationFinishedRecord["error"]): OperationError {
-  if (error === undefined) return { code: "harness", message: "run failed" };
-  switch (error.code) {
-    case "claim_lost":
-    case "compaction":
-    case "harness":
-    case "refused":
-    case "stream":
-    case "summarization_failed":
-      return { code: error.code, message: error.message };
-    default:
-      return { code: "harness", message: error.message };
-  }
-}

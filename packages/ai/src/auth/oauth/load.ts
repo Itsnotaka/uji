@@ -14,11 +14,21 @@ import type { OAuthAuth } from "../types.ts";
  * `node:crypto` PKCE). The `.ts`/`.js` rewrite keeps the trick working from
  * both source and built output.
  */
-const importOAuthModule = (specifier: string): Promise<unknown> => {
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- pi-ported: a variable-specifier dynamic import has no static module shape; the loaders below narrow to their flow's export
+const importOAuthModule = async (specifier: string): Promise<unknown> => {
   const runtimeSpecifier = import.meta.url.endsWith(".js")
     ? specifier.replace(/\.ts$/, ".js")
     : specifier;
-  return import(runtimeSpecifier);
+  try {
+    return await import(runtimeSpecifier);
+  } catch (error) {
+    // In a standalone binary the opaque specifier has no file to resolve, so
+    // reaching this import means the entry never registered the bundled flows.
+    throw new Error(
+      `OAuth flow module ${specifier} is not loadable at runtime. Standalone binaries must register flows up front with registerBundledOAuthFlowLoaders from their entry (see packages/tui/src/binary.ts).`,
+      { cause: error },
+    );
+  }
 };
 
 type OAuthFlowLoaders = {

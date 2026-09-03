@@ -6,14 +6,11 @@
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { promisify } from "node:util";
+import type { PowerlineState } from "./format.ts";
 
 const run = promisify(execFile);
 
-export interface WorkspaceStatus {
-  name: string;
-  branch?: string;
-  dirty: boolean;
-}
+type WorkspaceStatus = Pick<PowerlineState, "workspace" | "branch" | "dirty">;
 
 async function git(cwd: string, args: string[]): Promise<string | undefined> {
   try {
@@ -25,14 +22,14 @@ async function git(cwd: string, args: string[]): Promise<string | undefined> {
 }
 
 export async function readWorkspaceStatus(cwd: string): Promise<WorkspaceStatus> {
-  const name = basename(cwd) || cwd;
+  const workspace = basename(cwd) || cwd;
   const head = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (head === undefined) return { name, dirty: false };
+  if (head === undefined) return { workspace, dirty: false };
   let branch = head.trim();
   if (branch === "HEAD") {
     const sha = await git(cwd, ["rev-parse", "--short", "HEAD"]);
     branch = sha === undefined ? "detached" : `@${sha.trim()}`;
   }
   const status = await git(cwd, ["status", "--porcelain", "--untracked-files=no"]);
-  return { name, branch, dirty: status !== undefined && status.trim() !== "" };
+  return { workspace, branch, dirty: status !== undefined && status.trim() !== "" };
 }

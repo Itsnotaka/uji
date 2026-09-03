@@ -1,8 +1,13 @@
+import process from "node:process";
+
+export type ThemeMode = "dark" | "light";
+
 /**
  * Semantic colors for every OpenTUI surface. Components consume roles from
  * this object; they do not own palettes or choose colors independently.
  */
 export type CliTheme = Readonly<{
+  mode: ThemeMode;
   transparent: "transparent";
   terminal: string;
   background: string;
@@ -40,8 +45,26 @@ export type CliTheme = Readonly<{
   diffRemovedBackground: string;
 }>;
 
-// Based on https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager-render/src/theme/groknight.rs
-export const THEME: CliTheme = Object.freeze({
+/** A stable object lets long-lived renderers see a palette change in place. */
+type ActiveCliTheme = { -readonly [Role in keyof CliTheme]: CliTheme[Role] };
+
+/** Copy a frozen palette into the stable object shared by every TUI component. */
+export function createActiveTheme(theme: CliTheme): ActiveCliTheme {
+  return { ...theme };
+}
+
+/** Change that stable object without replacing the references components hold. */
+export function updateActiveTheme(target: ActiveCliTheme, theme: CliTheme): void {
+  Object.assign(target, theme);
+}
+
+/**
+ * Neutral gray base with cool accents for dark terminals.
+ *
+ * Based on https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager-render/src/theme/groknight.rs
+ */
+export const DARK_THEME: CliTheme = Object.freeze({
+  mode: "dark",
   transparent: "transparent",
   terminal: "#0a0a0a",
   background: "#141414",
@@ -78,3 +101,106 @@ export const THEME: CliTheme = Object.freeze({
   diffAddedBackground: "#063806",
   diffRemovedBackground: "#420e14",
 });
+
+/**
+ * Neutral gray base with deeper accents for light terminals.
+ *
+ * Based on https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager-render/src/theme/grokday.rs
+ */
+export const LIGHT_THEME: CliTheme = Object.freeze({
+  mode: "light",
+  transparent: "transparent",
+  terminal: "#f5f5f5",
+  background: "#eeeeee",
+  hover: "#d0d0d0",
+  codeBackground: "#e4e4e4",
+  foreground: "#262626",
+  dim: "#767676",
+  muted: "#a5a5a5",
+  accent: "#2f64d2",
+  user: "#444444",
+  thinking: "#7d4bc6",
+  tool: "#626262",
+  error: "#cd3048",
+  warning: "#a27612",
+  ok: "#378e23",
+  command: "#a27612",
+  running: "#0082aa",
+  link: "#2f64d2",
+  path: "#c3691e",
+  code: "#0f87a2",
+  number: "#c3691e",
+  string: "#378e23",
+  type: "#0082aa",
+  operator: "#cd3048",
+  promptBorder: "#c8c8cd",
+  promptBorderFocused: "#a5a5af",
+  selectionBackground: "#2f64d2",
+  selectionForeground: "#f5f5f5",
+  userBackground: "#dedede",
+  // Use the highlight gray here. The darker chrome gray reads as a code block
+  // on a light base.
+  pasteBackground: "#dedede",
+  pasteForeground: "#444444",
+  scrollbarTrack: "#eaeaea",
+  scrollbarThumb: "#dedede",
+  diffAddedBackground: "#daf2dc",
+  diffRemovedBackground: "#f5dade",
+});
+
+/** `dark`/`light`, plus the `night`/`day` aliases. Anything else is no answer. */
+function byName(raw: string | undefined): ThemeMode | undefined {
+  const name = raw?.trim().toLowerCase();
+  if (name === "dark" || name === "night") return "dark";
+  if (name === "light" || name === "day") return "light";
+  return undefined;
+}
+
+/**
+ * Vim's `COLORFGBG` heuristic: background `0-6` and `8` are dark, `7` and
+ * `9-15` are light. The background is the last field, and a non-numeric one
+ * (`15;default`) means the terminal declined to say -- reading the foreground
+ * instead would invert the answer.
+ */
+function byColorFgBg(raw: string | undefined): ThemeMode | undefined {
+  const field = raw?.split(";").at(-1)?.trim();
+  if (field === undefined || !/^\d+$/u.test(field)) return undefined;
+  const background = Number(field);
+  if (background <= 6 || background === 8) return "dark";
+  return background <= 15 ? "light" : undefined;
+}
+
+/**
+ * The palette to build the UI with, read once at startup.
+ *
+ * `UJI_THEME` is the explicit choice and `LC_UJI_THEME` its SSH-surviving
+ * alias for setups configured to forward `LC_*` variables. `COLORFGBG` only
+ * decides when neither is set. It is stamped once at shell start and inherited
+ * unchanged, so it is a guess, not a live reading. An unset or unrecognized
+ * source falls through to the next one, then to dark.
+ *
+ * Based on https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager-render/src/theme/env_appearance.rs
+ */
+export function resolveThemeMode(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ThemeMode {
+  return (
+    byName(env["UJI_THEME"]) ??
+    byName(env["LC_UJI_THEME"]) ??
+    byColorFgBg(env["COLORFGBG"]) ??
+    "dark"
+  );
+}
+
+export function themeForMode(mode: ThemeMode): CliTheme {
+  switch (mode) {
+    case "dark":
+      return DARK_THEME;
+    case "light":
+      return LIGHT_THEME;
+    default: {
+      const _exhaustive: never = mode;
+      return _exhaustive;
+    }
+  }
+}

@@ -3,8 +3,8 @@ import Link from "next/link";
 /*
  * The call path, drawn the way the docs already draw it — a vertical stack with
  * dotted leaders. It is the site's signature element because it is Uji's own
- * artefact, and it does a job: every built row links to the page that documents
- * it, and the last hop is dashed because the wire is named and unwritten.
+ * artefact, and it does a job: built rows link to the design section that covers
+ * them, and the last hop is dashed because the wire is named and unwritten.
  *
  * Colour carries state here. Meadow means built. Reserved rows get graphite and
  * a hollow marker, and never the accent.
@@ -23,35 +23,34 @@ const stages: Stage[] = [
   {
     name: "client",
     note: "tui (OpenTUI) · desktop (Electron)",
-    href: "/docs/architecture",
+    href: "/docs/design#deployment",
     built: true,
     hop: "solid",
   },
   {
     name: "AgentHarness",
     note: "durable run bracket, tool intents, crash resume",
-    href: "/docs/core/harness",
+    href: "/docs/design#runs",
     built: true,
     hop: "solid",
   },
   {
-    name: "runAgentLoop",
-    note: "turns, tool batches, steering and follow-up queues",
-    href: "/docs/core/agent-loop",
+    name: "runAgentTurn",
+    note: "one turn and its tool batch; the runner loops",
+    href: "/docs/design#the-turn",
     built: true,
     hop: "solid",
   },
   {
     name: "StreamFn",
     note: "one injected function; the loop knows no provider",
-    href: "/docs/core/stream-fn",
+    href: "/docs/design#the-turn",
     built: true,
     hop: "solid",
   },
   {
     name: "@uji-ai/ai",
     note: "credential store, OAuth, streamed Responses client",
-    href: "/docs/core/stream-fn",
     built: true,
     hop: "dashed",
   },
@@ -64,7 +63,7 @@ const stages: Stage[] = [
 
 export function SeamDiagram() {
   return (
-    <ol className="uji-mono max-w-[46rem] text-[13px] leading-none">
+    <ol className="uji-mono max-w-184 text-[13px] leading-none">
       {stages.map((stage, index) => (
         <li key={stage.name} className="relative pl-7">
           {stage.hop ? (

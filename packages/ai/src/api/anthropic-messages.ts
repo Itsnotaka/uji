@@ -9,8 +9,10 @@ import type {
   RefusalStopDetails,
 } from "@anthropic-ai/sdk/resources/messages.js";
 import { calculateCost } from "../models.ts";
+import { resolveCacheRetention } from "../prompt-cache.ts";
 import type {
   AnthropicMessagesCompat,
+  AccountLimits,
   Api,
   AssistantMessage,
   CacheRetention,
@@ -31,12 +33,12 @@ import type {
   ToolResultMessage,
   Usage,
 } from "../types.ts";
+import { combineAbortSignals } from "../utils/abort-signals.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
 import { getUjiUserAgent } from "../utils/uji-user-agent.ts";
-import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
@@ -51,20 +53,6 @@ import {
   clampMaxTokensToContext,
 } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
-
-/**
- * Resolve cache retention preference.
- * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
- */
-function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEnv): CacheRetention {
-  if (cacheRetention) {
-    return cacheRetention;
-  }
-  if (getProviderEnvValue("PI_CACHE_RETENTION", env) === "long") {
-    return "long";
-  }
-  return "short";
-}
 
 function getCacheControl(
   model: Model<"anthropic-messages">,
@@ -516,9 +504,137 @@ async function* iterateSseMessages(
   }
 }
 
+function normalizeAccountReset(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 1_000_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value !== "string") return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodeClaudeAccountLimits(value: unknown, providerId: string): AccountLimits | undefined {
+  if (!isUnknownRecord(value)) return undefined;
+  const eventType = value["type"];
+  if (eventType !== undefined && eventType !== "rate_limit_event") return undefined;
+  const info = value["rate_limit_info"];
+  if (!isUnknownRecord(info)) return undefined;
+  const rateLimitType = info["rateLimitType"] ?? info["rate_limit_type"];
+  const utilization = info["utilization"];
+  if (typeof rateLimitType !== "string" || typeof utilization !== "number") return undefined;
+  const usedPercent = utilization <= 1 ? utilization * 100 : utilization;
+  const resetsAt = normalizeAccountReset(info["resetsAt"] ?? info["resets_at"]);
+  return {
+    providerId,
+    windows: [
+      {
+        id: rateLimitType,
+        usedPercent: Math.max(0, Math.min(100, usedPercent)),
+        ...(resetsAt === undefined ? {} : { resetsAt }),
+      },
+    ],
+    observedAt: Date.now(),
+  };
+}
+
+const CLAUDE_USAGE_WINDOWS: readonly { id: string; windowMinutes: number }[] = [
+  { id: "five_hour", windowMinutes: 5 * 60 },
+  { id: "seven_day", windowMinutes: 7 * 24 * 60 },
+  { id: "seven_day_sonnet", windowMinutes: 7 * 24 * 60 },
+  { id: "seven_day_opus", windowMinutes: 7 * 24 * 60 },
+];
+
+function decodeClaudeUsageWindow(
+  root: Record<string, unknown>,
+  definition: { id: string; windowMinutes: number },
+): AccountLimits["windows"][number] | undefined {
+  const value = root[definition.id];
+  if (!isUnknownRecord(value)) return undefined;
+  const utilization = value["utilization"];
+  if (typeof utilization !== "number" || !Number.isFinite(utilization)) return undefined;
+  const resetsAt = normalizeAccountReset(value["resets_at"]);
+  return {
+    id: definition.id,
+    usedPercent: Math.max(0, Math.min(100, utilization)),
+    windowMinutes: definition.windowMinutes,
+    ...(resetsAt === undefined ? {} : { resetsAt }),
+  };
+}
+
+/** Fetch Claude Code subscription windows from Anthropic's OAuth usage endpoint. */
+export async function fetchAnthropicAccountLimits(
+  model: Model<"anthropic-messages">,
+  options?: AnthropicOptions,
+): Promise<AccountLimits> {
+  const apiKey = options?.apiKey;
+  if (!apiKey || !isOAuthToken(apiKey)) {
+    throw new Error("Claude usage requires Anthropic OAuth");
+  }
+
+  const headers = new Headers({
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "User-Agent": `claude-cli/${claudeCodeVersion}`,
+    "anthropic-beta": "oauth-2025-04-20",
+  });
+  for (const source of [model.headers, options?.headers]) {
+    for (const [name, value] of Object.entries(source ?? {})) {
+      if (value === null) headers.delete(name);
+      else headers.set(name, value);
+    }
+  }
+
+  const timeoutSignal =
+    options?.timeoutMs !== undefined && options.timeoutMs > 0
+      ? AbortSignal.timeout(options.timeoutMs)
+      : undefined;
+  const combinedSignal = combineAbortSignals([options?.signal, timeoutSignal]);
+  const baseUrl = (model.baseUrl?.trim() || "https://api.anthropic.com")
+    .replace(/\/+$/, "")
+    .replace(/\/v1$/, "");
+  let response: Response;
+  try {
+    response = await (options?.fetch ?? globalThis.fetch)(`${baseUrl}/api/oauth/usage`, {
+      method: "GET",
+      headers,
+      signal: combinedSignal.signal,
+    });
+  } finally {
+    combinedSignal.cleanup();
+  }
+  await options?.onResponse?.(
+    { status: response.status, headers: headersToRecord(response.headers) },
+    model,
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `Claude usage request failed (${String(response.status)}): ${text || response.statusText}`,
+    );
+  }
+
+  const decoded: unknown = await response.json();
+  if (!isUnknownRecord(decoded)) throw new Error("Claude usage response was not an object");
+  return {
+    providerId: model.provider,
+    windows: CLAUDE_USAGE_WINDOWS.map((definition) =>
+      decodeClaudeUsageWindow(decoded, definition),
+    ).filter((window) => window !== undefined),
+    observedAt: Date.now(),
+  };
+}
+
 async function* iterateAnthropicEvents(
   response: Response,
   signal?: AbortSignal,
+  accountLimits?: {
+    providerId: string;
+    observe(limits: AccountLimits): void | Promise<void>;
+  },
 ): AsyncGenerator<RawMessageStreamEvent> {
   if (!response.body) {
     throw new Error("Attempted to iterate over an Anthropic response with no body");
@@ -533,6 +649,14 @@ async function* iterateAnthropicEvents(
     }
 
     if (!ANTHROPIC_MESSAGE_EVENTS.has(sse.event ?? "")) {
+      if (accountLimits !== undefined) {
+        try {
+          const limits = decodeClaudeAccountLimits(JSON.parse(sse.data), accountLimits.providerId);
+          if (limits !== undefined) await accountLimits.observe(limits);
+        } catch {
+          // Account telemetry must never fail the assistant stream.
+        }
+      }
       continue;
     }
 
@@ -663,7 +787,16 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
       };
       const blocks = output.content as Block[];
 
-      for await (const event of iterateAnthropicEvents(response, options?.signal)) {
+      for await (const event of iterateAnthropicEvents(
+        response,
+        options?.signal,
+        options?.onAccountLimits === undefined
+          ? undefined
+          : {
+              providerId: model.provider,
+              observe: (limits) => options.onAccountLimits?.(limits, model),
+            },
+      )) {
         if (event.type === "message_start") {
           output.responseId = event.message.id;
           output.model = event.message.model;

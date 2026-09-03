@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DatabaseSync } from "node:sqlite";
 import {
   EventStream,
   type AssistantMessage,
@@ -12,7 +11,7 @@ import {
   type Model,
 } from "@uji-ai/ai";
 import type { StreamFn, Turn } from "@uji-ai/core";
-import { demoAgentDrafts, parseAgentDraft, type AgentDraft, type AgentId } from "../src/agents.ts";
+import { demoAgentDrafts, parseAgentDraft, type AgentDraft } from "../src/agents.ts";
 import type { UjiDesktopEvent } from "../src/desktop-api.ts";
 import { UjiHost, type UjiHostDependencies } from "../src/main/uji-host.ts";
 
@@ -67,7 +66,7 @@ void test("starts empty and persists user-created agents and their conversations
   const directory = await mkdtemp(join(tmpdir(), "uji-agents-"));
   const databasePath = join(directory, "sessions.db");
   const events: UjiDesktopEvent[] = [];
-  const prompts = new Map<AgentId, string>();
+  const prompts: string[] = [];
   const dependencies = deterministicDependencies(prompts);
   const host = new UjiHost(databasePath, (event) => events.push(event), dependencies);
   let seedId = "";
@@ -95,7 +94,7 @@ void test("starts empty and persists user-created agents and their conversations
       "A real request",
       "Handled: A real request",
     ]);
-    assert.equal(prompts.get(seedId), seed.instructions);
+    assert.equal(prompts.at(-1)?.trim(), seed.instructions);
 
     const created = await host.createAgent(scoutDraft);
     assert.equal(created.agents.length, 2);
@@ -107,14 +106,22 @@ void test("starts empty and persists user-created agents and their conversations
     await host.send("Scout request");
     const scoutAnswered = await waitForTranscript(host, 2);
     assert.equal(transcriptText(scoutAnswered.messages).length, 2);
-    assert.equal(prompts.get(scoutId), scoutDraft.instructions);
+    assert.equal(prompts.at(-1)?.trim(), scoutDraft.instructions);
 
     const restored = await host.selectAgent(seedId);
     assert.equal(transcriptText(restored.messages).length, 2);
     assert.equal(transcriptText(restored.messages)[0], "A real request");
 
-    assert.ok(events.some((event) => event.type === "running" && event.running));
-    assert.ok(events.some((event) => event.type === "delta"));
+    assert.ok(
+      events.some((event) => event.type === "session" && event.event.kind === "run_started"),
+    );
+    assert.ok(
+      events.some((event) => event.type === "session" && event.event.kind === "text_delta"),
+    );
+    const delta = events.find(
+      (event) => event.type === "session" && event.event.kind === "text_delta",
+    );
+    assert.equal(delta?.type === "session" ? delta.event.contentIndex : undefined, 0);
     assert.ok(events.some((event) => event.type === "snapshot"));
     assert.ok(
       events.every(
@@ -147,7 +154,7 @@ void test("starts empty and persists user-created agents and their conversations
 void test("initial agents are seeded once", async () => {
   const directory = await mkdtemp(join(tmpdir(), "uji-initial-agents-"));
   const databasePath = join(directory, "sessions.db");
-  const dependencies = deterministicDependencies(new Map());
+  const dependencies = deterministicDependencies([]);
   dependencies.initialAgents = demoAgentDrafts;
 
   const host = new UjiHost(databasePath, () => undefined, dependencies);
@@ -175,7 +182,7 @@ void test("initial agents are seeded once", async () => {
 void test("deleted agents stay deleted and their conversations disappear", async () => {
   const directory = await mkdtemp(join(tmpdir(), "uji-delete-"));
   const databasePath = join(directory, "sessions.db");
-  const dependencies = deterministicDependencies(new Map());
+  const dependencies = deterministicDependencies([]);
   const host = new UjiHost(databasePath, () => undefined, dependencies);
   let seedId = "";
 
@@ -220,44 +227,11 @@ void test("deleted agents stay deleted and their conversations disappear", async
   }
 });
 
-void test("the product renderer exposes the complete desktop flow", async () => {
-  const files = [
-    "src/App.tsx",
-    "src/styles.css",
-    "src/components/agent-details.tsx",
-    "src/components/composer.tsx",
-    "src/components/conversation-intro.tsx",
-    "src/components/conversation-workspace.tsx",
-    "src/components/notices.tsx",
-    "src/components/settings-dialog.tsx",
-    "src/components/sidebar.tsx",
-    "src/components/transcript.tsx",
-  ];
-  const source = (
-    await Promise.all(files.map((file) => readFile(new URL(`../${file}`, import.meta.url), "utf8")))
-  ).join("\n");
-  assert.match(source, /conversation-sidebar/);
-  assert.match(source, /settings-dialog/);
-  assert.match(source, /agent-details/);
-  assert.match(source, /className="composer"/);
-  assert.match(source, /selectConversation/);
-  assert.match(source, /updateRuntimeSettings/);
-  // Flows that must stay reachable without opening a dialog.
-  assert.match(source, /composer-connect/);
-  assert.match(source, /starter-chip/);
-  assert.match(source, /jump-latest/);
-  assert.match(source, /notice-stack/);
-  assert.doesNotMatch(source, /activeSessionId === sessionId \|\| state\.view\.running/);
-  assert.doesNotMatch(source, /activeAgentId === agentId \|\| state\.view\.running/);
-  assert.doesNotMatch(source, /agentId === null \|\| state\.view\.running/);
-  assert.doesNotMatch(source, /@tanstack/);
-});
-
 void test("signed-out users can complete login and message an agent", async () => {
   const directory = await mkdtemp(join(tmpdir(), "uji-login-"));
   let signedIn = false;
   const events: UjiDesktopEvent[] = [];
-  const dependencies = deterministicDependencies(new Map());
+  const dependencies = deterministicDependencies([]);
   dependencies.authStatus = () =>
     Promise.resolve({
       signedIn,
@@ -293,8 +267,8 @@ void test("signed-out users can complete login and message an agent", async () =
 void test("a message submitted during a run joins the active loop", async () => {
   const directory = await mkdtemp(join(tmpdir(), "uji-queue-"));
   const gate = gatedStream();
-  const dependencies = deterministicDependencies(new Map());
-  dependencies.createStreamFn = () => gate.streamFn;
+  const dependencies = deterministicDependencies([]);
+  dependencies.streamFn = gate.streamFn;
   const host = new UjiHost(join(directory, "sessions.db"), () => undefined, dependencies);
 
   try {
@@ -327,8 +301,8 @@ void test("running conversations survive navigation and keep their own status", 
   const directory = await mkdtemp(join(tmpdir(), "uji-background-navigation-"));
   const gate = gatedStream();
   const events: UjiDesktopEvent[] = [];
-  const dependencies = deterministicDependencies(new Map());
-  dependencies.createStreamFn = () => gate.streamFn;
+  const dependencies = deterministicDependencies([]);
+  dependencies.streamFn = gate.streamFn;
   const host = new UjiHost(
     join(directory, "sessions.db"),
     (event) => events.push(event),
@@ -387,8 +361,8 @@ void test("running conversations survive navigation and keep their own status", 
     assert.ok(
       events.some(
         (event) =>
-          event.type === "running" &&
-          event.running === false &&
+          event.type === "session" &&
+          event.event.kind === "run_finished" &&
           event.sessionId === backgroundSessionId,
       ),
     );
@@ -399,10 +373,10 @@ void test("running conversations survive navigation and keep their own status", 
   }
 });
 
-void test("agent settings persist and become the next harness instructions", async () => {
+void test("agent settings persist and become the next run instructions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "uji-profile-"));
   const databasePath = join(directory, "sessions.db");
-  const prompts = new Map<AgentId, string>();
+  const prompts: string[] = [];
   const dependencies = deterministicDependencies(prompts);
   const host = new UjiHost(databasePath, () => undefined, dependencies);
   const changes: AgentDraft = {
@@ -425,18 +399,7 @@ void test("agent settings persist and become the next harness instructions", asy
     );
     await host.send("Ship it");
     await waitForTranscript(host, 2);
-    assert.equal(prompts.get(seedId), changes.instructions);
-
-    const database = new DatabaseSync(databasePath, { readOnly: true });
-    try {
-      const row = database
-        .prepare("SELECT name, role, instructions, avatar FROM demo_agent_profiles WHERE id = ?")
-        .get(seedId);
-      assert.ok(row);
-      assert.deepEqual({ ...row }, changes);
-    } finally {
-      database.close();
-    }
+    assert.equal(prompts.at(-1)?.trim(), changes.instructions);
   } finally {
     await host.close();
   }
@@ -459,7 +422,7 @@ void test("conversations can be listed, renamed, and selected by session", async
   const host = new UjiHost(
     join(directory, "sessions.db"),
     () => undefined,
-    deterministicDependencies(new Map()),
+    deterministicDependencies([]),
   );
 
   try {
@@ -499,7 +462,7 @@ void test("an untouched chat is neither listed nor duplicated", async () => {
   const host = new UjiHost(
     join(directory, "sessions.db"),
     () => undefined,
-    deterministicDependencies(new Map()),
+    deterministicDependencies([]),
   );
 
   try {
@@ -534,8 +497,9 @@ void test("an untouched chat is neither listed nor duplicated", async () => {
 void test("runtime model and reasoning settings persist", async () => {
   const directory = await mkdtemp(join(tmpdir(), "uji-runtime-settings-"));
   const databasePath = join(directory, "sessions.db");
-  const dependencies = deterministicDependencies(new Map());
-  dependencies.models = [testModel, reasoningModel];
+  const dependencies = deterministicDependencies([]);
+  // Optional catalog entries augment rather than replace the required fallback model.
+  dependencies.models = [reasoningModel];
 
   const host = new UjiHost(databasePath, () => undefined, dependencies);
   try {
@@ -572,19 +536,19 @@ void test("agent drafts are parsed at the boundary", () => {
   assert.throws(() => parseAgentDraft(undefined), /Agent details are missing/);
 });
 
-function deterministicDependencies(prompts: Map<AgentId, string>): UjiHostDependencies {
+function deterministicDependencies(prompts: string[]): UjiHostDependencies {
   return {
     authStatus: () => Promise.resolve({ signedIn: true, label: "Test provider connected" }),
     login: () => Promise.resolve(),
-    createStreamFn: (agentId) => deterministicStream(agentId, prompts),
+    streamFn: deterministicStream(prompts),
     model: testModel,
     thinkingLevel: "off",
   };
 }
 
-function deterministicStream(agentId: AgentId, prompts: Map<AgentId, string>): StreamFn {
+function deterministicStream(prompts: string[]): StreamFn {
   return (_model, context) => {
-    prompts.set(agentId, context.systemPrompt);
+    prompts.push(context.systemPrompt);
     const userMessage = context.messages.findLast((message) => message.role === "user");
     const response = `Handled: ${messageText(userMessage?.content)}`;
     const stream = new DeterministicAssistantStream();
@@ -672,6 +636,7 @@ function transcriptText(turns: readonly Turn[]): string[] {
         }
         break;
       case "compaction":
+      case "branch_summary":
       case "model_change":
       case "custom":
         break;

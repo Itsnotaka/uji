@@ -7,7 +7,7 @@
   "scripts": {
     "clean": "rm -rf node_modules .turbo dist out",
     "build": "electron-vite build",
-    "dev": "node scripts/ensure-electron.mjs && electron-vite dev",
+    "dev": "install-electron && electron-vite dev",
     "package": "pnpm build && electron-builder --dir --config electron-builder.config.ts",
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
@@ -16,19 +16,20 @@
     "@uji-ai/ai": "workspace:*",
     "@uji-ai/core": "workspace:*",
     "@uji-ai/ui": "workspace:*",
-    "central-icons": "npm:@central-icons-react/round-outlined-radius-1-stroke-1.5@^1.1.306",
+    "blobatar": "2.5.0",
+    "central-icons": "npm:@central-icons-react/round-outlined-radius-1-stroke-1.5@^1.1.315",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@stylexjs/unplugin": "0.19.0",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "5.2.0",
     "babel-plugin-react-compiler": "^1.0.0",
-    "electron": "42.3.3",
+    "electron": "^44.1.1",
     "electron-builder": "26.15.2",
-    "electron-vite": "^5.0.0",
+    "electron-vite": "file:../../../vendor/electron-vite-6.0.0-beta.1-608461c.tgz",
     "typescript": "^7.0.2",
     "vite": "7.1.4"
   }

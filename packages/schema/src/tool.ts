@@ -8,7 +8,8 @@
  * Synced with pi 7ebf9087e.
  */
 import type { TSchema } from "typebox";
-import type { Message } from "./message.ts";
+import type { JsonValue, Message } from "./message.ts";
+import type { Api, ProviderId } from "./model.ts";
 
 /** OpenAI grammar variants for constrained sampling. */
 export type GrammarFormat = "openai_lark" | "openai_regex";
@@ -55,9 +56,20 @@ export interface Tool<TParameters extends TSchema = TSchema> {
   constrainedSampling?: false | ConstrainedSamplingConfig;
 }
 
-/** One provider request: system prompt, history, and the tools the model may call. */
+/** Opaque context material that only its producing provider/API/model may replay. */
+export interface ProviderCheckpointMaterial {
+  type: "provider";
+  provider: ProviderId;
+  api: Api;
+  model: string;
+  data: JsonValue;
+}
+
+/** One provider request: system prompt, optional native checkpoint, history, and tools. */
 export interface Context {
   systemPrompt?: string;
+  checkpoint?: ProviderCheckpointMaterial;
+  /** Conversation items appended after `checkpoint`, or the complete portable history. */
   messages: Message[];
   tools?: Tool[];
 }

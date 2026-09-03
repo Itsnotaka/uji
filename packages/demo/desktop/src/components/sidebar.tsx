@@ -7,12 +7,12 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@uji-ai/ui";
-import { IconMagnifyingGlass, IconPlusMedium, IconUser } from "central-icons";
+import { IconMagnifyingGlass, IconPlusMedium } from "central-icons";
 import { useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 
 import type { Agent, AgentId } from "../agents.ts";
 import type { ConversationSummary } from "../desktop-api.ts";
-import { AgentAvatar } from "./agent-avatar.tsx";
+import { AgentAvatar, PersonAvatar } from "./agent-avatar.tsx";
 
 type SidebarEntry = {
   agent: Agent;
@@ -38,14 +38,14 @@ export function Sidebar({
 }: {
   accountLabel: string;
   activeAgentId: AgentId | null;
-  activeSessionId: string | null;
+  activeSessionId: SessionId | null;
   agents: readonly Agent[];
   collapsed: boolean;
   conversations: readonly ConversationSummary[];
   onCreateAgent: () => void;
   onNewChat: (agentId?: AgentId) => void;
   onResize: (width: number) => void;
-  onSelectConversation: (sessionId: string) => void;
+  onSelectConversation: (sessionId: SessionId) => void;
   onSettings: () => void;
   query: string;
   setQuery: (query: string) => void;
@@ -96,7 +96,7 @@ export function Sidebar({
               disabled={activeAgentId === null}
               title="New chat (⌘N)"
             >
-              <IconPlusMedium size={14} />
+              <IconPlusMedium size={16} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="sidebar-menu">
               <DropdownMenuLabel>New chat with</DropdownMenuLabel>
@@ -126,14 +126,14 @@ export function Sidebar({
             title="New chat (⌘N)"
             type="button"
           >
-            <IconPlusMedium size={14} />
+            <IconPlusMedium size={16} />
           </button>
         )}
       </div>
 
       {searching || query !== "" ? (
         <label className="sidebar-search-control" data-editing="true">
-          <IconMagnifyingGlass aria-hidden="true" size={14} />
+          <IconMagnifyingGlass aria-hidden="true" size={15} />
           <span className="visually-hidden">Search chats</span>
           <input
             autoComplete="off"
@@ -158,20 +158,17 @@ export function Sidebar({
           className="sidebar-search-control"
           id="conversation-search-trigger"
           onClick={() => setSearching(true)}
+          title="Search chats (⌘K)"
           type="button"
         >
-          <IconMagnifyingGlass aria-hidden="true" size={14} />
+          <IconMagnifyingGlass aria-hidden="true" size={15} />
           <span>Search</span>
-          <kbd>⌘K</kbd>
         </button>
       )}
 
       <nav aria-label="Chats" className="sidebar-scroll">
         <div className="sidebar-list">
           {visibleEntries.map(({ agent, conversation }) => {
-            const shortcut = conversations.findIndex(
-              (candidate) => candidate.id === conversation.id,
-            );
             const title = conversation.name ?? conversation.preview ?? agent.name;
             return (
               <button
@@ -182,37 +179,32 @@ export function Sidebar({
                 title={collapsed ? `${agent.name} — ${title}` : undefined}
                 type="button"
               >
-                <span className="agent-avatar-carrier">
-                  <AgentAvatar agent={agent} size="lg" />
-                </span>
+                <AgentAvatar agent={agent} size="lg" />
                 <span className="row-copy">
                   <strong>{title}</strong>
-                  {conversation.running ? (
-                    <small className="row-working">
-                      <span aria-hidden="true" className="typing-indicator">
-                        <i />
-                        <i />
-                        <i />
-                      </span>
-                      {agent.name} is replying
-                    </small>
-                  ) : (
-                    <small>{agent.name}</small>
-                  )}
                 </span>
                 <span className="row-trailing">
-                  <time dateTime={new Date(conversation.lastActivity).toISOString()}>
-                    {relativeTime(conversation.lastActivity)}
-                  </time>
-                  {shortcut >= 0 && shortcut < 9 && <kbd>⌘{shortcut + 1}</kbd>}
+                  {conversation.running ? (
+                    <span
+                      aria-label={`${agent.name} is replying`}
+                      className="typing-indicator"
+                      role="status"
+                    >
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  ) : (
+                    <time dateTime={new Date(conversation.lastActivity).toISOString()}>
+                      {activityStamp(conversation.lastActivity)}
+                    </time>
+                  )}
                 </span>
               </button>
             );
           })}
-          {visibleEntries.length === 0 && !collapsed && (
-            <p className="sidebar-empty">
-              {query === "" ? "No chats yet. Press ⌘N to start one." : "No matching chats"}
-            </p>
+          {visibleEntries.length === 0 && !collapsed && query !== "" && (
+            <p className="sidebar-empty">No matching chats</p>
           )}
         </div>
       </nav>
@@ -220,17 +212,19 @@ export function Sidebar({
       <div className="sidebar-footer">
         <button className="sidebar-footer-action" onClick={onCreateAgent} type="button">
           <span className="footer-action-icon">
-            <IconPlusMedium size={14} />
+            <IconPlusMedium size={15} />
           </span>
           <span className="footer-action-label">New assistant</span>
         </button>
-        <button className="account-row" onClick={onSettings} type="button">
-          <span className="account-mark" data-offline={signedIn ? undefined : true}>
-            <IconUser size={14} />
-          </span>
+        <button
+          className="account-row"
+          onClick={onSettings}
+          title={signedIn ? accountLabel : "Settings"}
+          type="button"
+        >
+          <PersonAvatar name={signedIn ? accountLabel : "Account"} offline={!signedIn} size="lg" />
           <span className="row-copy">
-            <strong>Account</strong>
-            <small>{accountLabel}</small>
+            <strong>{signedIn ? accountLabel : "Account"}</strong>
           </span>
         </button>
       </div>
@@ -255,11 +249,17 @@ function sidebarEntries(
   );
 }
 
-function relativeTime(timestamp: number): string {
-  const elapsed = Math.max(0, Date.now() - timestamp);
-  if (elapsed < 60_000) return "now";
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m`;
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h`;
-  if (elapsed < 604_800_000) return `${Math.floor(elapsed / 86_400_000)}d`;
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(timestamp);
+/** Today reads as a clock time, everything older as a short date. */
+function activityStamp(timestamp: number): string {
+  const then = new Date(timestamp);
+  const now = new Date();
+  const sameDay =
+    then.getFullYear() === now.getFullYear() &&
+    then.getMonth() === now.getMonth() &&
+    then.getDate() === now.getDate();
+  if (sameDay) {
+    return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(then);
+  }
+  return new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric" }).format(then);
 }
+import type { SessionId } from "@uji-ai/core";

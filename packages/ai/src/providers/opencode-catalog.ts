@@ -1,4 +1,6 @@
 import { MODEL_THINKING_LEVELS } from "@uji-ai/schema";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import type { RefreshModelsContext } from "../models.ts";
 import type {
   AnthropicMessagesCompat,
@@ -40,9 +42,78 @@ const LONG_CACHE_RETENTION_UNSUPPORTED = new Set([
   "opencode-go:kimi-k2.6",
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+/**
+ * The catalog is a third-party feed and only `id` and `tool_call` decide whether
+ * a model is usable at all. Every other field is advisory: the schemas name the
+ * keys this parser reads but leave their values unconstrained, and each read
+ * narrows the one value it needs, so a wrong-typed `name`, price, or limit falls
+ * back on its own instead of deleting the model.
+ */
+const CatalogModelSchema = Type.Object({
+  id: Type.String({ minLength: 1 }),
+  tool_call: Type.Literal(true),
+  name: Type.Optional(Type.Unknown()),
+  status: Type.Optional(Type.Unknown()),
+  reasoning: Type.Optional(Type.Unknown()),
+  provider: Type.Optional(Type.Unknown()),
+  modalities: Type.Optional(Type.Unknown()),
+  limit: Type.Optional(Type.Unknown()),
+  cost: Type.Optional(Type.Unknown()),
+  reasoning_options: Type.Optional(Type.Unknown()),
+});
+
+const CatalogModelProviderSchema = Type.Object({ npm: Type.Optional(Type.Unknown()) });
+
+const CatalogModalitiesSchema = Type.Object({ input: Type.Optional(Type.Unknown()) });
+
+const CatalogLimitSchema = Type.Object({
+  context: Type.Optional(Type.Unknown()),
+  output: Type.Optional(Type.Unknown()),
+});
+
+const CatalogCostSchema = Type.Object({
+  input: Type.Optional(Type.Unknown()),
+  output: Type.Optional(Type.Unknown()),
+  cache_read: Type.Optional(Type.Unknown()),
+  cache_write: Type.Optional(Type.Unknown()),
+  tiers: Type.Optional(Type.Unknown()),
+});
+
+const CatalogCostTierSchema = Type.Object({
+  input: Type.Optional(Type.Unknown()),
+  output: Type.Optional(Type.Unknown()),
+  cache_read: Type.Optional(Type.Unknown()),
+  cache_write: Type.Optional(Type.Unknown()),
+  tier: Type.Optional(Type.Unknown()),
+});
+
+const CatalogTierSchema = Type.Object({
+  type: Type.Optional(Type.Unknown()),
+  size: Type.Optional(Type.Unknown()),
+});
+
+const CatalogReasoningOptionSchema = Type.Object({
+  type: Type.Optional(Type.Unknown()),
+  values: Type.Optional(Type.Unknown()),
+});
+
+const CatalogProviderSchema = Type.Object({
+  npm: Type.Optional(Type.Unknown()),
+  models: Type.Optional(Type.Unknown()),
+});
+
+const CatalogModelsSchema = Type.Record(Type.String(), Type.Unknown());
+
+/**
+ * The two provider subtrees this package consumes. Exported for
+ * `scripts/snapshot-opencode-catalog.ts`, which must extract the same shape it parses.
+ * Each subtree stays unconstrained here so a malformed `opencode-go` cannot take
+ * `opencode` down with it; both are checked one at a time in parseOpenCodeCatalog.
+ */
+export const OpenCodeCatalogSchema = Type.Object({
+  opencode: Type.Optional(Type.Unknown()),
+  "opencode-go": Type.Optional(Type.Unknown()),
+});
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -57,46 +128,49 @@ function positiveNumber(value: unknown, fallback: number): number {
   return number > 0 ? number : fallback;
 }
 
+function jsonArray(value: unknown): readonly unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function parseCostTier(value: unknown): ModelCostTier | undefined {
-  if (!isRecord(value) || !isRecord(value["tier"])) return undefined;
-  const tier = value["tier"];
-  if (tier["type"] !== "context") return undefined;
-  const inputTokensAbove = positiveNumber(tier["size"], 0);
+  if (!Value.Check(CatalogCostTierSchema, value)) return undefined;
+  const tier = value.tier;
+  if (!Value.Check(CatalogTierSchema, tier)) return undefined;
+  if (tier.type !== "context") return undefined;
+  const inputTokensAbove = positiveNumber(tier.size, 0);
   if (inputTokensAbove === 0) return undefined;
   return {
     inputTokensAbove,
-    input: finiteNumber(value["input"], 0),
-    output: finiteNumber(value["output"], 0),
-    cacheRead: finiteNumber(value["cache_read"], 0),
-    cacheWrite: finiteNumber(value["cache_write"], 0),
+    input: finiteNumber(value.input, 0),
+    output: finiteNumber(value.output, 0),
+    cacheRead: finiteNumber(value.cache_read, 0),
+    cacheWrite: finiteNumber(value.cache_write, 0),
   };
 }
 
 function parseCost(value: unknown): ModelCost {
-  if (!isRecord(value)) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  const tiers = Array.isArray(value["tiers"])
-    ? value["tiers"].flatMap((tier) => {
-        const parsed = parseCostTier(tier);
-        return parsed === undefined ? [] : [parsed];
-      })
-    : [];
+  if (!Value.Check(CatalogCostSchema, value)) {
+    return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  }
+  const tiers = jsonArray(value.tiers).flatMap((tier) => {
+    const parsed = parseCostTier(tier);
+    return parsed === undefined ? [] : [parsed];
+  });
   return {
-    input: finiteNumber(value["input"], 0),
-    output: finiteNumber(value["output"], 0),
-    cacheRead: finiteNumber(value["cache_read"], 0),
-    cacheWrite: finiteNumber(value["cache_write"], 0),
+    input: finiteNumber(value.input, 0),
+    output: finiteNumber(value.output, 0),
+    cacheRead: finiteNumber(value.cache_read, 0),
+    cacheWrite: finiteNumber(value.cache_write, 0),
     ...(tiers.length > 0 ? { tiers } : {}),
   };
 }
 
 function parseThinkingLevelMap(value: unknown): ThinkingLevelMap | undefined {
-  if (!Array.isArray(value)) return undefined;
   const efforts = new Set<string>();
-  for (const option of value) {
-    if (!isRecord(option) || option["type"] !== "effort" || !Array.isArray(option["values"])) {
-      continue;
-    }
-    for (const effort of option["values"]) {
+  for (const option of jsonArray(value)) {
+    if (!Value.Check(CatalogReasoningOptionSchema, option)) continue;
+    if (option.type !== "effort") continue;
+    for (const effort of jsonArray(option.values)) {
       if (typeof effort === "string") efforts.add(effort);
     }
   }
@@ -207,34 +281,36 @@ function parseModel(
   providerNpm: string | undefined,
   value: unknown,
 ): Model<OpenCodeApi> | undefined {
-  if (!isRecord(value) || value["tool_call"] !== true || value["status"] === "deprecated") {
-    return undefined;
-  }
-  const id = optionalString(value["id"]);
-  if (id === undefined || id !== catalogId) return undefined;
-  const modelProvider = isRecord(value["provider"]) ? value["provider"] : undefined;
-  const npm = optionalString(modelProvider?.["npm"]) ?? providerNpm;
+  if (!Value.Check(CatalogModelSchema, value)) return undefined;
+  if (value.status === "deprecated") return undefined;
+  const id = value.id;
+  if (id !== catalogId) return undefined;
+  const modelProvider = Value.Check(CatalogModelProviderSchema, value.provider)
+    ? value.provider
+    : undefined;
+  const npm = optionalString(modelProvider?.npm) ?? providerNpm;
   if (npm === undefined) return undefined;
   const api = apiForNpm(npm);
   if (api === undefined) return undefined;
   if (providerId === "opencode-go" && api === "google-generative-ai") return undefined;
-  const modalities = isRecord(value["modalities"]) ? value["modalities"] : undefined;
-  const inputs = Array.isArray(modalities?.["input"]) ? modalities["input"] : [];
-  const input: Model<OpenCodeApi>["input"] = inputs.includes("image")
+  const modalities = Value.Check(CatalogModalitiesSchema, value.modalities)
+    ? value.modalities
+    : undefined;
+  const input: Model<OpenCodeApi>["input"] = jsonArray(modalities?.input).includes("image")
     ? ["text", "image"]
     : ["text"];
-  const limit = isRecord(value["limit"]) ? value["limit"] : undefined;
+  const limit = Value.Check(CatalogLimitSchema, value.limit) ? value.limit : undefined;
   const basePath = PROVIDERS[providerId].basePath;
-  const remoteThinkingLevelMap = parseThinkingLevelMap(value["reasoning_options"]);
+  const remoteThinkingLevelMap = parseThinkingLevelMap(value.reasoning_options);
   const common = {
     id,
-    name: optionalString(value["name"]) ?? id,
+    name: optionalString(value.name) ?? id,
     provider: providerId,
-    reasoning: value["reasoning"] === true,
+    reasoning: value.reasoning === true,
     input,
-    cost: parseCost(value["cost"]),
-    contextWindow: positiveNumber(limit?.["context"], 4096),
-    maxTokens: positiveNumber(limit?.["output"], 4096),
+    cost: parseCost(value.cost),
+    contextWindow: positiveNumber(limit?.context, 4096),
+    maxTokens: positiveNumber(limit?.output, 4096),
   };
 
   switch (api) {
@@ -303,15 +379,16 @@ export function parseOpenCodeCatalog(
   value: unknown,
   providerId: OpenCodeProviderId,
 ): readonly Model<OpenCodeApi>[] {
-  if (!isRecord(value) || !isRecord(value[providerId])) {
+  const subtree = Value.Check(OpenCodeCatalogSchema, value) ? value[providerId] : undefined;
+  if (!Value.Check(CatalogProviderSchema, subtree)) {
     throw new Error(`OpenCode catalog does not contain provider ${providerId}`);
   }
-  const provider = value[providerId];
-  if (!isRecord(provider["models"])) {
+  const catalogModels = subtree.models;
+  if (!Value.Check(CatalogModelsSchema, catalogModels)) {
     throw new Error(`OpenCode catalog has no models for provider ${providerId}`);
   }
-  const providerNpm = optionalString(provider["npm"]);
-  const models = Object.entries(provider["models"]).flatMap(([id, model]) => {
+  const providerNpm = optionalString(subtree.npm);
+  const models = Object.entries(catalogModels).flatMap(([id, model]) => {
     const parsed = parseModel(providerId, id, providerNpm, model);
     return parsed === undefined ? [] : [parsed];
   });

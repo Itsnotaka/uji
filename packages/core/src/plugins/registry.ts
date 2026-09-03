@@ -15,16 +15,31 @@ interface Contribution<D> {
 
 export class MapDraft<T> implements Draft<T> {
   protected readonly entries = new Map<string, T>();
+  /** Entry id to the plugin that last wrote it. Stamped by the registry as it replays. */
+  private readonly ownerById = new Map<string, string>();
+  private owner = "";
+
+  /** Host-only: whose contribution is replaying. Never reaches the author-facing `Draft`. */
+  beginOwner(owner: string): void {
+    this.owner = owner;
+  }
+  owners(): Map<string, string> {
+    return new Map(this.ownerById);
+  }
+
   set(id: string, value: T): void {
     this.entries.set(id, value);
+    this.ownerById.set(id, this.owner);
   }
   update(id: string, fn: (current: T) => T): void {
     const current = this.entries.get(id);
     if (current === undefined) throw new Error(`no entry "${id}" to update`);
     this.entries.set(id, fn(current));
+    this.ownerById.set(id, this.owner);
   }
   delete(id: string): void {
     this.entries.delete(id);
+    this.ownerById.delete(id);
   }
   has(id: string): boolean {
     return this.entries.has(id);
@@ -46,12 +61,19 @@ export class ToolMapDraft extends MapDraft<HarnessTool> implements ToolDraft {
   }
 }
 
+type OwnedDraft<T> = {
+  toMap(): Map<string, T>;
+  beginOwner(owner: string): void;
+  owners(): Map<string, string>;
+};
+
 export class ContributionRegistry<T, D extends Draft<T>> {
   private contributions: Contribution<D>[] = [];
   private state = new Map<string, T>();
-  private readonly makeDraft: () => D & { toMap(): Map<string, T> };
+  private ownerById = new Map<string, string>();
+  private readonly makeDraft: () => D & OwnedDraft<T>;
 
-  constructor(makeDraft: () => D & { toMap(): Map<string, T> }) {
+  constructor(makeDraft: () => D & OwnedDraft<T>) {
     this.makeDraft = makeDraft;
   }
 
@@ -68,6 +90,7 @@ export class ContributionRegistry<T, D extends Draft<T>> {
     const errors: { owner: string; message: string }[] = [];
     const ordered = [...this.contributions].sort((a, b) => a.order - b.order);
     for (const contribution of ordered) {
+      draft.beginOwner(contribution.owner);
       try {
         contribution.fn(draft);
       } catch (error) {
@@ -80,11 +103,17 @@ export class ContributionRegistry<T, D extends Draft<T>> {
     const next = draft.toMap();
     const diff = diffMaps(this.state, next);
     this.state = next;
+    this.ownerById = draft.owners();
     return { ...diff, errors };
   }
 
   current(): ReadonlyMap<string, T> {
     return this.state;
+  }
+
+  /** Plugin that last wrote this entry, for provenance a client renders. */
+  owner(id: string): string | undefined {
+    return this.ownerById.get(id);
   }
 
   get(id: string): T | undefined {

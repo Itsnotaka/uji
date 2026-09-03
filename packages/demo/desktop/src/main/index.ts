@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
 import { isAbsolute, join } from "node:path";
 import type { ModelThinkingLevel } from "@uji-ai/ai";
+import { sessionId as parseSessionId } from "@uji-ai/core";
 
 import { parseAgentDraft } from "../agents.ts";
 import type { RuntimeSettingsChange, UjiDesktopEvent } from "../desktop-api.ts";
@@ -11,6 +12,7 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "ma
 const mainProcessStartedAt = Date.now() - process.uptime() * 1_000;
 let mainWindow: BrowserWindow | undefined;
 let hostPromise: Promise<UjiHost> | undefined;
+let hostActions: Promise<void> = Promise.resolve();
 
 app.setName("Uji");
 const userDataOverride = process.env["UJI_DESKTOP_USER_DATA_DIR"];
@@ -56,7 +58,12 @@ function getHost(): Promise<UjiHost> {
 }
 
 function withHost<TResult>(run: (host: UjiHost) => Promise<TResult>): Promise<TResult> {
-  return getHost().then(run);
+  const result = hostActions.then(getHost).then(run);
+  hostActions = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 function registerIpc(): void {
@@ -88,14 +95,14 @@ function registerIpc(): void {
     if (typeof sessionId !== "string" || sessionId === "") {
       throw new Error("Conversation id is required");
     }
-    return withHost((host) => host.selectConversation(sessionId));
+    return withHost((host) => host.selectConversation(parseSessionId(sessionId)));
   });
   ipcMain.handle("uji:rename-conversation", (_event, sessionId: unknown, name: unknown) => {
     if (typeof sessionId !== "string" || sessionId === "") {
       throw new Error("Conversation id is required");
     }
     if (typeof name !== "string") throw new Error("Conversation title is required");
-    return withHost((host) => host.renameConversation(sessionId, name));
+    return withHost((host) => host.renameConversation(parseSessionId(sessionId), name));
   });
   ipcMain.handle("uji:create-agent", (_event, draft: unknown) =>
     withHost((host) => host.createAgent(parseAgentDraft(draft))),
@@ -217,7 +224,11 @@ if (!hasSingleInstanceLock) {
   void app.whenReady().then(createWindow);
 
   app.on("before-quit", () => {
-    void hostPromise?.then((host) => host.close());
+    const host = hostPromise;
+    if (host !== undefined) {
+      const closing = hostActions.then(() => host).then((opened) => opened.close());
+      hostActions = closing.catch(() => undefined);
+    }
   });
 
   app.on("window-all-closed", () => {

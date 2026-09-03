@@ -2,12 +2,13 @@
  * Read tool ported from pi's harness read tool, adapted to Uji's AgentTool
  * contract and direct filesystem access (pi routes reads through its
  * ExecutionEnv effects boundary). Images are detected by content (magic
- * bytes) and returned as image content parts; conversion/resizing is an
- * injectable processor, never a core dependency (AGENTS.md).
+ * bytes) and returned as image content parts as-is; core carries no image
+ * library, so BMP, which providers reject, is omitted.
  *
  * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/tools/read.ts
  */
 import { readFile as fsReadFile } from "node:fs/promises";
+import { relative } from "node:path";
 import { Unsafe } from "typebox";
 import type { AgentTool, AgentToolResult } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
@@ -32,24 +33,6 @@ export interface ReadToolInput {
 
 export interface ReadToolDetails {
   truncation?: TruncationResult;
-}
-
-export type ReadImageProcessorResult =
-  | { ok: true; data: string; mimeType: string; hints: string[] }
-  | { ok: false; message: string };
-
-/** Converts or resizes one image to inline provider limits. */
-export type ReadImageProcessor = (
-  bytes: Uint8Array,
-  mimeType: string,
-  options: { autoResizeImages: boolean },
-) => Promise<ReadImageProcessorResult>;
-
-export interface ReadToolOptions {
-  /** Whether an injected image processor should resize images. Default: true. */
-  autoResizeImages?: boolean;
-  /** Optional image conversion/resizing implementation. */
-  imageProcessor?: ReadImageProcessor;
 }
 
 const readParameters = Unsafe<ReadToolInput>({
@@ -90,12 +73,12 @@ function parseReadParams(params: unknown): ReadToolInput {
 
 export function createReadTool(
   cwd: string,
-  options?: ReadToolOptions,
 ): AgentTool<typeof readParameters, ReadToolDetails | undefined> {
   return {
     name: "read",
-    label: "read",
     description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+    promptSnippet: "Read file contents",
+    promptGuidelines: ["Use read to examine files instead of cat or sed."],
     parameters: readParameters,
     prepareArguments: parseReadParams,
     async execute(_toolCallId, { path, offset, limit }, signal?) {
@@ -105,13 +88,14 @@ export function createReadTool(
 
       throwIfAborted();
       const absolutePath = await resolveReadPathAsync(path, cwd);
+      const title = relative(cwd, absolutePath);
       throwIfAborted();
       const buffer = await fsReadFile(absolutePath);
       throwIfAborted();
 
       const mimeType = detectSupportedImageMimeType(buffer);
       if (mimeType !== undefined) {
-        return readImage(buffer, mimeType, options);
+        return { ...readImage(buffer, mimeType), title };
       }
 
       const textContent = buffer.toString("utf-8");
@@ -165,41 +149,17 @@ export function createReadTool(
         outputText = truncation.content;
       }
 
-      return { content: toolResultContent(outputText), details };
+      return { content: toolResultContent(outputText), details, title };
     },
   };
 }
 
-async function readImage(
-  buffer: Buffer,
-  mimeType: string,
-  options: ReadToolOptions | undefined,
-): Promise<AgentToolResult<ReadToolDetails | undefined>> {
-  if (options?.imageProcessor) {
-    const processed = await options.imageProcessor(buffer, mimeType, {
-      autoResizeImages: options.autoResizeImages ?? true,
-    });
-    if (!processed.ok) {
-      return {
-        content: toolResultContent(`Read image file [${mimeType}]\n${processed.message}`),
-        details: undefined,
-      };
-    }
-    const hints = processed.hints.length > 0 ? `\n${processed.hints.join("\n")}` : "";
-    return {
-      content: [
-        { type: "text", text: `Read image file [${processed.mimeType}]${hints}` },
-        { type: "image", data: processed.data, mimeType: processed.mimeType },
-      ],
-      details: undefined,
-    };
-  }
-  // BMP is not accepted by providers; converting it needs an image library,
-  // which stays out of core (AGENTS.md: processing is injectable).
+function readImage(buffer: Buffer, mimeType: string): AgentToolResult<ReadToolDetails | undefined> {
+  // BMP is not accepted by providers; converting it needs an image library.
   if (mimeType === "image/bmp") {
     return {
       content: toolResultContent(
-        "Read image file [image/bmp]\n[Image omitted: configure an imageProcessor to convert BMP images.]",
+        "Read image file [image/bmp]\n[Image omitted: BMP images are not supported.]",
       ),
       details: undefined,
     };

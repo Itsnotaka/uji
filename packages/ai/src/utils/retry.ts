@@ -128,13 +128,22 @@ export interface RetryCallbacks {
   ) => void | Promise<void>;
 }
 
+/**
+ * Backoff before `attempt`, 1-based. The one definition: a caller that schedules its own
+ * retries must compute the delay here rather than restating the formula.
+ */
+export function retryDelayMs(policy: RetryPolicy, attempt: number): number {
+  return policy.baseDelayMs * 2 ** (attempt - 1);
+}
+
 class RetrySleepAbortError extends Error {
   constructor() {
     super("Aborted");
   }
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+/** Resolves after `ms`. Rejects the moment `signal` aborts, and only then. */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new RetrySleepAbortError());
@@ -204,13 +213,13 @@ export async function retryAssistantCall(
 
     attempt++;
     lastRetry = { attempt, errorMessage: response.errorMessage || "Unknown error" };
-    const delayMs = policy!.baseDelayMs * 2 ** (attempt - 1);
+    const delayMs = retryDelayMs(policy!, attempt);
     await callbacks?.onRetryScheduled?.(attempt, maxAttempts, delayMs, lastRetry.errorMessage);
 
     // Normalize aborts during retry backoff to the same AssistantMessage shape as
     // provider stream aborts, so callers do not need to care when cancellation happened.
     try {
-      await sleep(delayMs, signal);
+      await abortableSleep(delayMs, signal);
     } catch (error) {
       await callbacks?.onRetryFinished?.(false, attempt, lastRetry.errorMessage);
       if (error instanceof RetrySleepAbortError) {

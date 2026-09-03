@@ -1,12 +1,27 @@
-# Build output and local state. Every workspace manifest and the lockfile stay
-# in the upload: pnpm's --frozen-lockfile check compares the lockfile against
-# the whole workspace, so removing a package directory would fail the install
-# even though the docs build never imports it.
-.next
+# The Vercel project deploys only the docs workspace. Keep the root pnpm and
+# Turborepo metadata, but exclude every sibling workspace and local artifact.
+/bin
+/dist
+/install.sh
+/scripts
+/vendor
+/.uji
+
+/packages/ai
+/packages/cli
+/packages/core
+/packages/demo
+/packages/desktop
+/packages/plugin
+/packages/schema
+/packages/telemetry
+/packages/tui
+/packages/ui
+
 **/.next
 **/.turbo
-**/out
+**/.uji
 **/dist
+**/out
 **/*.tsbuildinfo
-.uji
 *.log

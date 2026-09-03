@@ -106,6 +106,7 @@ html > body[data-scroll-locked] {
 }
 
 .fd-mermaid svg {
+  display: block;
   margin-inline: auto;
   height: auto;
   max-width: 100%;
@@ -132,9 +133,20 @@ html > body[data-scroll-locked] {
   font-size: 1rem;
 }
 
-#nd-sidebar a,
-#nd-sidebar button {
+#nd-docs-layout .prose figure:has(img[src^="/tui/"]) {
+  margin-block: 1.25rem 1.5rem;
+}
+
+#nd-docs-layout .prose img[src^="/tui/"] {
+  border-radius: 0.375rem;
+  border: 1px solid var(--color-fd-border);
+  background: #0a0a0a;
+}
+
+#nd-docs-layout .prose figure:has(img[src^="/tui/"]) figcaption {
+  margin-top: 0.5rem;
   font-size: 0.8125rem;
+  color: var(--color-fd-muted-foreground);
 }
 
 /* ------------------------------------------------------- landing page --- */

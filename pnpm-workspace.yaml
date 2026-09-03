@@ -3,13 +3,14 @@ packages:
   - packages/demo/*
 allowBuilds:
   "@central-icons-react/round-outlined-radius-1-stroke-1.5": true
+  "@central-icons-react/round-outlined-radius-2-stroke-1.5": true
   "@google/genai": false
   "@swc/core": true
-  electron: true
   electron-winstaller: true
   esbuild: true
   protobufjs: false
 minimumReleaseAgeExclude:
+  - "zod@4.5.4"
   - "@tanstack/react-router@1.170.27"
   - "@tanstack/react-start-client@1.168.25"
   - "@tanstack/react-start-rsc@0.1.43"
@@ -22,13 +23,15 @@ minimumReleaseAgeExclude:
   - "@tanstack/start-plugin-core@1.171.34"
   - "@tanstack/start-server-core@1.169.26"
   - "@tanstack/start-storage-context@1.167.24"
-  - "@opentui/core-darwin-arm64@0.5.6 || 0.5.7"
-  - "@opentui/core-darwin-x64@0.5.6 || 0.5.7"
-  - "@opentui/core-linux-arm64-musl@0.5.6 || 0.5.7"
-  - "@opentui/core-linux-arm64@0.5.6 || 0.5.7"
-  - "@opentui/core-linux-x64-musl@0.5.6 || 0.5.7"
-  - "@opentui/core-linux-x64@0.5.6 || 0.5.7"
-  - "@opentui/core-win32-arm64@0.5.6 || 0.5.7"
-  - "@opentui/core-win32-x64@0.5.6 || 0.5.7"
-  - "@opentui/core@0.5.6 || 0.5.7"
-  - "@opentui/keymap@0.5.7"
+  - "@opentui/core-darwin-arm64@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/core-darwin-x64@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/core-linux-arm64-musl@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/core-linux-arm64@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/core-linux-x64-musl@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/core-linux-x64@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/core-win32-arm64@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/core-win32-x64@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/core@0.5.6 || 0.5.7 || 0.5.8"
+  - "@opentui/keymap@0.5.7 || 0.5.8"
+  - "@tanstack/query-core@5.102.5"
+  - "@tanstack/react-query@5.102.5"

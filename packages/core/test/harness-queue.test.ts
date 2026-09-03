@@ -12,15 +12,11 @@ import type {
   Usage,
 } from "@uji-ai/ai";
 import { createAssistantMessageEventStream } from "@uji-ai/ai";
-import {
-  AgentHarness,
-  type HarnessEvent,
-  inlinePlugin,
-  type SessionStorage,
-  SqliteSessionRepo,
-  systemPromptPlugin,
-} from "../src/index.ts";
 import type { StreamFn } from "../src/types.ts";
+import { AgentHarness } from "../src/harness/agent-harness.ts";
+import { inlinePlugin, systemPromptPlugin } from "../src/plugins/index.ts";
+import { SqliteSessionRepo, type SessionStorage } from "../src/store.ts";
+import { pendingQueue, prompt, submit, waitFinished, waitForIdle } from "./harness-driver.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -127,20 +123,16 @@ async function open(
   directories.push(directory);
   const repo = new SqliteSessionRepo(join(directory, "sessions.db"));
   const session = await repo.create();
-  const { harness } = await AgentHarness.create({
+  const harness = await AgentHarness.create({
     session: wrapSession(session),
     streamFn,
     plugins: [inlinePlugin(systemPromptPlugin("sys"))],
     env: { cwd: "/" },
     model,
   });
-  const events: HarnessEvent[] = [];
-  harness.subscribe((event) => {
-    events.push(event);
-  });
+  harness.attach();
   return {
     harness,
-    events,
     close: async () => {
       await harness.close();
       await session.close();
@@ -159,13 +151,12 @@ void describe("AgentHarness durable queue", () => {
   void test("close aborts an active provider stream", async () => {
     const seen: Message[][] = [];
     const h = await open(abortableThenStop(seen));
-    const running = h.harness.prompt("work");
-    while (!h.harness.state.isStreaming)
-      await new Promise<void>((resolve) => setImmediate(resolve));
+    const started = await submit(h.harness, "work");
+    const running = waitFinished(h.harness.session, started.runId);
 
     await h.harness.close();
     const result = await running;
-    assert.equal(result.ok && result.value.kind, "aborted");
+    assert.equal(result.outcome.kind, "aborted");
     await h.close();
   });
 
@@ -177,7 +168,7 @@ void describe("AgentHarness durable queue", () => {
     });
     const durableSessionId = (await h.harness.session.getMetadata()).id;
 
-    await h.harness.prompt("work");
+    await prompt(h.harness, "work");
     assert.equal(providerSessionId, durableSessionId);
     await h.close();
   });
@@ -185,54 +176,49 @@ void describe("AgentHarness durable queue", () => {
   void test("queued input survives an aborted run and is delivered once by the next run", async () => {
     const seen: Message[][] = [];
     const h = await open(abortableThenStop(seen));
-    const first = h.harness.prompt("first");
-
-    while (!h.harness.state.isStreaming)
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    const queued = await h.harness.submit("after abort", { delivery: "queue" });
-    assert.equal(queued.ok && queued.value.disposition, "queued");
+    const started = await submit(h.harness, "first");
+    const first = waitFinished(h.harness.session, started.runId);
+    const queued = await submit(h.harness, "after abort", "queue");
+    assert.equal(queued.disposition, "queued");
     await h.harness.abort();
     const aborted = await first;
 
-    assert.equal(aborted.ok && aborted.value.kind, "aborted");
-    assert.equal(h.harness.state.errorMessage, undefined);
+    assert.equal(aborted.outcome.kind, "aborted");
     assert.deepEqual(
-      (await h.harness.pendingQueue()).map((item) => [item.delivery, userText(item.message)]),
+      (await pendingQueue(h.harness)).map((item) => [item.delivery, item.content]),
       [["queue", "after abort"]],
     );
 
-    const wake = await h.harness.submit("wake");
-    assert.equal(wake.ok && wake.value.disposition, "started");
-    await h.harness.waitForIdle();
+    const wake = await submit(h.harness, "wake");
+    assert.equal(wake.disposition, "started");
+    await waitForIdle(h.harness);
     assert.equal(seen.length, 3);
     assert.equal(userText(seen[2]?.at(-1)), "after abort");
-    assert.deepEqual(await h.harness.pendingQueue(), []);
-    const queueSizes = h.events
-      .filter((event) => event.type === "queue_update")
-      .map((event) => event.items.length);
-    assert.deepEqual(queueSizes, [1, 0]);
+    assert.deepEqual(await pendingQueue(h.harness), []);
     await h.close();
   });
 
   void test("interrupt with continue resumes pending steers but leaves explicit queues parked", async () => {
     const seen: Message[][] = [];
     const h = await open(abortableThenStop(seen));
-    const first = h.harness.prompt("first");
-
-    while (!h.harness.state.isStreaming)
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    const steer = await h.harness.submit("keep going");
-    const queued = await h.harness.submit("later", { delivery: "queue" });
-    assert.equal(steer.ok && steer.value.disposition, "queued");
-    assert.equal(queued.ok && queued.value.disposition, "queued");
+    const started = await submit(h.harness, "first");
+    const first = waitFinished(h.harness.session, started.runId);
+    const steer = await submit(h.harness, "keep going");
+    const queued = await submit(h.harness, "later", "queue");
+    assert.equal(steer.disposition, "queued");
+    assert.equal(queued.disposition, "queued");
 
     await h.harness.abort({ continue: true });
     const interrupted = await first;
-    assert.equal(interrupted.ok && interrupted.value.kind, "aborted");
+    assert.equal(interrupted.outcome.kind, "aborted");
+    // The steer wakes a run of its own once the aborted one has settled.
+    while ((await h.harness.session.getEntry(steer.entryId)) === undefined)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    await waitForIdle(h.harness);
     assert.equal(seen.length, 2);
     assert.equal(userText(seen[1]?.at(-1)), "keep going");
     assert.deepEqual(
-      (await h.harness.pendingQueue()).map((item) => [item.delivery, userText(item.message)]),
+      (await pendingQueue(h.harness)).map((item) => [item.delivery, item.content]),
       [["queue", "later"]],
     );
     await h.close();
@@ -241,86 +227,236 @@ void describe("AgentHarness durable queue", () => {
   void test("cancelQueued withdraws a pending follow-up before any run consumes it", async () => {
     const seen: Message[][] = [];
     const h = await open(abortableThenStop(seen));
-    const first = h.harness.prompt("first");
+    const started = await submit(h.harness, "first");
+    const first = waitFinished(h.harness.session, started.runId);
+    const queued = await submit(h.harness, "never sent", "queue");
+    if (queued.disposition !== "queued") throw new Error("expected the follow-up to queue");
+    const entryId = queued.entryId;
 
-    while (!h.harness.state.isStreaming)
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    const queued = await h.harness.submit("never sent", { delivery: "queue" });
-    if (!queued.ok || queued.value.disposition !== "queued") {
-      throw new Error("expected the follow-up to queue");
-    }
-    const entryId = queued.value.entryId;
-
-    const cancelled = await h.harness.cancelQueued(entryId);
-    assert.equal(cancelled.ok && cancelled.value.entryId, entryId);
-    assert.deepEqual(await h.harness.pendingQueue(), []);
+    assert.deepEqual(await h.harness.cancelQueued(entryId), { kind: "cancelled" });
+    assert.deepEqual(await pendingQueue(h.harness), []);
 
     await h.harness.abort();
     await first;
     // The follow-up never joins a later run even though the head went idle.
-    await h.harness.submit("wake");
-    await h.harness.waitForIdle();
+    await submit(h.harness, "wake");
+    await waitForIdle(h.harness);
     for (const messages of seen) {
       assert.notEqual(userText(messages.at(-1)), "never sent");
     }
-    const updates = h.events
-      .filter((event) => event.type === "queue_update")
-      .map((event) => event.items.length);
-    assert.deepEqual(updates, [1, 0]);
     await h.close();
   });
 
   void test("a cancelled steer is not woken into the next run", async () => {
     const seen: Message[][] = [];
     const h = await open(abortableThenStop(seen));
-    const first = h.harness.prompt("first");
-
-    while (!h.harness.state.isStreaming)
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    const steer = await h.harness.submit("interject");
-    if (!steer.ok || steer.value.disposition !== "queued") {
-      throw new Error("expected the steer to queue");
-    }
-    const entryId = steer.value.entryId;
-    const cancelled = await h.harness.cancelQueued(entryId);
-    assert.ok(cancelled.ok);
+    const started = await submit(h.harness, "first");
+    const first = waitFinished(h.harness.session, started.runId);
+    const steer = await submit(h.harness, "interject");
+    if (steer.disposition !== "queued") throw new Error("expected the steer to queue");
+    assert.deepEqual(await h.harness.cancelQueued(steer.entryId), { kind: "cancelled" });
 
     await h.harness.abort({ continue: true });
     const interrupted = await first;
-    assert.equal(interrupted.ok && interrupted.value.kind, "aborted");
+    assert.equal(interrupted.outcome.kind, "aborted");
     // abort({continue}) wakes pending steers at the run boundary; this one is gone.
-    await h.harness.waitForIdle();
+    await waitForIdle(h.harness);
     for (const messages of seen.slice(1)) {
       assert.notEqual(userText(messages.at(-1)), "interject");
     }
-    assert.equal(h.harness.state.isStreaming, false);
     await h.close();
   });
 
-  void test("cancelling an unknown or already-consumed item answers NotQueued without writing", async () => {
+  void test("cancelling an unknown or already-consumed item answers without writing", async () => {
     const seen: Message[][] = [];
     const gated = gatedThenStop(seen);
     const h = await open(gated.streamFn);
 
-    const unknown = await h.harness.cancelQueued("e-nonexistent");
-    assert.equal(unknown.ok, false);
-    if (!unknown.ok) assert.equal(unknown.error._tag, "NotQueued");
+    assert.deepEqual(await h.harness.cancelQueued("e-nonexistent"), { kind: "not_found" });
 
-    const running = h.harness.submit("first");
-    const second = await h.harness.submit("second");
-    const firstAccepted = await running;
-    assert.equal(firstAccepted.ok && firstAccepted.value.disposition, "started");
-    if (!second.ok || second.value.disposition !== "queued") {
-      throw new Error("expected the second submit to queue");
-    }
-    const entryId = second.value.entryId;
+    const running = await submit(h.harness, "first");
+    assert.equal(running.disposition, "started");
+    const second = await submit(h.harness, "second");
+    if (second.disposition !== "queued") throw new Error("expected the second submit to queue");
 
     gated.release();
-    await h.harness.waitForIdle();
-    assert.equal(userText(seen[0]?.at(-1)), "second");
-    const consumed = await h.harness.cancelQueued(entryId);
-    assert.equal(consumed.ok, false);
-    if (!consumed.ok) assert.equal(consumed.error._tag, "NotQueued");
+    await waitForIdle(h.harness);
+    // Drained at the first checkpoint the run reached after it queued.
+    assert.ok(seen.some((messages) => userText(messages.at(-1)) === "second"));
+    assert.deepEqual(await h.harness.cancelQueued(second.entryId), { kind: "already_consumed" });
+    await h.close();
+  });
+
+  void test("redeliverQueued moves a parked follow-up into the running turn", async () => {
+    const seen: Message[][] = [];
+    const gated = gatedThenStop(seen);
+    const h = await open(gated.streamFn);
+
+    const running = await submit(h.harness, "first");
+    assert.equal(running.disposition, "started");
+    const queued = await submit(h.harness, "later", "queue");
+    if (queued.disposition !== "queued") throw new Error("expected the follow-up to queue");
+
+    assert.deepEqual(await h.harness.redeliverQueued(queued.entryId, "steer"), {
+      kind: "redelivered",
+      delivery: "steer",
+    });
+
+    gated.release();
+    await waitForIdle(h.harness);
+    // It reached the turn that was already running. Which boundary it landed
+    // on is the runner's business — before the first provider call when the
+    // run has not started one yet, the next checkpoint otherwise — but it is
+    // that run, not a second one.
+    assert.ok(
+      seen.some((messages) => userText(messages.at(-1)) === "later"),
+      "the re-delivered message never reached the model",
+    );
+    assert.equal((await h.harness.session.findRecords({ type: "operation_started" })).length, 1);
+    assert.deepEqual(await pendingQueue(h.harness), []);
+    await h.close();
+  });
+
+  void test("a follow-up parked by an abort runs when it is re-delivered as a steer", async () => {
+    const seen: Message[][] = [];
+    const h = await open(abortableThenStop(seen));
+    const started = await submit(h.harness, "first");
+    const first = waitFinished(h.harness.session, started.runId);
+    const queued = await submit(h.harness, "later", "queue");
+    if (queued.disposition !== "queued") throw new Error("expected the follow-up to queue");
+    await h.harness.abort({ continue: true });
+    assert.equal((await first).outcome.kind, "aborted");
+    await waitForIdle(h.harness);
+    // Parked: an abort leaves explicit follow-ups for a later run.
+    assert.equal((await pendingQueue(h.harness)).length, 1);
+
+    const steered = await h.harness.redeliverQueued(queued.entryId, "steer");
+    assert.equal(steered.kind, "redelivered");
+    await waitForIdle(h.harness);
+    // The re-delivery is also the wake: nothing else was sent.
+    assert.equal(userText(seen.at(-1)?.at(-1)), "later");
+    assert.deepEqual(await pendingQueue(h.harness), []);
+    await h.close();
+  });
+
+  void test("a steer moved back to the queue waits for the run instead of joining it", async () => {
+    const seen: Message[][] = [];
+    const gated = gatedThenStop(seen);
+    const h = await open(gated.streamFn);
+
+    await submit(h.harness, "first");
+    // The run must be inside the provider call before the interject arrives,
+    // or the first step's checkpoint drain consumes it before the move.
+    while (seen.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    const steer = await submit(h.harness, "interject");
+    if (steer.disposition !== "queued") throw new Error("expected the steer to queue");
+
+    assert.deepEqual(await h.harness.redeliverQueued(steer.entryId, "queue"), {
+      kind: "redelivered",
+      delivery: "queue",
+    });
+    assert.deepEqual(
+      (await pendingQueue(h.harness)).map((item) => item.delivery),
+      ["queue"],
+    );
+
+    gated.release();
+    await waitForIdle(h.harness);
+    // The first turn ran alone; the follow-up opened the next one.
+    assert.equal(userText(seen[0]?.at(-1)), "first");
+    assert.equal(userText(seen[1]?.at(-1)), "interject");
+    await h.close();
+  });
+
+  /**
+   * Ported from OpenCode v2's "moves pending input between steer and queue
+   * delivery", assertion for assertion: order survives the move, steering wakes
+   * a run and queueing does not, one announcement per move, and asking for the
+   * lane an item already holds is a conflict rather than a quiet success.
+   * https://github.com/anomalyco/opencode/blob/v2/packages/core/test/session-prompt.test.ts
+   */
+  void test("moves pending input between steer and queue delivery", async () => {
+    const seen: Message[][] = [];
+    const gated = gatedThenStop(seen);
+    const h = await open(gated.streamFn);
+    await submit(h.harness, "first");
+    // The run must already be inside the provider call, or it drains what
+    // follows before there is anything to move. A live claim is also what
+    // keeps the wake a no-op, which is how OpenCode's test reads it: their
+    // wake is a spy, here it is a claim nobody else can take.
+    while (seen.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const queued = await submit(h.harness, "Steer this", "queue");
+    const alreadySteered = await submit(h.harness, "Already steer");
+    if (queued.disposition !== "queued" || alreadySteered.disposition !== "queued") {
+      throw new Error("expected both messages to be pending");
+    }
+    const lanes = async () =>
+      (await pendingQueue(h.harness)).map((item) => [item.entryId, item.delivery]);
+    assert.deepEqual(await lanes(), [
+      [queued.entryId, "queue"],
+      [alreadySteered.entryId, "steer"],
+    ]);
+
+    assert.equal((await h.harness.redeliverQueued(queued.entryId, "steer")).kind, "redelivered");
+    // Admission order survives the move: the item keeps the place it has held
+    // all along, and only its lane changed.
+    assert.deepEqual(await lanes(), [
+      [queued.entryId, "steer"],
+      [alreadySteered.entryId, "steer"],
+    ]);
+
+    assert.equal((await h.harness.redeliverQueued(queued.entryId, "queue")).kind, "redelivered");
+    assert.deepEqual(await lanes(), [
+      [queued.entryId, "queue"],
+      [alreadySteered.entryId, "steer"],
+    ]);
+
+    // Asking for the lane an item already holds is a conflict, and writes
+    // nothing: no record, no change.
+    assert.deepEqual(await h.harness.redeliverQueued(alreadySteered.entryId, "steer"), {
+      kind: "unchanged",
+      delivery: "steer",
+    });
+    assert.deepEqual(await lanes(), [
+      [queued.entryId, "queue"],
+      [alreadySteered.entryId, "steer"],
+    ]);
+
+    assert.deepEqual(await h.harness.cancelQueued(alreadySteered.entryId), { kind: "cancelled" });
+    assert.deepEqual(await lanes(), [[queued.entryId, "queue"]]);
+
+    gated.release();
+    await waitForIdle(h.harness);
+    await h.close();
+  });
+
+  void test("re-delivering an unknown or consumed item answers without writing", async () => {
+    const seen: Message[][] = [];
+    const gated = gatedThenStop(seen);
+    const h = await open(gated.streamFn);
+
+    assert.deepEqual(await h.harness.redeliverQueued("e-nonexistent", "steer"), {
+      kind: "not_found",
+    });
+
+    await submit(h.harness, "first");
+    const second = await submit(h.harness, "second");
+    const withdrawn = await submit(h.harness, "withdrawn", "queue");
+    if (second.disposition !== "queued" || withdrawn.disposition !== "queued") {
+      throw new Error("expected both submits to queue");
+    }
+    // A cancelled item is gone, not merely in the other lane.
+    assert.deepEqual(await h.harness.cancelQueued(withdrawn.entryId), { kind: "cancelled" });
+    assert.deepEqual(await h.harness.redeliverQueued(withdrawn.entryId, "steer"), {
+      kind: "already_consumed",
+    });
+
+    gated.release();
+    await waitForIdle(h.harness);
+    assert.deepEqual(await h.harness.redeliverQueued(second.entryId, "queue"), {
+      kind: "already_consumed",
+    });
     await h.close();
   });
 });

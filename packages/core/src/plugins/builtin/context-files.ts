@@ -14,8 +14,6 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { definePlugin } from "../types.ts";
 
-export const CONTEXT_FILES_PLUGIN_ID = "context-files";
-
 export interface ContextFile {
   readonly path: string;
   readonly content: string;
@@ -24,8 +22,6 @@ export interface ContextFile {
 export interface ContextFilesOptions {
   /** Directory holding the user-global context file, e.g. `~/.uji`. */
   readonly globalDir?: string;
-  /** Lower renders earlier. Default 10: after the base system prompt, before skills. */
-  readonly promptOrder?: number;
 }
 
 const CANDIDATES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
@@ -185,7 +181,7 @@ export function formatContextFilesForPrompt(files: readonly ContextFile[]): stri
 
 export function contextFilesPlugin(options: ContextFilesOptions = {}) {
   return definePlugin({
-    id: CONTEXT_FILES_PLUGIN_ID,
+    id: "context-files",
     session(api) {
       const files = loadProjectContextFiles({
         cwd: api.env.cwd,
@@ -194,9 +190,8 @@ export function contextFilesPlugin(options: ContextFilesOptions = {}) {
       });
       const text = formatContextFilesForPrompt(files);
       if (text === "") return;
-      api.prompt.add((draft) =>
-        draft.set("project-context", { text, order: options.promptOrder ?? 10 }),
-      );
+      // After the base system prompt, before skills.
+      api.prompt.add((draft) => draft.set("project-context", { text, order: 10 }));
     },
   });
 }

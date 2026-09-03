@@ -9,26 +9,37 @@ import {
   TextareaRenderable,
   TextRenderable,
 } from "@opentui/core";
-import type { CliRenderer, TextOptions } from "@opentui/core";
-import { transcriptFromEntries, type Entry } from "@uji-ai/core";
+import type { CliRenderer } from "@opentui/core";
+import { EMPTY_TRANSCRIPT, appendTranscriptEntry } from "@uji-ai/core";
+import type { TranscriptState, Turn } from "@uji-ai/core";
+import type { UserMessage } from "@uji-ai/schema";
 import { fitPowerlineSegments, hintGroups, powerlineSegments } from "./format.ts";
 import type { PowerlineSegment, PowerlineState } from "./format.ts";
 import { TuiFocusController } from "./lifecycle.ts";
 import { InlineMenu, PickerCancelled } from "./picker.ts";
 import type { Choice, ChoiceAction, MenuScreen } from "./picker.ts";
 import {
-  appendNote,
+  appendMarkerItem,
   ConversationTurnBlock,
   createSubtleSyntaxStyle,
   createSyntaxStyle,
-  PendingSteeringStatus,
   renderItems,
+  ToolOutputExpansion,
 } from "./transcript.ts";
+import { Ephemeral } from "./ephemeral.ts";
+import type { EphemeralPanel } from "./ephemeral.ts";
+import { PendingGutter } from "./pending-gutter.ts";
+import { UsagePanel } from "./usage-panel.ts";
+import type { UsageCard } from "./usage.ts";
 import type { Transcript } from "./transcript.ts";
+import { createActiveTheme, updateActiveTheme } from "./theme.ts";
 import type { CliTheme } from "./theme.ts";
 import { COMPOSER_PLACEHOLDER, GLYPHS, IDLE_HINTS } from "./constants.ts";
 import { displayWidth, truncateDisplay } from "./width.ts";
 import { imagePreviewMaxHeight } from "./collapsed-tag.ts";
+import { composerMarkerSyntaxStyle } from "./composer-markers.ts";
+import { bindSemantics, readSemantics } from "./semantics.ts";
+import type { Entry } from "@uji-ai/core/store";
 
 const MAX_COMPOSER_ROWS = 8;
 // Preserve a transcript row, the composer's top border, the powerline, and
@@ -42,19 +53,30 @@ function composerRowsForHeight(height: number): number {
 export interface Ui {
   renderer: CliRenderer;
   root: BoxRenderable;
+  /** Stable palette object shared by every long-lived component. */
+  themeState: ReturnType<typeof createActiveTheme>;
   transcript: Transcript;
   scroll: ScrollBoxRenderable;
+  /** Opaque column under the transcript, including the composer and menus. */
+  live: BoxRenderable;
   /** Stable input frame and its lower status rule. */
   composer: BoxRenderable;
-  /** Retained rich parts and the one preview opened from them. */
-  composerTagRow: BoxRenderable;
+  /** The one preview opened by clicking an inline marker pill. */
   composerPreview: BoxRenderable;
   inputBox: BoxRenderable;
   prompt: TextRenderable;
   input: TextareaRenderable;
   powerline: TextRenderable;
+  /** The keycap row, pinned to the last line of the terminal. */
+  hints: TextRenderable;
+  /** Pending steers and follow-ups, pinned between the transcript and composer. */
+  pendingGutter: PendingGutter;
+  /**
+   * Rows under the composer that the terminal takes back: menus, completions,
+   * and every line of client status. Nothing here reaches the record.
+   */
+  ephemeral: Ephemeral;
   focus: TuiFocusController;
-  hints: HintsLine;
   /** Plain source for `ui.hints`, kept so state changes can replace it. */
   hintText: string;
   nextId: (prefix?: string) => string;
@@ -62,71 +84,42 @@ export interface Ui {
   selecting: boolean;
   /** Set by the shell so a picker can dismiss the completion dropdown. */
   closeInlineMenus?: () => void;
+  /** A read-only panel yields when a prompt or another panel needs the slot. */
+  dismissInfoPanel?: () => void;
+  /**
+   * Set by the shell: give the message of a run that stopped before it
+   * answered back to the composer. Returns false when the shell cannot take
+   * it, and the turn settles as stopped instead.
+   */
+  retractPrompt?: () => boolean;
   authenticating: boolean;
   activeTurn?: ConversationTurnBlock;
-  steeringStatus: PendingSteeringStatus;
+  /** Steers and follow-ups core is still holding, drawn above the composer. */
+  queue: PendingGutter;
   /**
-   * Entry ids seen by exactly one side of the live-render/session-watch pair.
-   * The second side removes the id, regardless of which side ran first.
+   * Core's transcript fold of the visible branch, plus the block each turn
+   * item owns. Every committed entry advances the fold, whichever of the
+   * in-process harness and the durable session watcher delivers it first;
+   * the fold's seq makes the second delivery a no-op.
    */
-  renderedEntries: Set<string>;
+  projection: { state: TranscriptState; turns: Map<string, ConversationTurnBlock> };
 }
-
-/** How long a flashed message holds the hint row. */
-export const FLASH_MS = 2000;
 
 /**
- * The hint row, which also carries throwaway status like "Nothing is queued".
- * The transcript is a permanent record, so a note there never leaves and three
- * taps of one key leave three dead lines. This row hands itself back instead.
- *
- * The countdown runs on the render loop's deltaTime like the spinner does, so
- * it follows the renderer's clock and stops when the renderer stops.
+ * The keycap row says what keys do and nothing else. Status used to borrow it
+ * for two seconds at a time, which cost the row its one job and could never
+ * hold more than a line. That lives in the ephemeral slot now.
  */
-export class HintsLine extends TextRenderable {
-  private hints: StyledText;
-  private remaining = 0;
-
-  constructor(renderer: CliRenderer, options: TextOptions & { content: StyledText }) {
-    super(renderer, options);
-    this.hints = options.content;
-  }
-
-  set(hints: StyledText): void {
-    this.hints = hints;
-    this.remaining = 0;
-    this.live = false;
-    this.content = hints;
-  }
-
-  flash(message: StyledText): void {
-    this.remaining = FLASH_MS;
-    this.content = message;
-    this.live = true;
-  }
-
-  protected override onUpdate(deltaTime: number): void {
-    if (this.remaining <= 0) return;
-    this.remaining -= deltaTime;
-    if (this.remaining <= 0) this.set(this.hints);
-  }
-}
-
 export function setHints(ui: Ui, text: string): void {
   ui.hintText = text;
-  ui.hints.set(hintsText(text, ui.transcript.theme));
-}
-
-/** Leaves `ui.hintText` alone so a picker opening mid-flash restores the real row. */
-export function flash(ui: Ui, text: string, color?: string): void {
-  ui.hints.flash(new StyledText([fg(color ?? ui.transcript.theme.muted)(`  ${text}`)]));
+  ui.hints.content = hintsText(text, ui.transcript.theme);
 }
 
 /**
  * Keycaps carry the weight, what they do stays quiet, and the dots between
  * groups recede furthest. Flat dim text makes the row one unreadable smear.
  */
-export function hintsText(text: string, theme: CliTheme): StyledText {
+function hintsText(text: string, theme: CliTheme): StyledText {
   const chunks = [fg(theme.dim)("  ")];
   for (const [index, group] of hintGroups(text).entries()) {
     if (index > 0) chunks.push(fg(theme.muted)(" \u00b7 "));
@@ -147,7 +140,6 @@ function powerlineColor(theme: CliTheme, tone: PowerlineSegment["tone"]): string
     case "queue":
       return theme.warning;
     case "usage":
-    case "clock":
       return theme.dim;
   }
 }
@@ -197,9 +189,13 @@ export function framedPowerline(
   return new StyledText(chunks);
 }
 
-export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
+export function buildUi(renderer: CliRenderer, initialTheme: CliTheme): Ui {
+  const theme = createActiveTheme(initialTheme);
   let counter = 0;
   const nextId = (prefix = "n"): string => `${prefix}-${String(counter++)}`;
+  const userBlocks = new Set<BoxRenderable>();
+  // The scroll padding and card margins consume two columns on each side.
+  const userBlockWidth = (): number => Math.max(1, renderer.width - 4);
 
   const root = new BoxRenderable(renderer, {
     id: "app",
@@ -216,6 +212,12 @@ export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
     minHeight: 0,
     stickyScroll: true,
     stickyStart: "bottom",
+    // Never scroll sideways. Without the horizontal clamp the content box
+    // sizes to fit its children, and code views measure at the terminal
+    // width regardless of their text, so every tool card overflowed by its
+    // padding: a permanent scrollbar over columns that held nothing. Code
+    // wider than the view truncates; it cannot be revealed by scrolling
+    // anyway, because a code view never measures past the terminal.
     scrollX: false,
     scrollY: true,
     paddingLeft: 1,
@@ -267,6 +269,8 @@ export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
     cursorColor: theme.user,
     selectionBg: theme.selectionBackground,
     selectionFg: theme.selectionForeground,
+    // Carries no highlighter; it exists so composer marker pills can paint.
+    syntaxStyle: composerMarkerSyntaxStyle(theme),
     keyBindings: [
       { name: "return", action: "submit" },
       { name: "kpenter", action: "submit" },
@@ -277,6 +281,7 @@ export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
       { name: "j", ctrl: true, action: "newline" },
     ],
   });
+  bindSemantics(input, () => ({ role: "textbox", label: "Prompt" }));
   inputBox.onMouseDown = () => input.focus();
   inputBox.add(prompt);
   inputBox.add(input);
@@ -288,18 +293,8 @@ export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
     flexDirection: "column",
   });
 
-  // Margin 3 = the composer's margin, border, and padding, so tags and
-  // previews sit on the same column as the text being composed below them.
-  const composerTagRow = new BoxRenderable(renderer, {
-    id: "composer-tags",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    flexShrink: 0,
-    gap: 1,
-    visible: false,
-    marginLeft: 3,
-    marginRight: 2,
-  });
+  // Margin 3 = the composer's margin, border, and padding, so the preview
+  // sits on the same column as the text being composed below it.
   const composerPreview = new BoxRenderable(renderer, {
     id: "composer-preview",
     flexDirection: "column",
@@ -322,30 +317,52 @@ export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
     marginRight: 1,
   });
 
-  const hints = new HintsLine(renderer, {
+  const hints = new TextRenderable(renderer, {
     id: "hints",
     content: hintsText(IDLE_HINTS, theme),
     wrapMode: "none",
     height: 1,
-    // The transcript gives way when a menu opens; the hint row never does.
     flexShrink: 0,
     // Lines up with the prompt glyph inside the composer's border.
     marginLeft: 1,
     marginRight: 1,
   });
 
+  const pendingGutter = new PendingGutter(renderer, theme, nextId);
+  const ephemeral = new Ephemeral(renderer, scroll, theme, nextId);
+
+  /**
+   * Everything below the transcript rides up over its tail when the ephemeral
+   * slot takes rows, so this column paints opaque. Left transparent, the
+   * transcript rows underneath show through the composer's frame.
+   */
+  const live = new BoxRenderable(renderer, {
+    id: "live",
+    width: "100%",
+    flexShrink: 0,
+    flexDirection: "column",
+    backgroundColor: theme.background,
+  });
+
   root.add(scroll);
-  composer.add(composerTagRow);
+  // Between the record and the prompt: not history, and not a draft either.
+  live.add(pendingGutter.container);
   composer.add(composerPreview);
   composer.add(inputBox);
   composer.add(powerline);
-  root.add(composer);
-  root.add(hints);
+  live.add(composer);
+  // Menus and completions drop out of the composer, the way they are typed.
+  live.add(ephemeral.container);
+  live.add(hints);
+  root.add(live);
   renderer.root.add(root);
   const focus = new TuiFocusController(input);
   const resizeComposer = (_width: number, height: number): void => {
     input.maxHeight = composerRowsForHeight(height);
     composerPreview.maxHeight = imagePreviewMaxHeight(height);
+    for (const block of userBlocks) block.width = userBlockWidth();
+    pendingGutter.resize();
+    ephemeral.resize();
   };
   const blurUi = (): void => focus.blur();
   const restoreUi = (): void => focus.restore();
@@ -365,20 +382,27 @@ export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
     syntaxStyle: createSyntaxStyle(theme),
     subtleSyntaxStyle: createSubtleSyntaxStyle(theme),
     theme,
+    toolOutput: new ToolOutputExpansion(),
+    // Settings own the real value; interactive assigns it before first draw.
+    toolCalls: "auto",
     nextId,
+    userLayout: { blocks: userBlocks, width: userBlockWidth },
   };
   return {
     renderer,
     root,
+    themeState: theme,
     transcript,
     scroll,
+    live,
     composer,
-    composerTagRow,
     composerPreview,
     inputBox,
     prompt,
     input,
     powerline,
+    pendingGutter,
+    ephemeral,
     focus,
     hints,
     hintText: IDLE_HINTS,
@@ -386,17 +410,73 @@ export function buildUi(renderer: CliRenderer, theme: CliTheme): Ui {
     inputMode: "chat",
     selecting: false,
     authenticating: false,
-    steeringStatus: new PendingSteeringStatus(transcript),
-    renderedEntries: new Set(),
+    queue: pendingGutter,
+    projection: { state: EMPTY_TRANSCRIPT, turns: new Map() },
   };
 }
 
-export function note(ui: Ui, text: string, color?: string): void {
-  appendNote(ui.transcript, text, color);
+/**
+ * Repaint the shell around a new palette. The caller redraws transcript
+ * entries and asks the long-lived composer controllers to refresh their
+ * cached styles after this returns.
+ */
+export function applyUiTheme(ui: Ui, next: CliTheme): void {
+  updateActiveTheme(ui.themeState, next);
+  const theme = ui.themeState;
+
+  ui.renderer.setBackgroundColor(theme.terminal);
+  ui.root.backgroundColor = theme.background;
+  ui.live.backgroundColor = theme.background;
+  ui.scroll.verticalScrollbarOptions = {
+    trackOptions: {
+      backgroundColor: theme.scrollbarTrack,
+      foregroundColor: theme.scrollbarThumb,
+    },
+  };
+  ui.inputBox.borderColor = theme.promptBorder;
+  ui.inputBox.focusedBorderColor = theme.promptBorderFocused;
+  ui.inputBox.titleColor = theme.dim;
+  ui.prompt.fg = theme.user;
+  ui.input.placeholderColor = theme.dim;
+  ui.input.backgroundColor = theme.transparent;
+  ui.input.focusedBackgroundColor = theme.transparent;
+  ui.input.textColor = theme.foreground;
+  ui.input.focusedTextColor = theme.foreground;
+  ui.input.cursorColor = theme.user;
+  ui.input.selectionBg = theme.selectionBackground;
+  ui.input.selectionFg = theme.selectionForeground;
+  ui.input.syntaxStyle = composerMarkerSyntaxStyle(theme);
+  ui.powerline.content = framedPowerline(undefined, ui.powerline.width, theme);
+  ui.hints.content = hintsText(ui.hintText, theme);
+  ui.pendingGutter.retheme();
+  ui.ephemeral.retheme();
+  ui.transcript.syntaxStyle = createSyntaxStyle(theme);
+  ui.transcript.subtleSyntaxStyle = createSubtleSyntaxStyle(theme);
+  ui.renderer.requestRender();
 }
 
+/**
+ * The one way to tell the user something that is not part of the
+ * conversation. It lands in the ephemeral slot under the composer and the
+ * next keypress takes it back.
+ *
+ * There is deliberately no counterpart that writes free text into the
+ * transcript. The transcript is the record and only core's log may fill it,
+ * so a model switch, a login, a `/usage` table or "Nothing is queued" has
+ * exactly one destination and no decision to get wrong.
+ */
+export function notice(ui: Ui, text: string | readonly string[], color?: string): void {
+  ui.ephemeral.say(text, color);
+}
+
+/**
+ * Text the run produced, such as a plugin's question, its answer, or the
+ * error that ended the turn. It belongs to the turn on screen, so it goes in
+ * the record beside it. With no turn open there is nothing to belong to, and
+ * it is status like any other.
+ */
 export function turnNote(ui: Ui, text: string, color?: string): void {
-  if (ui.activeTurn === undefined) note(ui, text, color);
+  if (ui.activeTurn === undefined) notice(ui, text, color);
   else ui.activeTurn.addNote(text, color);
 }
 
@@ -405,45 +485,213 @@ export function setInputText(input: TextareaRenderable, text: string): void {
   input.gotoBufferEnd();
 }
 
+type TranscriptMessageDirection = "next" | "previous";
+
+/** Jump to the next semantic turn boundary above or below the viewport. */
+export function navigateTranscriptMessage(
+  scroll: ScrollBoxRenderable,
+  direction: TranscriptMessageDirection,
+): string | undefined {
+  const top = scroll.scrollTop;
+  const messages = scroll.getChildren().flatMap((renderable) => {
+    const semantics = readSemantics(renderable);
+    if (semantics?.role !== "message" || !renderable.visible) return [];
+    // A child's `y` is its screen position, which the scroll translates on
+    // every move; navigation reasons in content space, which does not.
+    return [{ contentY: renderable.y - scroll.y + top, semantics }];
+  });
+  const target =
+    direction === "next"
+      ? messages.find(({ contentY }) => contentY > top)
+      : messages.findLast(({ contentY }) => contentY < top);
+  if (target === undefined) return undefined;
+  scroll.stickyScroll = false;
+  scroll.scrollTo(target.contentY);
+  return target.semantics.id;
+}
+
+/**
+ * Rebuild the chat from a branch. Only deliberate moves land here: the
+ * initial render, navigation, and a session switch. Linear commits go through
+ * `commitTranscriptEntry` and never repaint what is already on screen.
+ */
 export function replaceTranscript(
   ui: Ui,
   entries: readonly Entry[],
   options: { openLastTurn?: boolean } = {},
 ): void {
   ui.activeTurn = undefined;
-  ui.steeringStatus.clear();
+  ui.queue.clear();
   for (const child of ui.scroll.getChildren()) {
     ui.scroll.remove(child);
     child.destroyRecursively();
   }
-  ui.activeTurn = renderItems(ui.transcript, transcriptFromEntries(entries), options);
-  ui.renderedEntries.clear();
+  const state = entries.reduce(appendTranscriptEntry, EMPTY_TRANSCRIPT);
+  const turns = new Map<string, ConversationTurnBlock>();
+  ui.projection = { state, turns };
+  ui.activeTurn = renderItems(ui.transcript, state.items, {
+    ...options,
+    register: (id, turn) => turns.set(id, turn),
+  });
+  ui.queue.sync(ui.queue.pending);
+  // The branch changed under the viewport, so a kept offset would point at
+  // rows that no longer exist. Land where the head now is.
+  ui.scroll.stickyScroll = true;
+  ui.scroll.scrollTo(ui.scroll.scrollHeight);
 }
 
 /**
- * Drops a menu into the completion dropdown's slot: the composer stays put and
- * the list grows downward out of it.
+ * The turn a user entry opens, drawn in the same dispatch the harness reports
+ * it. The durable commit follows through `commitTranscriptEntry` and finds
+ * this block registered, so the two paths meet in one renderable.
  */
+export function openUserTurn(ui: Ui, entryId: string, content: UserMessage["content"]): void {
+  const existing = ui.projection.turns.get(entryId);
+  const turn = existing ?? new ConversationTurnBlock(ui.transcript, { id: entryId });
+  if (existing === undefined) {
+    ui.activeTurn?.settle();
+    ui.projection.turns.set(entryId, turn);
+  }
+  ui.activeTurn = turn;
+  turn.addUser(content, entryId);
+}
+
+/**
+ * The block a folded turn item lands in: the one already registered for its
+ * id, the live turn that opened without an id (a resumed run draws before its
+ * entries commit), or a fresh one for a turn nothing local is streaming. A
+ * turn item that is not the open live turn ends whatever was: core has moved
+ * on, so the screen does too.
+ */
+function syncTurnItem(ui: Ui, item: Extract<Turn, { kind: "turn" }>): void {
+  let block = ui.projection.turns.get(item.id);
+  if (
+    block === undefined &&
+    item.parts[0]?.kind !== "user" &&
+    ui.activeTurn?.claim(item.id) === true
+  ) {
+    block = ui.activeTurn;
+  }
+  block ??= new ConversationTurnBlock(ui.transcript, {
+    id: item.id,
+    outcome: item.outcome,
+    durationMs: item.durationMs,
+  });
+  ui.projection.turns.set(item.id, block);
+  // A settled turn stays settled: a lagging commit for a finished run updates
+  // its parts without reopening it as the turn notes attach to.
+  if (ui.activeTurn !== block && !block.isClosed) {
+    ui.activeTurn?.settle();
+    ui.activeTurn = block;
+  }
+  for (const part of item.parts) block.addStoredPart(part);
+}
+
+/**
+ * Fold one committed entry into the chat. The fold appends or revises only
+ * the tail of its items, so this updates existing renderables in place and
+ * never touches earlier scrollback. A compaction is one appended marker: it
+ * ends the open turn, because core opens a new one for whatever follows, and
+ * the stream continuing after a mid-run compaction lands below the card.
+ */
+export function commitTranscriptEntry(ui: Ui, entry: Entry): void {
+  const prev = ui.projection.state;
+  const next = appendTranscriptEntry(prev, entry);
+  if (next === prev) return;
+  ui.projection.state = next;
+  for (let index = Math.max(0, prev.items.length - 1); index < next.items.length; index++) {
+    const item = next.items[index];
+    if (item === undefined || item === prev.items[index]) continue;
+    if (item.kind === "turn") {
+      syncTurnItem(ui, item);
+      continue;
+    }
+    ui.activeTurn?.settle();
+    ui.activeTurn = undefined;
+    appendMarkerItem(ui.transcript, item);
+  }
+}
+
+/**
+ * Opens a panel under the composer, which rides up over the transcript's tail
+ * to make room. The chat behind it does not move, because the ephemeral slot
+ * borrows those rows rather than taking them.
+ *
+ * Every panel takes this path, so a menu, a completion list and the `/usage`
+ * card open, hold the keyboard, and close the same way.
+ */
+function openPanel<P extends EphemeralPanel>(ui: Ui, panel: P): P {
+  ui.closeInlineMenus?.();
+  ui.dismissInfoPanel?.();
+  if (ui.selecting) throw new Error("Another panel is already open");
+  ui.ephemeral.mount(panel.container, panel.rows);
+  setHints(ui, panel.hints);
+  ui.selecting = true;
+  ui.focus.use(panel);
+  return panel;
+}
+
+/** Tears a panel down and hands the composer back its keyboard. Callers own the hint row. */
+function closePanel(ui: Ui, panel: EphemeralPanel): void {
+  ui.ephemeral.release(panel.container);
+  panel.destroy();
+  ui.selecting = false;
+  ui.focus.reset();
+  ui.renderer.requestRender();
+}
+
 export function openInlineMenu(
   ui: Ui,
   screen: MenuScreen,
   onError?: (error: unknown) => void,
 ): InlineMenu {
-  const menu = new InlineMenu(
+  return openPanel(
+    ui,
+    new InlineMenu(
+      {
+        renderer: ui.renderer,
+        theme: ui.transcript.theme,
+        nextId: ui.nextId,
+        onRows: (rows) => ui.ephemeral.setRows(rows),
+        ...(onError === undefined ? {} : { onError }),
+      },
+      screen,
+    ),
+  );
+}
+
+/**
+ * The `/usage` card, opened the way `/settings` opens a menu. Spend is a fact
+ * about the workspace now, so it is shown and taken back rather than filed.
+ * `panel.show(card)` swaps the card in place once the account refresh lands.
+ */
+export function openUsageCard(ui: Ui, card: UsageCard): UsagePanel {
+  ui.closeInlineMenus?.();
+  ui.dismissInfoPanel?.();
+  if (ui.selecting) throw new Error("Another panel is already open");
+
+  const restoredHints = ui.hintText;
+  let panel: UsagePanel;
+  const dismiss = (): void => {
+    if (!panel.destroyed) {
+      closePanel(ui, panel);
+      setHints(ui, restoredHints);
+    }
+    if (ui.dismissInfoPanel === dismiss) ui.dismissInfoPanel = undefined;
+  };
+  panel = new UsagePanel(
     {
       renderer: ui.renderer,
       theme: ui.transcript.theme,
       nextId: ui.nextId,
-      ...(onError === undefined ? {} : { onError }),
+      onRows: (rows) => ui.ephemeral.setRows(rows),
+      onClose: dismiss,
     },
-    screen,
+    card,
   );
-  ui.closeInlineMenus?.();
-  ui.root.insertBefore(menu.container, ui.hints);
-  setHints(ui, menu.hints);
-  ui.selecting = true;
-  ui.focus.use(menu);
-  return menu;
+  const opened = openPanel(ui, panel);
+  ui.dismissInfoPanel = dismiss;
+  return opened;
 }
 
 /** Swaps the screen an open menu shows and keeps the hint row in step. */
@@ -453,12 +701,8 @@ export function showMenuScreen(ui: Ui, menu: InlineMenu, screen: MenuScreen): vo
   ui.renderer.requestRender();
 }
 
-/** Tears a menu down and hands the composer back its keyboard. Callers own the hint row. */
 export function closeInlineMenu(ui: Ui, menu: InlineMenu): void {
-  menu.destroy();
-  ui.selecting = false;
-  ui.focus.reset();
-  ui.renderer.requestRender();
+  closePanel(ui, menu);
 }
 
 /** One-shot menu: resolves with the chosen id, rejects when the user backs out. */
@@ -472,10 +716,13 @@ export function selectChoice(
     signal?: AbortSignal;
     onHighlight?: (id: string) => void;
     actions?: readonly ChoiceAction[];
+    /** Verb on the enter keycap when picking does more than select. */
+    selectLabel?: string;
     /** Slow source for the same list, applied once it arrives. */
     load?: () => Promise<readonly Choice[]>;
   } = {},
 ): Promise<string> {
+  ui.dismissInfoPanel?.();
   if (ui.selecting) return Promise.reject(new Error("Another menu is already open"));
   if (options.signal?.aborted === true) return Promise.reject(new PickerCancelled());
   if (choices.length === 0 && options.load === undefined) {
@@ -502,6 +749,7 @@ export function selectChoice(
         ...(options.selectedId === undefined ? {} : { selectedId: options.selectedId }),
         ...(options.maxVisible === undefined ? {} : { maxVisible: options.maxVisible }),
         ...(options.actions === undefined ? {} : { actions: options.actions }),
+        ...(options.selectLabel === undefined ? {} : { selectLabel: options.selectLabel }),
         ...(options.onHighlight === undefined ? {} : { onHighlight: options.onHighlight }),
         ...(options.load === undefined ? {} : { load: options.load }),
         onSelect: (id) => settle(() => resolve(id)),
@@ -519,9 +767,8 @@ export class ComposerStatus {
   private readonly line: TextRenderable;
   private readonly theme: CliTheme;
   private readonly isFocused: () => boolean;
-  private readonly state: PowerlineState;
-  /** Armed only while the idle clock is on screen; rescheduled by repaint. */
-  private tick: ReturnType<typeof setTimeout> | undefined;
+  private state: PowerlineState;
+  private disposed = false;
 
   constructor(
     renderer: CliRenderer,
@@ -539,8 +786,15 @@ export class ComposerStatus {
     this.repaint();
   }
 
-  set(patch: Partial<PowerlineState>): void {
+  /** Update status that still belongs to the active session. */
+  patch(patch: Partial<PowerlineState>): void {
     Object.assign(this.state, patch);
+    this.repaint();
+  }
+
+  /** Rebuild status when the active session changes. */
+  replace(state: PowerlineState): void {
+    this.state = state;
     this.repaint();
   }
 
@@ -549,6 +803,9 @@ export class ComposerStatus {
   }
 
   readonly repaint = (): void => {
+    // Wire callbacks resolve after teardown (a usage fetch, a queue refresh);
+    // a status line without a buffer swallows them instead of throwing.
+    if (this.disposed || this.line.isDestroyed) return;
     const width = this.line.width > 0 ? this.line.width : Math.max(0, this.renderer.width - 2);
     const { theme } = this;
     this.line.content = framedPowerline(
@@ -557,22 +814,9 @@ export class ComposerStatus {
       theme,
       this.isFocused() ? theme.promptBorderFocused : theme.promptBorder,
     );
-    // The idle clock is the one segment that changes without an event; keep
-    // it live with a self-rescheduling tick that dies with the segment.
-    if (this.tick !== undefined) clearTimeout(this.tick);
-    this.tick = undefined;
-    if (this.state.runState === "idle" && this.state.stoppedAt !== undefined) {
-      const timer = setTimeout(() => {
-        this.repaint();
-        this.renderer.requestRender();
-      }, 1000);
-      timer.unref?.();
-      this.tick = timer;
-    }
   };
 
   dispose(): void {
-    if (this.tick !== undefined) clearTimeout(this.tick);
-    this.tick = undefined;
+    this.disposed = true;
   }
 }

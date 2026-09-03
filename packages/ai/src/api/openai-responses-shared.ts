@@ -144,6 +144,28 @@ export function convertResponsesMessages<TApi extends Api>(
   options?: ConvertResponsesMessagesOptions,
 ): ResponseInput {
   const messages: ResponseInput = [];
+  const checkpoint = context.checkpoint;
+  if (checkpoint !== undefined) {
+    if (
+      checkpoint.provider !== model.provider ||
+      checkpoint.api !== model.api ||
+      checkpoint.model !== model.id ||
+      !Array.isArray(checkpoint.data) ||
+      checkpoint.data.some(
+        (item) =>
+          typeof item !== "object" ||
+          item === null ||
+          Array.isArray(item) ||
+          typeof item.type !== "string",
+      )
+    ) {
+      throw new Error(`Checkpoint material does not match ${model.provider}/${model.id}`);
+    }
+    // SAFETY: this is the matching provider boundary, after validating the
+    // endpoint's array-of-response-items envelope. The OpenAI SDK omits the
+    // native compaction item from its public ResponseInput union.
+    messages.push(...(checkpoint.data as unknown as ResponseInput));
+  }
   const loadedToolNames = new Set<string>();
 
   const normalizeIdPart = (part: string): string => {

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { DocRail, type DocCard } from "@/components/landing/doc-rail";
 
 /*
- * Eleven packages, three of which are names with no directory behind them.
+ * Twelve packages, three of which are names with no directory behind them.
  * They are on the same wall on purpose: the reserved rows are the most useful
  * thing on this page, and holding them back for the roadmap would let the
  * front page claim more than the repository does.
@@ -15,36 +15,28 @@ const packages = [
   { name: "@uji-ai/plugin", built: true },
   { name: "@uji-ai/telemetry", built: true },
   { name: "@uji-ai/tui", built: true },
+  { name: "@uji-ai/desktop", built: true },
   { name: "@uji-ai/protocol", built: false },
   { name: "@uji-ai/server", built: false },
   { name: "@uji-ai/client", built: false },
 ];
 
 const documents: DocCard[] = [
-  { title: "Quickstart", meta: "Get a working agent", kind: "flow", href: "/docs/quickstart" },
+  { title: "Design", meta: "The whole shape", kind: "seam", href: "/docs/design" },
+  { title: "The log", meta: "Entries, records, heads, facts", kind: "log", href: "/docs/design#the-log" },
   {
-    title: "Architecture",
-    meta: "Boundaries and direction",
-    kind: "seam",
-    href: "/docs/architecture",
+    title: "Heads",
+    meta: "Named pointers, moves, stacks",
+    kind: "lattice",
+    href: "/docs/design#heads-are-named-pointers",
   },
-  { title: "Schema", meta: "@uji-ai/schema", kind: "seam", href: "/docs/schema" },
-  { title: "Providers", meta: "@uji-ai/ai", kind: "flow", href: "/docs/ai" },
-  { title: "Agent loop", meta: "@uji-ai/core", kind: "flow", href: "/docs/core/agent-loop" },
-  { title: "AgentHarness", meta: "@uji-ai/core", kind: "stack", href: "/docs/core/harness" },
-  {
-    title: "Session storage",
-    meta: "@uji-ai/core",
-    kind: "log",
-    href: "/docs/core/session-storage",
-  },
-  { title: "Tools", meta: "@uji-ai/core", kind: "lattice", href: "/docs/core/tools" },
-  { title: "Plugins", meta: "@uji-ai/plugin", kind: "lattice", href: "/docs/plugin" },
-  { title: "Telemetry", meta: "@uji-ai/telemetry", kind: "log", href: "/docs/telemetry" },
-  { title: "UI", meta: "@uji-ai/ui", kind: "stack", href: "/docs/ui" },
-  { title: "CLI", meta: "@uji-ai/tui", kind: "flow", href: "/docs/tui" },
-  { title: "Host and client", meta: "The contract", kind: "seam", href: "/docs/host-sdk" },
-  { title: "Roadmap", meta: "What we are building", kind: "log", href: "/docs/roadmap" },
+  { title: "The turn", meta: "runAgentTurn", kind: "flow", href: "/docs/design#the-turn" },
+  { title: "Runs", meta: "Claims, steps, recovery", kind: "stack", href: "/docs/design#runs" },
+  { title: "Admission", meta: "Send never errors", kind: "flow", href: "/docs/design#admission-is-open" },
+  { title: "Deployment", meta: "Embedded, server, serverless", kind: "seam", href: "/docs/design#deployment" },
+  { title: "The SDK", meta: "createUji", kind: "flow", href: "/docs/design#the-sdk" },
+  { title: "Plugins", meta: "What the model sees", kind: "lattice", href: "/docs/design#plugins" },
+  { title: "Invariants", meta: "The numbered contract", kind: "log", href: "/docs/design#invariants" },
 ];
 
 /*
@@ -68,20 +60,20 @@ export default function LandingPage() {
 
           <p className="cog-prose mt-6">
             You should be able to read the code that runs your agents. Uji keeps the agent loop, the
-            durable harness, session storage, seven coding tools, and the provider blocks in one
+            durable harness, session storage, five coding tools, and the provider blocks in one
             workspace, written here rather than imported. Nothing calls back up the stack: a client
-            drives a harness, the harness drives the loop, the loop reaches a provider through a
-            function it was handed.{" "}
-            <Link href="/docs/architecture" className="cog-cite">
+            talks to createUji, that object admits into a store, an attached host runs the loop, and
+            the loop reaches a provider through a function it was handed.{" "}
+            <Link href="/docs/design#the-model-in-git-terms" className="cog-cite">
               The seam only flows one way
             </Link>
             .
           </p>
 
           <p className="cog-prose">
-            Two clients exist now: a terminal CLI and an Electron desktop chat. A browser client
-            needs the three reserved packages below. They sit on the wall as a promise of what comes
-            next.
+            Two product hosts exist now: a terminal CLI and an Electron app. A leftover demo desktop
+            still talks to the harness directly. A browser client needs the three reserved packages
+            below. They sit on the wall as a promise of what comes next.
           </p>
         </div>
       </section>
@@ -121,14 +113,8 @@ export default function LandingPage() {
           </p>
 
           <div className="mt-8 flex flex-wrap items-center gap-4">
-            <Link href="/docs" className="cog-btn-solid cog-ui">
+            <Link href="/docs/design" className="cog-btn-solid cog-ui">
               Open the docs
-            </Link>
-            <Link
-              href="/docs/quickstart"
-              className="cog-ui text-cog-ink underline underline-offset-4 transition-colors duration-150 hover:text-cog-accent"
-            >
-              Or run an agent
             </Link>
           </div>
         </div>

@@ -1,0 +1,1409 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="HTML proposal for Uji's usage panel with active tasks, account headroom, and workspace usage."
+    />
+    <title>uji · usage panel proposal</title>
+
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230a0a0a'/%3E%3Ctext x='8' y='12' font-family='monospace' font-size='10' fill='%237aa2f7' text-anchor='middle'%3Eu%3C/text%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+    />
+
+    <style>
+      :root {
+        --terminal: #0a0a0a;
+        --background: #141414;
+        --raised: #191919;
+        --hover: #202023;
+        --foreground: #e1e1e1;
+        --user: #c8c8c8;
+        --dim: #737373;
+        --muted: #585858;
+        --border: #323237;
+        --border-soft: #222226;
+        --accent: #7aa2f7;
+        --number: #ff9e64;
+        --ok: #9ece6a;
+        --warning: #e0af68;
+        --error: #f7768e;
+        --thinking: #bb9af7;
+        --running: #7dcfff;
+        --radius: 10px;
+        --radius-small: 5px;
+        --shadow: 0 24px 70px -30px rgb(0 0 0 / 0.95);
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        background: var(--terminal);
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: 24px;
+        background:
+          radial-gradient(1000px 650px at 50% -180px, #1b1b24 0%, transparent 72%), var(--terminal);
+        color: var(--foreground);
+        font:
+          13px/1.5 "IBM Plex Mono",
+          ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        font-variant-ligatures: none;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button,
+      a {
+        font: inherit;
+      }
+
+      button {
+        color: inherit;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+
+      :focus-visible {
+        outline: 1px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      ::selection {
+        background: color-mix(in srgb, var(--accent) 34%, transparent);
+        color: white;
+      }
+
+      code {
+        color: var(--number);
+        font: inherit;
+      }
+
+      .page-header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        max-width: 1240px;
+        margin: 0 auto 14px;
+        color: var(--dim);
+        font-size: 11px;
+      }
+
+      .page-header strong {
+        color: var(--accent);
+        font-weight: 500;
+      }
+
+      .page-header span:last-child {
+        text-align: right;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(590px, 1fr) 320px;
+        gap: 18px;
+        max-width: 1240px;
+        margin: 0 auto;
+        align-items: start;
+      }
+
+      .stage {
+        min-width: 0;
+        padding: 16px;
+        border: 1px solid var(--border-soft);
+        border-radius: calc(var(--radius) + 3px);
+        background: rgb(20 20 20 / 0.58);
+      }
+
+      .stage-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin: 0 auto 12px;
+        color: var(--dim);
+        font-size: 11px;
+      }
+
+      .stage-header b {
+        color: var(--user);
+        font-weight: 500;
+      }
+
+      .terminal-wrap {
+        display: flex;
+        justify-content: center;
+        min-width: 0;
+        overflow-x: auto;
+        padding-bottom: 1px;
+      }
+
+      .terminal {
+        --cols: 80;
+        --task-agent: 9ch;
+        --task-state: 10ch;
+        --quota-label: 8ch;
+        --quota-bar: 15ch;
+        --model-label: 22ch;
+        --model-bar: 18ch;
+        width: min(100%, calc(var(--cols) * 1ch + 48px));
+        min-width: 410px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--background);
+        box-shadow: var(--shadow);
+        transition: width 140ms ease;
+      }
+
+      .terminal[data-cols="64"] {
+        --cols: 64;
+        --task-agent: 8ch;
+        --task-state: 8ch;
+        --quota-label: 7ch;
+        --quota-bar: 9ch;
+        --model-label: 17ch;
+        --model-bar: 10ch;
+      }
+
+      .terminal[data-cols="52"] {
+        --cols: 52;
+        --task-agent: 7ch;
+        --quota-label: 6ch;
+        --quota-bar: 6ch;
+        --model-label: 13ch;
+        --model-bar: 5ch;
+      }
+
+      .terminal-titlebar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        height: 32px;
+        padding: 0 13px;
+        overflow: hidden;
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .terminal-titlebar span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .terminal-titlebar b {
+        color: var(--accent);
+        font-weight: 500;
+      }
+
+      .terminal-body {
+        display: grid;
+        grid-template-rows: minmax(82px, 1fr) auto auto auto;
+        min-height: 680px;
+        padding-top: 10px;
+      }
+
+      .transcript {
+        min-height: 0;
+        overflow: hidden;
+        padding: 6px 22px 12px;
+        color: var(--dim);
+        opacity: 0.42;
+        mask-image: linear-gradient(to bottom, black 0%, black 38%, transparent 100%);
+      }
+
+      .transcript-row {
+        margin-bottom: 14px;
+      }
+
+      .transcript-row strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--user);
+        font-weight: 500;
+      }
+
+      .transcript-row.system strong {
+        color: var(--thinking);
+      }
+
+      .usage-card {
+        min-width: 0;
+        margin: 0 12px 8px;
+        padding: 9px 15px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--background) 94%, transparent);
+        box-shadow: 0 10px 28px -18px rgb(0 0 0 / 0.9);
+      }
+
+      .card-heading,
+      .section-heading,
+      .provider-heading,
+      .task-row,
+      .task-empty,
+      .quota-row,
+      .workspace-row,
+      .footer-row,
+      .source-message {
+        min-width: 0;
+        height: 20px;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+
+      .card-heading,
+      .section-heading,
+      .provider-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 2ch;
+      }
+
+      .card-heading {
+        color: var(--dim);
+      }
+
+      .card-heading strong {
+        color: var(--foreground);
+        font-weight: 500;
+      }
+
+      .card-heading span,
+      .section-heading span,
+      .provider-heading span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .section-heading {
+        margin-top: 6px;
+        color: var(--dim);
+      }
+
+      .section-heading span:first-child {
+        color: var(--user);
+        font-weight: 500;
+      }
+
+      .section-heading span:last-child {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .task-heading span:last-child {
+        color: var(--running);
+      }
+
+      .task-row {
+        display: grid;
+        grid-template-columns: 2ch var(--task-agent) minmax(0, 1fr) var(--task-state) 7ch;
+        gap: 0 1ch;
+        align-items: center;
+      }
+
+      .task-marker {
+        color: var(--running);
+        line-height: 1;
+        text-align: center;
+        animation: spin 1.2s steps(8, end) infinite;
+      }
+
+      .task-agent {
+        overflow: hidden;
+        color: var(--thinking);
+        font-weight: 500;
+        text-overflow: ellipsis;
+      }
+
+      .task-title {
+        overflow: hidden;
+        color: var(--foreground);
+        text-overflow: ellipsis;
+      }
+
+      .task-state {
+        overflow: hidden;
+        color: var(--dim);
+        text-overflow: ellipsis;
+      }
+
+      .task-cost {
+        color: var(--foreground);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
+
+      .task-empty {
+        color: var(--muted);
+        text-overflow: ellipsis;
+      }
+
+      .divider {
+        height: 1px;
+        margin: 8px 0 5px;
+        background: var(--border-soft);
+      }
+
+      .provider {
+        margin-top: 3px;
+      }
+
+      .provider-heading {
+        color: var(--user);
+      }
+
+      .provider-heading span:first-child {
+        font-weight: 500;
+      }
+
+      .provider-heading span:last-child {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .provider[data-freshness="stale"] .provider-heading span:last-child {
+        color: var(--warning);
+      }
+
+      .quota-row {
+        display: grid;
+        grid-template-columns: var(--quota-label) var(--quota-bar) 6ch minmax(0, 1fr);
+        gap: 0 1.5ch;
+        align-items: center;
+        color: var(--dim);
+      }
+
+      .quota-row .label,
+      .quota-row .reset,
+      .workspace-row .model {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .bar {
+        overflow: hidden;
+        letter-spacing: 0;
+      }
+
+      .bar .fill {
+        color: var(--accent);
+      }
+
+      .bar .empty {
+        color: var(--muted);
+      }
+
+      .quota-row .remaining {
+        color: var(--foreground);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
+
+      .quota-row .reset {
+        color: var(--muted);
+      }
+
+      .quota-row.is-warning .fill,
+      .quota-row.is-warning .remaining {
+        color: var(--warning);
+      }
+
+      .quota-row.is-critical .fill,
+      .quota-row.is-critical .remaining {
+        color: var(--error);
+      }
+
+      .provider[data-freshness="stale"] .quota-row {
+        opacity: 0.62;
+      }
+
+      .source-message {
+        color: var(--muted);
+        text-overflow: ellipsis;
+      }
+
+      .source-message.is-warning {
+        color: var(--warning);
+      }
+
+      .workspace-heading span:last-child {
+        color: var(--number);
+        font-size: 13px;
+      }
+
+      .workspace-row {
+        display: grid;
+        grid-template-columns: var(--model-label) var(--model-bar) 8ch 7ch;
+        gap: 0 1.5ch;
+        align-items: center;
+      }
+
+      .workspace-row .model,
+      .workspace-row .cost {
+        color: var(--foreground);
+      }
+
+      .workspace-row.system .model,
+      .workspace-row.system .cost,
+      .workspace-row.system .tokens {
+        color: var(--dim);
+      }
+
+      .workspace-row .cost,
+      .workspace-row .tokens {
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
+
+      .workspace-row .tokens {
+        color: var(--dim);
+      }
+
+      .footer-row {
+        color: var(--dim);
+        text-overflow: ellipsis;
+      }
+
+      .footer-row:first-of-type {
+        margin-top: 4px;
+      }
+
+      .footer-row.note {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .composer {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 42px;
+        margin: 0 12px;
+        padding: 0 14px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .composer span:first-child {
+        color: var(--accent);
+        font-size: 17px;
+      }
+
+      .composer span:last-child,
+      .terminal-hints span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .terminal-hints {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        height: 30px;
+        padding: 0 14px;
+        overflow: hidden;
+        color: var(--dim);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .terminal[data-cols="52"] .usage-card {
+        padding-inline: 11px;
+      }
+
+      .terminal[data-cols="52"] .task-row {
+        grid-template-columns: 2ch var(--task-agent) minmax(0, 1fr) 7ch;
+      }
+
+      .terminal[data-cols="52"] .task-state {
+        display: none;
+      }
+
+      .terminal[data-cols="52"] .provider-heading span:last-child,
+      .terminal[data-cols="52"] .section-heading span:last-child {
+        max-width: 19ch;
+      }
+
+      .notes {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .note-card {
+        padding: 15px;
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius);
+        background: var(--raised);
+      }
+
+      .note-card h2 {
+        margin: 0 0 10px;
+        color: var(--user);
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      .note-card p {
+        margin: 0;
+        color: var(--dim);
+        font-size: 12px;
+      }
+
+      .note-card p + p {
+        margin-top: 9px;
+      }
+
+      .control-label {
+        display: block;
+        margin: 12px 0 6px;
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .control-label:first-of-type {
+        margin-top: 0;
+      }
+
+      .segmented {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 5px;
+      }
+
+      .segmented.three {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .segmented button {
+        min-width: 0;
+        overflow: hidden;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-small);
+        background: transparent;
+        color: var(--dim);
+        cursor: pointer;
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .segmented button:hover {
+        background: var(--hover);
+        color: var(--foreground);
+      }
+
+      .segmented button[aria-pressed="true"] {
+        border-color: color-mix(in srgb, var(--accent) 65%, var(--border));
+        background: color-mix(in srgb, var(--accent) 11%, transparent);
+        color: var(--accent);
+      }
+
+      .contract-list {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 11px;
+      }
+
+      .contract-list li {
+        display: grid;
+        grid-template-columns: 76px minmax(0, 1fr);
+        gap: 10px;
+      }
+
+      .contract-list b {
+        color: var(--user);
+        font-weight: 500;
+      }
+
+      .contract-list span {
+        color: var(--dim);
+      }
+
+      .route {
+        display: grid;
+        margin-top: 12px;
+        padding: 10px 11px;
+        overflow-x: auto;
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius-small);
+        background: var(--background);
+        color: var(--dim);
+        font-size: 11px;
+      }
+
+      .route-row {
+        display: grid;
+        grid-template-columns: 88px 14px minmax(150px, 1fr);
+        min-width: 260px;
+      }
+
+      .route-row .arrow {
+        color: var(--accent);
+      }
+
+      .route-row strong {
+        color: var(--user);
+        font-weight: 500;
+      }
+
+      .warning-note {
+        margin-top: 11px;
+        padding: 9px 10px;
+        border-left: 2px solid var(--warning);
+        background: color-mix(in srgb, var(--warning) 6%, transparent);
+        color: var(--dim);
+        font-size: 11px;
+      }
+
+      .warning-note b {
+        color: var(--warning);
+        font-weight: 500;
+      }
+
+      .status-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 10px;
+      }
+
+      .chip {
+        padding: 2px 6px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--dim);
+        font-size: 9px;
+      }
+
+      .chip.host {
+        border-color: color-mix(in srgb, var(--running) 42%, transparent);
+        color: var(--running);
+      }
+
+      .chip.plugin {
+        border-color: color-mix(in srgb, var(--thinking) 42%, transparent);
+        color: var(--thinking);
+      }
+
+      .chip.core {
+        border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+        color: var(--accent);
+      }
+
+      .chip.client {
+        border-color: color-mix(in srgb, var(--ok) 42%, transparent);
+        color: var(--ok);
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(1turn);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .terminal {
+          transition: none;
+        }
+
+        .task-marker {
+          animation: none;
+        }
+      }
+
+      @media (max-width: 1010px) {
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .notes {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 700px) {
+        body {
+          padding: 14px;
+        }
+
+        .page-header span:last-child {
+          display: none;
+        }
+
+        .stage {
+          padding: 9px;
+        }
+
+        .notes {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <header class="page-header">
+      <span><strong>uji</strong> / usage panel</span>
+      <span>what is spending now · available headroom · durable workspace totals</span>
+    </header>
+
+    <main class="workspace">
+      <section class="stage" aria-labelledby="preview-title">
+        <div class="stage-header">
+          <span><b id="preview-title">terminal preview</b> · interactive fixture</span>
+          <span id="preview-meta">80 columns · 2 active · fresh</span>
+        </div>
+
+        <div class="terminal-wrap">
+          <div class="terminal" id="terminal" data-cols="80">
+            <div class="terminal-titlebar">
+              <span><b>uji</b> · ~/Developer/uji</span>
+              <span>openai-codex/gpt-5.6-luna</span>
+            </div>
+
+            <div class="terminal-body">
+              <div class="transcript" aria-hidden="true">
+                <div class="transcript-row">
+                  <strong>You</strong>
+                  Trace the compaction path, then build the account-limit cache in parallel.
+                </div>
+                <div class="transcript-row system">
+                  <strong>Worked</strong>
+                  Started explore and build as child sessions. Their settled usage stays visible in
+                  the workspace total.
+                </div>
+                <div class="transcript-row">
+                  <strong>Assistant</strong>
+                  Both tasks are still running. I will fold their results into this chat when they
+                  finish.
+                </div>
+              </div>
+
+              <article class="usage-card" aria-label="Usage panel proposal" aria-live="polite">
+                <div class="card-heading">
+                  <strong>usage</strong>
+                  <span id="card-status">updated now</span>
+                </div>
+
+                <div class="section-heading task-heading">
+                  <span>in progress</span>
+                  <span id="task-summary">2 tasks · ~$0.27</span>
+                </div>
+                <div id="task-rows">
+                  <div class="task-row">
+                    <span class="task-marker" aria-hidden="true">◒</span>
+                    <span class="task-agent">explore</span>
+                    <span class="task-title">Trace provider compaction path</span>
+                    <span class="task-state">reading</span>
+                    <span class="task-cost">~$0.18</span>
+                  </div>
+                  <div class="task-row">
+                    <span class="task-marker" aria-hidden="true">◒</span>
+                    <span class="task-agent">build</span>
+                    <span class="task-title">Add account limit cache</span>
+                    <span class="task-state">editing</span>
+                    <span class="task-cost">~$0.09</span>
+                  </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="section-heading">
+                  <span>account headroom</span>
+                  <span id="account-summary">2 providers</span>
+                </div>
+                <div id="quota-providers">
+                  <section class="provider" data-freshness="fresh">
+                    <div class="provider-heading">
+                      <span>OpenAI Codex</span>
+                      <span>Plus · fetched now</span>
+                    </div>
+                    <div class="quota-row">
+                      <span class="label">5h</span>
+                      <span class="bar"
+                        ><span class="fill">━━━━━━━━━━━</span><span class="empty">────</span></span
+                      >
+                      <span class="remaining">72%</span>
+                      <span class="reset">resets in 1h 42m</span>
+                    </div>
+                    <div class="quota-row">
+                      <span class="label">weekly</span>
+                      <span class="bar"
+                        ><span class="fill">━━━━━━━</span><span class="empty">────────</span></span
+                      >
+                      <span class="remaining">44%</span>
+                      <span class="reset">resets Tue 09:00</span>
+                    </div>
+                  </section>
+                  <section class="provider" data-freshness="fresh">
+                    <div class="provider-heading">
+                      <span>Claude</span>
+                      <span>observed 4m ago</span>
+                    </div>
+                    <div class="quota-row">
+                      <span class="label">5h</span>
+                      <span class="bar"
+                        ><span class="fill">━━━━━━━━━━━━</span><span class="empty">───</span></span
+                      >
+                      <span class="remaining">81%</span>
+                      <span class="reset">resets in 3h 12m</span>
+                    </div>
+                    <div class="quota-row">
+                      <span class="label">weekly</span>
+                      <span class="bar"
+                        ><span class="fill">━━━━━</span><span class="empty">──────────</span></span
+                      >
+                      <span class="remaining">36%</span>
+                      <span class="reset">resets Sun 18:30</span>
+                    </div>
+                  </section>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="section-heading workspace-heading">
+                  <span>workspace · 14 chats</span>
+                  <span>~$12.35</span>
+                </div>
+                <div id="workspace-rows">
+                  <div class="workspace-row">
+                    <span class="model">gpt-5.6-luna</span>
+                    <span class="bar"><span class="fill">━━━━━━━━━━━━━━━━━━</span></span>
+                    <span class="cost">$8.62</span>
+                    <span class="tokens">1.3m</span>
+                  </div>
+                  <div class="workspace-row">
+                    <span class="model">claude-opus-5</span>
+                    <span class="bar"
+                      ><span class="fill">━━━━━━━━</span><span class="empty">──────────</span></span
+                    >
+                    <span class="cost">$3.61</span>
+                    <span class="tokens">822k</span>
+                  </div>
+                  <div class="workspace-row system">
+                    <span class="model">compaction</span>
+                    <span class="bar"
+                      ><span class="fill">━</span><span class="empty">─────────────────</span></span
+                    >
+                    <span class="cost">$0.12</span>
+                    <span class="tokens">18.4k</span>
+                  </div>
+                </div>
+                <div class="footer-row">2.1m tokens · input 1.9m · output 240.1k</div>
+                <div class="footer-row">this chat · 32.4k tokens · ~$0.06</div>
+                <div class="footer-row note">estimates exclude subscription billing</div>
+              </article>
+
+              <div class="composer" aria-hidden="true">
+                <span>❯</span>
+                <span>Plan, search, build anything</span>
+              </div>
+
+              <div class="terminal-hints">
+                <span>esc close</span>
+                <span>/usage</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="notes" aria-label="Design notes">
+        <section class="note-card">
+          <h2>Try the states</h2>
+          <span class="control-label">in progress</span>
+          <div class="segmented three" id="task-controls">
+            <button type="button" data-tasks="active" aria-pressed="true">2 active</button>
+            <button type="button" data-tasks="single" aria-pressed="false">1 active</button>
+            <button type="button" data-tasks="idle" aria-pressed="false">none</button>
+          </div>
+
+          <span class="control-label">account data</span>
+          <div class="segmented" id="account-controls">
+            <button type="button" data-account="fresh" aria-pressed="true">fresh</button>
+            <button type="button" data-account="low" aria-pressed="false">low limits</button>
+            <button type="button" data-account="partial" aria-pressed="false">partial</button>
+            <button type="button" data-account="refreshing" aria-pressed="false">refreshing</button>
+          </div>
+
+          <span class="control-label">terminal width</span>
+          <div class="segmented three" id="width-controls">
+            <button type="button" data-cols="80" aria-pressed="true">80</button>
+            <button type="button" data-cols="64" aria-pressed="false">64</button>
+            <button type="button" data-cols="52" aria-pressed="false">52</button>
+          </div>
+        </section>
+
+        <section class="note-card">
+          <h2>Read order</h2>
+          <p>
+            Active tasks come first because they explain what is consuming capacity now. Each row
+            shows the task, current activity, and settled cost so far.
+          </p>
+          <p>
+            Account headroom answers whether more work can start. Workspace usage is history, so it
+            stays last. Task cost is already part of that total, not an amount to add again.
+          </p>
+        </section>
+
+        <section class="note-card">
+          <h2>No new task entity</h2>
+          <p>
+            An in-progress task is a child session with an unfinished run. Its name, agent, state,
+            and usage are projections over records Uji already needs for recovery.
+          </p>
+          <div class="route" aria-label="Task usage data route">
+            <div class="route-row">
+              <strong>task tool</strong><span class="arrow">→</span><span>child session</span>
+            </div>
+            <div class="route-row">
+              <strong>child log</strong><span class="arrow">→</span><span>run state + usage</span>
+            </div>
+            <div class="route-row">
+              <strong>TUI</strong><span class="arrow">→</span><span>in-progress row</span>
+            </div>
+            <div class="route-row">
+              <strong>completion</strong><span class="arrow">→</span
+              ><span>workspace total only</span>
+            </div>
+          </div>
+          <div class="warning-note">
+            <b>Do not estimate an open request.</b> A task row sums committed usage records. The
+            current provider request appears after its step settles.
+          </div>
+        </section>
+
+        <section class="note-card">
+          <h2>Ownership</h2>
+          <ul class="contract-list">
+            <li><b>plugin</b><span>Create the child session and durable parent link</span></li>
+            <li>
+              <b>core</b><span>Project child run state and committed usage from the log</span>
+            </li>
+            <li><b>host</b><span>Fetch and cache account limits beside provider auth</span></li>
+            <li><b>TUI</b><span>Join the 3 read models in one ephemeral card</span></li>
+          </ul>
+          <div class="status-strip" aria-hidden="true">
+            <span class="chip plugin">task spawn</span>
+            <span class="chip core">durable status</span>
+            <span class="chip host">account state</span>
+            <span class="chip client">presentation</span>
+          </div>
+        </section>
+
+        <section class="note-card">
+          <h2>Honest missing states</h2>
+          <p>
+            No active tasks is a quiet empty state. Missing provider data stays unknown instead of
+            becoming 0%. Refreshing keeps the last value visible and marks it stale.
+          </p>
+          <p>
+            Slice 7 still owes the child-session parent link and background suspension. Until that
+            lands, the TUI cannot infer this section safely from ordinary chats.
+          </p>
+        </section>
+      </aside>
+    </main>
+
+    <script>
+      const taskStates = {
+        active: {
+          kind: "active",
+          summary: "2 tasks · ~$0.27",
+          tasks: [
+            {
+              agent: "explore",
+              title: "Trace provider compaction path",
+              activity: "reading",
+              cost: "~$0.18",
+            },
+            {
+              agent: "build",
+              title: "Add account limit cache",
+              activity: "editing",
+              cost: "~$0.09",
+            },
+          ],
+        },
+        single: {
+          kind: "active",
+          summary: "1 task · ~$0.18",
+          tasks: [
+            {
+              agent: "explore",
+              title: "Trace provider compaction path",
+              activity: "working",
+              cost: "~$0.18",
+            },
+          ],
+        },
+        idle: {
+          kind: "idle",
+          summary: "none",
+          message: "No tasks running",
+        },
+      };
+
+      const accountStates = {
+        fresh: {
+          status: "updated now",
+          summary: "2 providers",
+          providers: [
+            {
+              kind: "limits",
+              freshness: "fresh",
+              name: "OpenAI Codex",
+              meta: "Plus · fetched now",
+              windows: [
+                { label: "5h", remaining: 72, reset: "resets in 1h 42m" },
+                { label: "weekly", remaining: 44, reset: "resets Tue 09:00" },
+              ],
+            },
+            {
+              kind: "limits",
+              freshness: "fresh",
+              name: "Claude",
+              meta: "observed 4m ago",
+              windows: [
+                { label: "5h", remaining: 81, reset: "resets in 3h 12m" },
+                { label: "weekly", remaining: 36, reset: "resets Sun 18:30" },
+              ],
+            },
+          ],
+        },
+        low: {
+          status: "low headroom",
+          summary: "2 providers · limits low",
+          providers: [
+            {
+              kind: "limits",
+              freshness: "fresh",
+              name: "OpenAI Codex",
+              meta: "Plus · fetched now",
+              windows: [
+                { label: "5h", remaining: 7, reset: "resets in 18m" },
+                { label: "weekly", remaining: 12, reset: "resets Tue 09:00" },
+              ],
+            },
+            {
+              kind: "limits",
+              freshness: "fresh",
+              name: "Claude",
+              meta: "observed now",
+              windows: [
+                { label: "5h", remaining: 54, reset: "resets in 2h 06m" },
+                { label: "weekly", remaining: 4, reset: "resets Sun 18:30" },
+              ],
+            },
+          ],
+        },
+        partial: {
+          status: "account data partial",
+          summary: "1 of 2 available",
+          providers: [
+            {
+              kind: "limits",
+              freshness: "fresh",
+              name: "OpenAI Codex",
+              meta: "Plus · fetched now",
+              windows: [
+                { label: "5h", remaining: 72, reset: "resets in 1h 42m" },
+                { label: "weekly", remaining: 44, reset: "resets Tue 09:00" },
+              ],
+            },
+            {
+              kind: "unavailable",
+              name: "Claude",
+              meta: "event required",
+              message: "No limit event yet · available after a Claude turn",
+            },
+          ],
+        },
+        refreshing: {
+          status: "updating account data…",
+          summary: "2 providers · 1 stale",
+          providers: [
+            {
+              kind: "limits",
+              freshness: "stale",
+              name: "OpenAI Codex",
+              meta: "checking · 18m-old data",
+              windows: [
+                { label: "5h", remaining: 76, reset: "resets in 1h 31m" },
+                { label: "weekly", remaining: 46, reset: "resets Tue 09:00" },
+              ],
+            },
+            {
+              kind: "limits",
+              freshness: "fresh",
+              name: "Claude",
+              meta: "observed 4m ago",
+              windows: [
+                { label: "5h", remaining: 81, reset: "resets in 3h 12m" },
+                { label: "weekly", remaining: 36, reset: "resets Sun 18:30" },
+              ],
+            },
+          ],
+        },
+      };
+
+      const workspaceRows = [
+        { model: "gpt-5.6-luna", share: 1, cost: "$8.62", tokens: "1.3m", system: false },
+        { model: "claude-opus-5", share: 0.42, cost: "$3.61", tokens: "822k", system: false },
+        { model: "compaction", share: 0.014, cost: "$0.12", tokens: "18.4k", system: true },
+      ];
+
+      const terminal = document.querySelector("#terminal");
+      const taskRows = document.querySelector("#task-rows");
+      const taskSummary = document.querySelector("#task-summary");
+      const quotaProviders = document.querySelector("#quota-providers");
+      const workspaceRowsElement = document.querySelector("#workspace-rows");
+      const cardStatus = document.querySelector("#card-status");
+      const accountSummary = document.querySelector("#account-summary");
+      const previewMeta = document.querySelector("#preview-meta");
+      const taskControls = document.querySelector("#task-controls");
+      const accountControls = document.querySelector("#account-controls");
+      const widthControls = document.querySelector("#width-controls");
+
+      let selectedTasks = "active";
+      let selectedAccount = "fresh";
+      let selectedColumns = 80;
+
+      function cellCounts() {
+        if (selectedColumns <= 52) return { quota: 6, workspace: 5 };
+        if (selectedColumns <= 64) return { quota: 9, workspace: 10 };
+        return { quota: 15, workspace: 18 };
+      }
+
+      function bar(value, cells) {
+        const filledCells = value <= 0 ? 0 : Math.max(1, Math.round((value / 100) * cells));
+        const wrapper = document.createElement("span");
+        wrapper.className = "bar";
+
+        const filled = document.createElement("span");
+        filled.className = "fill";
+        filled.textContent = "━".repeat(Math.min(filledCells, cells));
+
+        const empty = document.createElement("span");
+        empty.className = "empty";
+        empty.textContent = "─".repeat(Math.max(0, cells - filledCells));
+
+        wrapper.append(filled, empty);
+        return wrapper;
+      }
+
+      function renderTasks() {
+        const state = taskStates[selectedTasks];
+        taskRows.replaceChildren();
+        taskSummary.textContent = state.summary;
+
+        if (state.kind === "idle") {
+          const empty = document.createElement("div");
+          empty.className = "task-empty";
+          empty.textContent = state.message;
+          taskRows.append(empty);
+          return;
+        }
+
+        for (const task of state.tasks) {
+          const row = document.createElement("div");
+          row.className = "task-row";
+
+          const marker = document.createElement("span");
+          marker.className = "task-marker";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = "◒";
+
+          const agent = document.createElement("span");
+          agent.className = "task-agent";
+          agent.textContent = task.agent;
+
+          const title = document.createElement("span");
+          title.className = "task-title";
+          title.textContent = task.title;
+
+          const activity = document.createElement("span");
+          activity.className = "task-state";
+          activity.textContent = task.activity;
+
+          const cost = document.createElement("span");
+          cost.className = "task-cost";
+          cost.textContent = task.cost;
+
+          row.append(marker, agent, title, activity, cost);
+          taskRows.append(row);
+        }
+      }
+
+      function quotaRow(window, cells) {
+        const row = document.createElement("div");
+        row.className = "quota-row";
+        if (window.remaining <= 5) row.classList.add("is-critical");
+        else if (window.remaining <= 15) row.classList.add("is-warning");
+
+        const label = document.createElement("span");
+        label.className = "label";
+        label.textContent = window.label;
+
+        const remaining = document.createElement("span");
+        remaining.className = "remaining";
+        remaining.textContent = `${String(window.remaining)}%`;
+
+        const reset = document.createElement("span");
+        reset.className = "reset";
+        reset.textContent = window.reset;
+
+        row.append(label, bar(window.remaining, cells), remaining, reset);
+        return row;
+      }
+
+      function renderProviders() {
+        const state = accountStates[selectedAccount];
+        const counts = cellCounts();
+        quotaProviders.replaceChildren();
+        cardStatus.textContent = state.status;
+        accountSummary.textContent = state.summary;
+
+        for (const source of state.providers) {
+          const provider = document.createElement("section");
+          provider.className = "provider";
+          provider.dataset.freshness = source.kind === "limits" ? source.freshness : "unknown";
+
+          const heading = document.createElement("div");
+          heading.className = "provider-heading";
+          const name = document.createElement("span");
+          name.textContent = source.name;
+          const meta = document.createElement("span");
+          meta.textContent = source.meta;
+          heading.append(name, meta);
+          provider.append(heading);
+
+          if (source.kind === "unavailable") {
+            const message = document.createElement("div");
+            message.className = "source-message is-warning";
+            message.textContent = source.message;
+            provider.append(message);
+          } else {
+            for (const window of source.windows) {
+              provider.append(quotaRow(window, counts.quota));
+            }
+          }
+          quotaProviders.append(provider);
+        }
+      }
+
+      function renderWorkspaceRows() {
+        const counts = cellCounts();
+        workspaceRowsElement.replaceChildren();
+        for (const source of workspaceRows) {
+          const row = document.createElement("div");
+          row.className = "workspace-row";
+          if (source.system) row.classList.add("system");
+
+          const model = document.createElement("span");
+          model.className = "model";
+          model.textContent = source.model;
+
+          const cost = document.createElement("span");
+          cost.className = "cost";
+          cost.textContent = source.cost;
+
+          const tokens = document.createElement("span");
+          tokens.className = "tokens";
+          tokens.textContent = source.tokens;
+
+          row.append(model, bar(source.share * 100, counts.workspace), cost, tokens);
+          workspaceRowsElement.append(row);
+        }
+      }
+
+      function render() {
+        terminal.dataset.cols = String(selectedColumns);
+        renderTasks();
+        renderProviders();
+        renderWorkspaceRows();
+
+        const taskLabel =
+          selectedTasks === "active" ? "2 active" : selectedTasks.replace("single", "1 active");
+        previewMeta.textContent = `${String(selectedColumns)} columns · ${taskLabel} · ${selectedAccount}`;
+      }
+
+      function selectControl(container, selected) {
+        for (const candidate of container.querySelectorAll("button")) {
+          candidate.setAttribute("aria-pressed", String(candidate === selected));
+        }
+      }
+
+      taskControls.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-tasks]");
+        if (!button) return;
+        selectedTasks = button.dataset.tasks;
+        selectControl(taskControls, button);
+        render();
+      });
+
+      accountControls.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-account]");
+        if (!button) return;
+        selectedAccount = button.dataset.account;
+        selectControl(accountControls, button);
+        render();
+      });
+
+      widthControls.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-cols]");
+        if (!button) return;
+        selectedColumns = Number(button.dataset.cols);
+        selectControl(widthControls, button);
+        render();
+      });
+
+      render();
+    </script>
+  </body>
+</html>

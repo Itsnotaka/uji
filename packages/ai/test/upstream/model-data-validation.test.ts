@@ -31,10 +31,6 @@ function createFixture(): {
   const dataDir = join(providersDir, "data");
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(
-    join(packageRoot, "src", "models.generated.ts"),
-    'import { TEST_PROVIDER_MODELS } from "./providers/test-provider.models.ts";\n',
-  );
-  writeFileSync(
     join(providersDir, "test-provider.models.ts"),
     'import values from "./data/test-provider.json" with { type: "json" };\nimport { flattenModelCatalog, type ModelCatalog } from "../model-catalog.ts";\n\nexport const TEST_PROVIDER_MODELS: ModelCatalog<typeof values, "test-provider"> =\n\tflattenModelCatalog("test-provider", values);\n',
   );
@@ -92,7 +88,7 @@ describe("generated model data validation", () => {
 
   it("reads and validates API-grouped model data", () => {
     const { dataDir, packageRoot, structure } = createFixture();
-    expect(readModelDataStructure(packageRoot)).toEqual(structure);
+    expect(readModelDataStructure(packageRoot, ["test-provider"])).toEqual(structure);
     expect(() => validateModelDataDirectory(structure, dataDir)).not.toThrow();
   });
 
@@ -189,14 +185,10 @@ describe("generated model data validation", () => {
     );
   });
 
-  it("rejects missing provider shards imported by the aggregator", () => {
+  it("rejects a configured provider without a generated shard", () => {
     const { packageRoot } = createFixture();
-    writeFileSync(
-      join(packageRoot, "src", "models.generated.ts"),
-      'import { TEST_PROVIDER_MODELS } from "./providers/test-provider.models.ts";\nimport { MISSING_MODELS } from "./providers/missing.models.ts";\n',
-    );
-    expect(() => readModelDataStructure(packageRoot)).toThrow(
-      "aggregator and provider shards do not match",
+    expect(() => readModelDataStructure(packageRoot, ["test-provider", "missing"])).toThrow(
+      "Configured model providers and generated shards do not match",
     );
   });
 });

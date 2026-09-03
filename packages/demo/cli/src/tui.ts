@@ -15,7 +15,7 @@ import type {
   TextareaRenderable as Input,
 } from "@opentui/core";
 import type { Api, Model } from "@uji-ai/ai";
-import type { AgentMessage, HarnessEvent } from "@uji-ai/core";
+import type { Turn } from "@uji-ai/core";
 import type { Host } from "./host.ts";
 
 /**
@@ -45,14 +45,11 @@ interface Ui {
   status: TextRenderable;
 }
 
-function messageText(message: AgentMessage): string {
-  if (message.role !== "user" && message.role !== "assistant") return "";
-  const { content } = message;
+function userText(content: string | readonly { type: string; text?: string }[]): string {
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
   return content
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
+    .map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .filter((text) => text !== "")
     .join("");
 }
 
@@ -146,10 +143,6 @@ function modelLabel(model: Model<Api>): string {
   return `${model.name} · ${model.provider}`;
 }
 
-function showStatus(ui: Ui, host: Host): void {
-  ui.status.content = `${modelLabel(host.harness.state.model)}  ${HINT}`;
-}
-
 interface Picker {
   readonly isOpen: boolean;
   open: () => Promise<void>;
@@ -157,7 +150,12 @@ interface Picker {
 }
 
 /** Ctrl+P overlay listing every model the stored credentials can reach. */
-function createPicker(ui: Ui, host: Host, onPick: (model: Model<Api>) => void): Picker {
+function createPicker(
+  ui: Ui,
+  host: Host,
+  currentModel: () => Model<Api>,
+  onPick: (model: Model<Api>) => void,
+): Picker {
   const box = new BoxRenderable(ui.renderer, {
     id: "model-picker",
     flexDirection: "column",
@@ -211,7 +209,7 @@ function createPicker(ui: Ui, host: Host, onPick: (model: Model<Api>) => void): 
       if (isOpen) return;
       if (models.length === 0) models = await host.listModels().catch(() => []);
       if (models.length === 0) return;
-      const current = host.harness.state.model;
+      const current = currentModel();
       const options: SelectOption[] = models.map((model) => ({
         name:
           model.id === current.id && model.provider === current.provider
@@ -233,55 +231,32 @@ function createPicker(ui: Ui, host: Host, onPick: (model: Model<Api>) => void): 
   };
 }
 
-function replay(ui: Ui, host: Host): Promise<void> {
-  return host.harness.session.getBranch("main").then((branch) => {
-    for (const entry of branch) {
-      if (entry.type !== "message") continue;
-      const { message } = entry;
-      if (message.role === "user") {
-        const text = messageText(message);
-        if (text !== "") addLine(ui, text, COLOR.user);
-        continue;
-      }
-      if (message.role !== "assistant") continue;
-      const text = messageText(message);
-      if (text !== "") addLine(ui, text, COLOR.assistant);
-      for (const part of message.content) {
-        if (part.type === "toolCall") addLine(ui, part.name, COLOR.tool);
-      }
-    }
-  });
-}
-
-function bindTranscript(ui: Ui, host: Host): () => void {
-  let live: { node: TextRenderable; text: string } | undefined;
-  return host.harness.subscribe((event: HarnessEvent) => {
-    if (event.type === "message_start" && event.message.role === "user") {
-      live = undefined;
-      const text = messageText(event.message);
+/**
+ * Render one projected turn: the user line, assistant text, and one line per
+ * tool call. A tool part that carries its result already announced itself on
+ * the assistant entry, so it draws nothing here.
+ */
+function renderTurn(ui: Ui, turn: Turn, live?: { node: TextRenderable; entryId: string }): void {
+  if (turn.kind !== "turn") return;
+  let assistantText = "";
+  let assistantEntryId: string | undefined;
+  for (const part of turn.parts) {
+    if (part.kind === "user") {
+      const text = userText(part.content);
       if (text !== "") addLine(ui, text, COLOR.user);
-      return;
+    } else if (part.kind === "assistant") {
+      assistantText += part.text;
+      assistantEntryId = part.entryId;
+    } else if (part.kind === "tool" && part.result === undefined) {
+      addLine(ui, part.toolName, COLOR.tool);
     }
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      if (live === undefined) live = { node: addLine(ui, "", COLOR.assistant), text: "" };
-      live.text += event.assistantMessageEvent.delta;
-      live.node.content = live.text;
-      return;
-    }
-    if (event.type === "message_end") {
-      live = undefined;
-      return;
-    }
-    if (event.type === "tool_execution_start") {
-      live = undefined;
-      addLine(ui, event.toolName, COLOR.tool);
-      return;
-    }
-    if (event.type === "turn_end" && event.message.role === "assistant") {
-      const error = event.message.errorMessage;
-      if (error !== undefined) addLine(ui, error, COLOR.error);
-    }
-  });
+  }
+  if (assistantText === "") return;
+  if (live !== undefined && live.entryId === assistantEntryId) {
+    live.node.content = assistantText;
+    return;
+  }
+  addLine(ui, assistantText, COLOR.assistant);
 }
 
 export async function runTui(command: { resume: boolean }): Promise<void> {
@@ -301,15 +276,74 @@ export async function runTui(command: { resume: boolean }): Promise<void> {
     await destroyed;
     throw error;
   });
+  const { sdk, sessionId } = host;
 
-  const unsubscribe = bindTranscript(ui, host);
-  await replay(ui, host);
-  showStatus(ui, host);
-  const picker = createPicker(ui, host, (model) => {
-    host.harness.setModel(model);
-    showStatus(ui, host);
-    addLine(ui, `model → ${modelLabel(model)}`, COLOR.tool);
-  });
+  // The declared model wins over the composition fallback, here as in the run.
+  let current = host.model;
+  const declared = (await sdk.sessions.get({ sessionId }))?.config.model;
+  if (declared?.provider !== undefined) {
+    current = host.runtime.models.getModel(declared.provider, declared.id) ?? current;
+  }
+  const showStatus = (): void => {
+    ui.status.content = `${modelLabel(current)}  ${HINT}`;
+  };
+
+  for (const turn of await sdk.messages.list({ sessionId })) renderTurn(ui, turn);
+  showStatus();
+
+  // Live rendering: deltas stream into one node per assistant entry, and the
+  // committed turn replaces the accumulation with the settled text.
+  let live: { node: TextRenderable; entryId: string; text: string } | undefined;
+  const watchController = new AbortController();
+  const watcher = (async (): Promise<void> => {
+    for await (const event of sdk.watch({
+      sessionId,
+      live: true,
+      signal: watchController.signal,
+    })) {
+      if (event.kind === "text_delta") {
+        if (live?.entryId !== event.entryId) {
+          live = { node: addLine(ui, "", COLOR.assistant), entryId: event.entryId, text: "" };
+        }
+        live.text += event.delta;
+        live.node.content = live.text;
+        continue;
+      }
+      if (event.kind === "message") {
+        renderTurn(ui, event.turn, live);
+        if (live !== undefined && event.entryId === live.entryId) live = undefined;
+        continue;
+      }
+      if (event.kind === "run_finished" && event.outcome.kind === "failed") {
+        addLine(ui, event.outcome.error.message, COLOR.error);
+      }
+    }
+  })();
+
+  const picker = createPicker(
+    ui,
+    host,
+    () => current,
+    (model) => {
+      void sdk.sessions
+        .configure({ sessionId, model: { provider: model.provider, id: model.id } })
+        .then((outcome) => {
+          if (outcome.kind === "unknown_model") {
+            addLine(ui, `unknown model: ${model.id}`, COLOR.error);
+            return;
+          }
+          current = model;
+          showStatus();
+          addLine(
+            ui,
+            outcome.kind === "deferred"
+              ? `model → ${modelLabel(model)} (after this run)`
+              : `model → ${modelLabel(model)}`,
+            COLOR.tool,
+          );
+        });
+    },
+  );
   let submitting = false;
   ui.input.onSubmit = () => {
     const text = ui.input.plainText.trim();
@@ -321,10 +355,10 @@ export async function runTui(command: { resume: boolean }): Promise<void> {
     }
     submitting = true;
     ui.input.clear();
-    void host.harness
-      .submit(text)
-      .then((result) => {
-        if (!result.ok) addLine(ui, result.error.message, COLOR.error);
+    void sdk.messages
+      .send({ sessionId, content: text })
+      .catch((error: unknown) => {
+        addLine(ui, error instanceof Error ? error.message : String(error), COLOR.error);
       })
       .finally(() => {
         submitting = false;
@@ -343,7 +377,7 @@ export async function runTui(command: { resume: boolean }): Promise<void> {
         picker.close();
         return;
       }
-      void host.harness.abort();
+      void sdk.runs.abort({ sessionId });
       return;
     }
     if (key.ctrl && key.name === "c") {
@@ -363,7 +397,8 @@ export async function runTui(command: { resume: boolean }): Promise<void> {
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
-    unsubscribe();
+    watchController.abort();
+    await watcher.catch(() => undefined);
     await host.close();
   }
 }

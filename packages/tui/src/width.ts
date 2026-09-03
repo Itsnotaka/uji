@@ -30,3 +30,25 @@ export function truncateDisplay(text: string, width: number, ellipsis = ""): str
   }
   return `${kept}${displayWidth(ellipsis) <= width ? ellipsis : ""}`;
 }
+
+/**
+ * The offset OpenTUI's cursor and extmarks count in: terminal cells, with each
+ * newline counting as one. Composer code moves between this space and plain
+ * string indices constantly, so both directions live here.
+ */
+export function cellOffset(text: string, index: number): number {
+  const lines = text.slice(0, index).split("\n");
+  return lines.reduce((sum, line) => sum + displayWidth(line), lines.length - 1);
+}
+
+/** The string index at a cell offset, rounded to the grapheme that holds it. */
+export function cellIndex(text: string, offset: number): number {
+  let cells = 0;
+  let index = 0;
+  for (const grapheme of graphemes(text)) {
+    if (cells >= offset) return index;
+    cells += grapheme === "\n" ? 1 : displayWidth(grapheme);
+    index += grapheme.length;
+  }
+  return text.length;
+}

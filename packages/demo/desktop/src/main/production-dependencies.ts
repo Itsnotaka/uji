@@ -39,7 +39,7 @@ export function createProductionDependencies(
     models: models.getModels(provider.id),
     initialAgents: demoAgentDrafts,
     thinkingLevel: "medium",
-    createStreamFn: () => (requestedModel, context, options) =>
+    streamFn: (requestedModel, context, options) =>
       models.streamSimple(requestedModel, context, options),
     async authStatus() {
       try {

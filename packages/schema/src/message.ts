@@ -162,6 +162,8 @@ export interface ToolResultMessage<TDetails = any> {
   toolName: string;
   content: (TextContent | ImageContent)[];
   details?: TDetails;
+  /** Heading the tool chose for this call. Clients fall back to the tool name. */
+  title?: string;
   /** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
   usage?: Usage;
   /**

@@ -105,7 +105,7 @@ export default function BrandingPage() {
 function Opening() {
   return (
     <header className="pb-12">
-      <h1 className="text-balance text-3xl font-semibold tracking-tight text-fd-foreground">
+      <h1 className="text-3xl font-semibold tracking-tight text-balance text-fd-foreground">
         Brand
       </h1>
       <p className="mt-3 max-w-prose text-fd-muted-foreground">
@@ -168,17 +168,17 @@ function Mark() {
     >
       <div className="grid gap-4 md:grid-cols-2">
         <figure className={`flex aspect-video items-center justify-center ${panelClass}`}>
-          <UjiMark className="h-28 w-28 text-fd-foreground" />
+          <UjiMark className="size-28 text-fd-foreground" />
         </figure>
         <figure
           className="flex aspect-video items-center justify-center rounded-lg"
           style={{ backgroundColor: baseSwatch?.dark }}
         >
-          <UjiMark className="h-28 w-28" style={{ color: baseSwatch?.light }} />
+          <UjiMark className="size-28" style={{ color: baseSwatch?.light }} />
         </figure>
       </div>
 
-      <p className="mt-8 max-w-prose text-sm leading-relaxed text-fd-muted-foreground">
+      <p className="mt-8 max-w-prose text-sm/relaxed text-fd-muted-foreground">
         Reproduce the mark in full ink on light or full paper on dark. It has no accent, no fill,
         and no second colour.
       </p>
@@ -219,7 +219,7 @@ function Wordmark() {
         <UjiWordmark size={88} className="text-fd-foreground" />
       </figure>
 
-      <p className="mt-8 max-w-prose text-sm leading-relaxed text-fd-muted-foreground">
+      <p className="mt-8 max-w-prose text-sm/relaxed text-fd-muted-foreground">
         The wordmark is Inter at weight 600, tracked in. Keeping it as text rather than a traced
         path means it inherits colour, antialiasing, and the reader&apos;s own rendering, and it
         stays one recipe instead of a file to re-export. Set it alone. The mark is a U, so locking
@@ -229,14 +229,12 @@ function Wordmark() {
       <div className="mt-8 grid gap-4 sm:grid-cols-2">
         <div className={`${panelClass} p-5`}>
           <p className="font-mono text-xs text-fd-muted-foreground">Recipe</p>
-          <pre className="mt-4 font-mono text-xs leading-relaxed text-fd-foreground">
-            {wordmarkCss}
-          </pre>
-          <CopyValue value={wordmarkCss} label="Copy CSS" className="-ml-3 mt-2" />
+          <pre className="mt-4 font-mono text-xs/relaxed text-fd-foreground">{wordmarkCss}</pre>
+          <CopyValue value={wordmarkCss} label="Copy CSS" className="mt-2 -ml-3" />
         </div>
         <div className={`${panelClass} p-5`}>
           <p className="font-mono text-xs text-fd-muted-foreground">Clear space</p>
-          <p className="mt-4 text-sm leading-relaxed text-fd-muted-foreground">
+          <p className="mt-4 text-sm/relaxed text-fd-muted-foreground">
             Keep a margin of one cap height on every side. In a header that resolves to 19px type
             with 12px of padding, which is why the wordmark&apos;s hit area extends past its ink.
           </p>
@@ -253,7 +251,7 @@ function Colour() {
       title="Colour"
       lede="Neutral surfaces and text, plus one accent for work that is built."
     >
-      <p className="max-w-prose text-sm leading-relaxed text-fd-muted-foreground">
+      <p className="max-w-prose text-sm/relaxed text-fd-muted-foreground">
         Base, subtle, elevated, fill, border, and text roles come from Uji&apos;s shared interface
         palette. Signal marks a thing that exists in the workspace and runs. Anything
         reserved-but-unwritten stays secondary and never gets the accent.
@@ -283,12 +281,12 @@ function SwatchRow({ mode }: { mode: "light" | "dark" }) {
               <div className="h-24 w-full" style={{ backgroundColor: hex }} aria-hidden />
               <div className="flex flex-1 flex-col p-3.5">
                 <p className="text-sm text-fd-foreground">{swatch.name}</p>
-                <p className="mt-1 text-xs leading-snug text-fd-muted-foreground">{swatch.role}</p>
+                <p className="mt-1 text-xs/snug text-fd-muted-foreground">{swatch.role}</p>
                 <p className="mt-3 font-mono text-xs text-fd-foreground">{hex}</p>
                 <p className="mt-1 font-mono text-[11px] leading-snug text-fd-muted-foreground">
                   {swatch.source}
                 </p>
-                <CopyValue value={hex} label="Copy hex" className="-ml-3 mt-auto pt-1" />
+                <CopyValue value={hex} label="Copy hex" className="mt-auto -ml-3 pt-1" />
               </div>
             </div>
           );
@@ -305,7 +303,7 @@ function Typography() {
       title="Typography"
       lede="Two faces, split by what the text is rather than how big it is."
     >
-      <p className="max-w-prose text-sm leading-relaxed text-fd-muted-foreground">
+      <p className="max-w-prose text-sm/relaxed text-fd-muted-foreground">
         Inter sets anything a person wrote as prose. Berkeley Mono sets anything a machine produced
         or a person will copy: code, data columns, diagrams, labels.
       </p>
@@ -327,14 +325,14 @@ function Typography() {
             </p>
 
             <p
-              className="mt-5 text-sm leading-relaxed text-fd-muted-foreground"
+              className="mt-5 text-sm/relaxed text-fd-muted-foreground"
               style={{
                 fontFamily: face.name === "Inter" ? "var(--font-sans)" : "var(--font-mono)",
               }}
             >
               {face.name === "Inter"
                 ? "A client drives the harness and never runs the loop itself."
-                : 'runAgentLoopContinue(ctx, { model: "gpt-5.1-codex" }) // 0123456789'}
+                : 'runAgentTurn(ctx, { model: "gpt-5.1-codex" }) // 0123456789'}
             </p>
 
             <dl className="mt-6 space-y-2 border-t border-fd-border pt-4 text-sm">
@@ -354,14 +352,14 @@ function Typography() {
       </div>
 
       <div className="mt-12 overflow-x-auto">
-        <table className="w-full min-w-[46rem] border-collapse text-left">
+        <table className="w-full min-w-184 border-collapse text-left">
           <thead>
             <tr className="border-b border-fd-border">
               {["Token", "Usage", "Face", "Size", "Line height", "Weight", "Tracking"].map(
                 (heading) => (
                   <th
                     key={heading}
-                    className="pb-3 pr-6 font-mono text-xs text-fd-muted-foreground"
+                    className="pr-6 pb-3 font-mono text-xs text-fd-muted-foreground"
                   >
                     {heading}
                   </th>
@@ -395,11 +393,9 @@ function Icons() {
       title="Icons"
       lede="Central Icons, the same set the desktop client draws with."
     >
-      <p className="max-w-prose text-sm leading-relaxed text-fd-muted-foreground">
-        {iconSystem.note}
-      </p>
+      <p className="max-w-prose text-sm/relaxed text-fd-muted-foreground">{iconSystem.note}</p>
 
-      <dl className="mt-8 max-w-prose space-y-3 text-sm leading-relaxed">
+      <dl className="mt-8 max-w-prose space-y-3 text-sm/relaxed">
         <div className="flex flex-col gap-1 sm:flex-row sm:gap-4">
           <dt className="shrink-0 pt-1 font-mono text-xs text-fd-muted-foreground sm:w-24">
             Package
@@ -443,7 +439,7 @@ function Icons() {
         ))}
       </ul>
 
-      <p className="mt-8 max-w-prose text-sm leading-relaxed text-fd-muted-foreground">
+      <p className="mt-8 max-w-prose text-sm/relaxed text-fd-muted-foreground">
         Icons are set at 20px in body contexts and 16px in dense rows. Stroke comes from the package
         variant, so there is nothing to pass and nothing to get wrong. An icon-only control always
         carries an aria-label. An icon never carries meaning on its own.
@@ -459,7 +455,7 @@ function Voice() {
         {voice.map((principle) => (
           <div key={principle.name}>
             <h3 className="text-lg font-medium text-fd-foreground">{principle.name}</h3>
-            <p className="mt-3 max-w-prose text-sm leading-relaxed text-fd-muted-foreground">
+            <p className="mt-3 max-w-prose text-sm/relaxed text-fd-muted-foreground">
               {principle.body}
             </p>
           </div>

@@ -10,29 +10,28 @@
  * keeps an observer from becoming an interceptor by accident.
  *
  * Combining rules, per hook:
- * - `before_run`: chained; each handler sees the prompt plus messages injected so far.
- * - `before_drive`: a throw refuses the drive (fail-closed).
- * - `before_run_end`: last writer wins for `followUp`. The harness loops for as
- *   long as a follow-up comes back; a handler is responsible for terminating
- *   (the event's `runId` and `messages` are enough to count or detect its own
- *   follow-ups). A handler that always returns one never lets the run end.
  * - `transform_context`: chained replacement of messages and system prompt.
  * - `before_request`: each patch applied in order over the stream options.
- * - `before_payload`, `after_response`: chained replacement.
- * - `before_tool`: args chained; the first `block` stops the chain; a throwing
- *   handler blocks the tool (fail-closed).
+ * - `before_tool`: policies run in registration order; `modify` decisions
+ *   chain and `continue` is not terminal, so no decision bypasses a later
+ *   policy. The first `reject` or `error` stops the chain. A throwing handler
+ *   becomes `error` (fail-closed).
  * - `after_tool`: field-wise chained patch.
- * - `before_compaction`, `before_navigation`: not in `HookMap` yet; they land with
- *   compaction and navigation hooks, first structural answer wins.
+ * - `before_compaction`: first provider checkpoint wins; handler failures are
+ *   contained and portable compaction still runs.
  *
  * Based on https://github.com/earendil-works/pi/blob/dev/packages/agent/src/harness/agent-harness.ts (HookMap)
  * Synced with pi 7ebf9087e.
  */
-import type { AssistantMessage, JsonValue, Usage } from "@uji-ai/schema";
+import type {
+  Context as ModelContext,
+  JsonValue,
+  ProviderCheckpointMaterial,
+  Usage,
+} from "@uji-ai/schema";
 import type { AgentMessage, AgentToolResult } from "../types.ts";
-import type { Context } from "./context.ts";
+import { toJsonValue } from "./session/types.ts";
 import type { AgentHarnessStreamOptions, AgentHarnessStreamOptionsPatch } from "./types.ts";
-import type { AgentHarnessResources } from "./types.ts";
 
 /**
  * The model a request is about. pi carries its full `Model<Api>` here; Uji's
@@ -44,24 +43,20 @@ export interface HookModelRef {
   modelId: string;
 }
 
-type VoidHookResult = ReturnType<() => void>;
-
 export interface HookMap {
-  before_run: {
-    event: { prompt: AgentMessage[]; resources: AgentHarnessResources };
-    result: { messages?: AgentMessage[] } | undefined;
-  };
-  before_drive: {
-    event: { operation: "run" | "compaction" | "navigation" };
-    result: VoidHookResult;
-  };
-  before_run_end: {
-    event: { runId: string; messages: AgentMessage[] };
-    result: { followUp?: string } | undefined;
-  };
   transform_context: {
     event: { messages: AgentMessage[]; systemPrompt: string };
     result: { messages?: AgentMessage[]; systemPrompt?: string } | undefined;
+  };
+  before_compaction: {
+    event: {
+      model: HookModelRef;
+      context: ModelContext;
+      reason: "manual" | "threshold" | "overflow";
+      customInstructions?: string;
+      tokensBefore: number;
+    };
+    result: { material: ProviderCheckpointMaterial } | undefined;
   };
   before_request: {
     event: {
@@ -72,19 +67,9 @@ export interface HookMap {
     };
     result: { streamOptions?: AgentHarnessStreamOptionsPatch } | undefined;
   };
-  before_payload: {
-    event: { model: HookModelRef; payload: unknown };
-    result: { payload: unknown } | undefined;
-  };
-  after_response: {
-    event: { status?: number; headers?: Record<string, string>; message: AssistantMessage };
-    result: { message?: AssistantMessage } | undefined;
-  };
   before_tool: {
-    event: { toolCallId: string; toolName: string; args: Record<string, JsonValue> };
-    result:
-      | { args?: Record<string, JsonValue>; block?: { reason: string; terminate?: boolean } }
-      | undefined;
+    event: ToolCallRequest;
+    result: ToolCallDecision;
   };
   after_tool: {
     event: {
@@ -102,13 +87,83 @@ export interface HookMap {
           details?: JsonValue;
           isError?: boolean;
           usage?: Usage;
-          terminate?: boolean;
         }
       | undefined;
   };
 }
 
 export type HookName = keyof HookMap;
+
+/**
+ * The model's proposed tool call at the last typed boundary before its
+ * effect. `args` is read-only input: a policy that wants different arguments
+ * returns `modify`, so the change is a decision later policies see.
+ */
+export interface ToolCallRequest {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly args: Readonly<Record<string, JsonValue>>;
+}
+
+/**
+ * One policy handler's decision. `continue` has no objection and `modify`
+ * passes new arguments to later handlers; neither ends the chain. `reject` is
+ * a policy objection: the call never runs, the model sees `message` as the
+ * tool's error result, and the run goes on. `error` is a policy-system
+ * failure: the call settles the same way, then the runner fails the run with
+ * a `policy` operation error, because a policy that cannot decide must not be
+ * mistaken for one that allowed the call.
+ */
+export type ToolCallDecision =
+  | { readonly action: "continue" }
+  | { readonly action: "modify"; readonly args: Record<string, JsonValue> }
+  | { readonly action: "reject"; readonly message: string }
+  | { readonly action: "error"; readonly message: string };
+
+/**
+ * The runtime half of the decision contract. Registrations are stored with
+ * their types erased, so an untyped handler can hand back anything; a value
+ * that is not a decision must fail closed rather than pass as `continue`.
+ * `modify.args` is checked separately (`durableArgs`): they become the
+ * `tool_started` intent, so they must already be durable JSON here.
+ */
+function isToolCallDecision(value: unknown): value is ToolCallDecision {
+  if (typeof value !== "object" || value === null || !("action" in value)) return false;
+  switch (value.action) {
+    case "continue":
+      return true;
+    case "modify":
+      return "args" in value;
+    case "reject":
+    case "error":
+      return "message" in value && typeof value.message === "string";
+    default:
+      return false;
+  }
+}
+
+/**
+ * Normalize a `modify` decision's arguments to the durable JSON object the
+ * intent record stores, under the same strict contract the log applies, so a
+ * Date, a function, `Infinity`, or a cycle fails here as a policy error and
+ * never reaches the `tool_started` write as an ordinary tool error.
+ */
+function durableArgs(value: unknown, policy: string): Record<string, JsonValue> {
+  let json: JsonValue;
+  try {
+    json = toJsonValue(value);
+  } catch (error) {
+    throw new Error(`${policy} modify args are not durable JSON: ${normalizeError(error).message}`);
+  }
+  if (typeof json !== "object" || json === null || Array.isArray(json)) {
+    throw new Error(`${policy} modify args must be a JSON object, received ${describeJson(json)}`);
+  }
+  return json;
+}
+
+function describeJson(value: JsonValue): string {
+  return Array.isArray(value) ? "an array" : value === null ? "null" : typeof value;
+}
 
 /** Every hook event also says which head and run it belongs to. */
 export type HookInvocation<TName extends HookName> = HookMap[TName]["event"] & {
@@ -118,7 +173,7 @@ export type HookInvocation<TName extends HookName> = HookMap[TName]["event"] & {
 
 export type HookHandler<TName extends HookName> = (
   event: HookInvocation<TName>,
-  context: Context,
+  signal?: AbortSignal,
 ) => Promise<HookMap[TName]["result"]> | HookMap[TName]["result"];
 
 /** The registration half of the hook API, as a plugin sees it. */
@@ -132,7 +187,7 @@ export interface Hooks {
 
 interface HookRegistration {
   id?: string;
-  handler: (event: unknown, context: Context) => unknown;
+  handler: (event: unknown, signal?: AbortSignal) => unknown;
 }
 
 /** Called with every handler failure before the combining rule decides what to do with it. */
@@ -140,18 +195,21 @@ export type HookErrorReporter = (
   error: Error,
   hook: HookName,
   head: string,
-  context: Context,
 ) => void | Promise<void>;
 
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function describeDecision(value: unknown): string {
+  if (value === undefined) return "undefined (return an explicit decision)";
+  if (typeof value !== "object" || value === null) return typeof value;
+  return "action" in value ? `action ${JSON.stringify(value.action)}` : "no action field";
+}
+
 /**
- * Ordered hook registry and aggregate runner. Two differences from pi's class.
- * pi admits each call through the effect gate first; Uji's gate lands with
- * `harness/execution`. pi opens its tool-handler span through a telemetry
- * module; Uji opens it on the `TelemetryContext` the `Context` carries.
+ * Ordered hook registry and aggregate runner. One difference from pi's class:
+ * pi admits each call through the effect gate first; Uji has no gate.
  *
  * Handlers are stored with their event and result types erased, the same
  * way pi stores them, so each per-hook method narrows with a cast. The public
@@ -175,7 +233,7 @@ export class HookRegistry implements Hooks {
     const registrations = this.registrations.get(name) ?? [];
     const registration: HookRegistration = {
       ...(options.id === undefined ? {} : { id: options.id }),
-      handler: (event, context) => handler(event as HookInvocation<TName>, context),
+      handler: (event, signal) => handler(event as HookInvocation<TName>, signal),
     };
     registrations.push(registration);
     this.registrations.set(name, registrations);
@@ -193,10 +251,10 @@ export class HookRegistry implements Hooks {
   async run<TName extends HookName>(
     name: TName,
     event: HookInvocation<TName>,
-    context: Context,
+    signal?: AbortSignal,
   ): Promise<HookMap[TName]["result"]> {
     if (this.closedError !== undefined) throw this.closedError;
-    return (await this.aggregate(name, event, context)) as HookMap[TName]["result"];
+    return (await this.aggregate(name, event, signal)) as HookMap[TName]["result"];
   }
 
   /** Refuse further registrations and runs, for a closed harness. */
@@ -207,90 +265,25 @@ export class HookRegistry implements Hooks {
   private aggregate(
     name: HookName,
     event: HookInvocation<HookName>,
-    context: Context,
+    signal: AbortSignal | undefined,
   ): Promise<unknown> {
     switch (name) {
-      case "before_run":
-        return this.beforeRun(event as HookInvocation<"before_run">, context);
-      case "before_drive":
-        return this.beforeDrive(event as HookInvocation<"before_drive">, context);
-      case "before_run_end":
-        return this.beforeRunEnd(event as HookInvocation<"before_run_end">, context);
       case "transform_context":
-        return this.transformContext(event as HookInvocation<"transform_context">, context);
+        return this.transformContext(event as HookInvocation<"transform_context">, signal);
+      case "before_compaction":
+        return this.beforeCompaction(event as HookInvocation<"before_compaction">, signal);
       case "before_request":
-        return this.beforeRequest(event as HookInvocation<"before_request">, context);
-      case "before_payload":
-        return this.beforePayload(event as HookInvocation<"before_payload">, context);
-      case "after_response":
-        return this.afterResponse(event as HookInvocation<"after_response">, context);
+        return this.beforeRequest(event as HookInvocation<"before_request">, signal);
       case "before_tool":
-        return this.beforeTool(event as HookInvocation<"before_tool">, context);
+        return this.beforeTool(event as HookInvocation<"before_tool">, signal);
       case "after_tool":
-        return this.afterTool(event as HookInvocation<"after_tool">, context);
+        return this.afterTool(event as HookInvocation<"after_tool">, signal);
     }
-  }
-
-  private async beforeRun(
-    event: HookInvocation<"before_run">,
-    context: Context,
-  ): Promise<HookMap["before_run"]["result"]> {
-    let prompt = event.prompt;
-    let injected: AgentMessage[] = [];
-    for (const registration of this.registrationsFor("before_run")) {
-      try {
-        const result = (await registration.handler(
-          { ...event, prompt },
-          context,
-        )) as HookMap["before_run"]["result"];
-        if (result?.messages !== undefined) {
-          injected = [...injected, ...result.messages];
-          prompt = [...prompt, ...result.messages];
-        }
-      } catch (error) {
-        await this.reportError(normalizeError(error), "before_run", event.head, context);
-      }
-    }
-    return injected.length === 0 ? undefined : { messages: injected };
-  }
-
-  private async beforeDrive(
-    event: HookInvocation<"before_drive">,
-    context: Context,
-  ): Promise<void> {
-    for (const registration of this.registrationsFor("before_drive")) {
-      try {
-        await registration.handler(event, context);
-      } catch (error) {
-        const normalized = normalizeError(error);
-        await this.reportError(normalized, "before_drive", event.head, context);
-        throw normalized;
-      }
-    }
-  }
-
-  private async beforeRunEnd(
-    event: HookInvocation<"before_run_end">,
-    context: Context,
-  ): Promise<HookMap["before_run_end"]["result"]> {
-    let followUp: string | undefined;
-    for (const registration of this.registrationsFor("before_run_end")) {
-      try {
-        const result = (await registration.handler(
-          event,
-          context,
-        )) as HookMap["before_run_end"]["result"];
-        if (result?.followUp !== undefined) followUp = result.followUp;
-      } catch (error) {
-        await this.reportError(normalizeError(error), "before_run_end", event.head, context);
-      }
-    }
-    return followUp === undefined ? undefined : { followUp };
   }
 
   private async transformContext(
     event: HookInvocation<"transform_context">,
-    context: Context,
+    signal: AbortSignal | undefined,
   ): Promise<HookMap["transform_context"]["result"]> {
     let messages = event.messages;
     let systemPrompt = event.systemPrompt;
@@ -298,20 +291,38 @@ export class HookRegistry implements Hooks {
       try {
         const result = (await registration.handler(
           { ...event, messages, systemPrompt },
-          context,
+          signal,
         )) as HookMap["transform_context"]["result"];
         if (result?.messages !== undefined) messages = result.messages;
         if (result?.systemPrompt !== undefined) systemPrompt = result.systemPrompt;
       } catch (error) {
-        await this.reportError(normalizeError(error), "transform_context", event.head, context);
+        await this.reportError(normalizeError(error), "transform_context", event.head);
       }
     }
     return { messages, systemPrompt };
   }
 
+  private async beforeCompaction(
+    event: HookInvocation<"before_compaction">,
+    signal: AbortSignal | undefined,
+  ): Promise<HookMap["before_compaction"]["result"]> {
+    for (const registration of this.registrationsFor("before_compaction")) {
+      try {
+        const result = (await registration.handler(
+          event,
+          signal,
+        )) as HookMap["before_compaction"]["result"];
+        if (result !== undefined) return result;
+      } catch (error) {
+        await this.reportError(normalizeError(error), "before_compaction", event.head);
+      }
+    }
+    return undefined;
+  }
+
   private async beforeRequest(
     event: HookInvocation<"before_request">,
-    context: Context,
+    signal: AbortSignal | undefined,
   ): Promise<HookMap["before_request"]["result"]> {
     let streamOptions = event.streamOptions;
     let changed = false;
@@ -319,14 +330,14 @@ export class HookRegistry implements Hooks {
       try {
         const result = (await registration.handler(
           { ...event, streamOptions },
-          context,
+          signal,
         )) as HookMap["before_request"]["result"];
         if (result?.streamOptions !== undefined) {
           streamOptions = applyStreamOptionsPatch(streamOptions, result.streamOptions);
           changed = true;
         }
       } catch (error) {
-        await this.reportError(normalizeError(error), "before_request", event.head, context);
+        await this.reportError(normalizeError(error), "before_request", event.head);
       }
     }
     return changed
@@ -334,79 +345,49 @@ export class HookRegistry implements Hooks {
       : undefined;
   }
 
-  private async beforePayload(
-    event: HookInvocation<"before_payload">,
-    context: Context,
-  ): Promise<HookMap["before_payload"]["result"]> {
-    let payload = event.payload;
-    for (const registration of this.registrationsFor("before_payload")) {
-      try {
-        const result = (await registration.handler(
-          { ...event, payload },
-          context,
-        )) as HookMap["before_payload"]["result"];
-        if (result?.payload !== undefined) payload = result.payload;
-      } catch (error) {
-        await this.reportError(normalizeError(error), "before_payload", event.head, context);
-      }
-    }
-    return { payload };
-  }
-
-  private async afterResponse(
-    event: HookInvocation<"after_response">,
-    context: Context,
-  ): Promise<HookMap["after_response"]["result"]> {
-    let message = event.message;
-    for (const registration of this.registrationsFor("after_response")) {
-      try {
-        const result = (await registration.handler(
-          { ...event, message },
-          context,
-        )) as HookMap["after_response"]["result"];
-        if (result?.message !== undefined) message = result.message;
-      } catch (error) {
-        await this.reportError(normalizeError(error), "after_response", event.head, context);
-      }
-    }
-    return { message };
-  }
-
   private async beforeTool(
     event: HookInvocation<"before_tool">,
-    context: Context,
-  ): Promise<HookMap["before_tool"]["result"]> {
-    let args = event.args;
-    let block: { reason: string; terminate?: boolean } | undefined;
+    signal: AbortSignal | undefined,
+  ): Promise<ToolCallDecision> {
+    let modified: Record<string, JsonValue> | undefined;
     for (const registration of this.registrationsFor("before_tool")) {
+      const policy = `before_tool policy${registration.id === undefined ? "" : ` ${registration.id}`}`;
       try {
-        const result = (await this.invokeToolRegistration(
-          "before_tool",
-          registration,
-          { ...event, args },
-          context,
-        )) as HookMap["before_tool"]["result"];
-        if (result?.args !== undefined) args = result.args;
-        if (result?.block !== undefined) {
-          block = result.block;
-          break;
+        const result = await registration.handler(
+          { ...event, args: modified ?? event.args },
+          signal,
+        );
+        if (!isToolCallDecision(result)) {
+          throw new Error(
+            `${policy} returned a malformed decision for ${event.toolName}: ${describeDecision(result)}`,
+          );
+        }
+        switch (result.action) {
+          case "continue":
+            break;
+          case "modify":
+            modified = durableArgs(result.args, policy);
+            break;
+          case "reject":
+          case "error":
+            return result;
+          default: {
+            const _exhaustive: never = result;
+            return _exhaustive;
+          }
         }
       } catch (error) {
         const normalized = normalizeError(error);
-        await this.reportError(normalized, "before_tool", event.head, context);
-        block = { reason: normalized.message };
-        break;
+        await this.reportError(normalized, "before_tool", event.head);
+        return { action: "error", message: normalized.message };
       }
     }
-    return {
-      ...(args === event.args ? {} : { args }),
-      ...(block === undefined ? {} : { block }),
-    };
+    return modified === undefined ? { action: "continue" } : { action: "modify", args: modified };
   }
 
   private async afterTool(
     event: HookInvocation<"after_tool">,
-    context: Context,
+    signal: AbortSignal | undefined,
   ): Promise<HookMap["after_tool"]["result"]> {
     let current = {
       content: event.content,
@@ -417,18 +398,15 @@ export class HookRegistry implements Hooks {
     const aggregate: NonNullable<HookMap["after_tool"]["result"]> = {};
     for (const registration of this.registrationsFor("after_tool")) {
       try {
-        const result = (await this.invokeToolRegistration(
-          "after_tool",
-          registration,
+        const result = (await registration.handler(
           { ...event, ...current },
-          context,
+          signal,
         )) as HookMap["after_tool"]["result"];
         if (result === undefined) continue;
         if (result.content !== undefined) aggregate.content = result.content;
         if (result.details !== undefined) aggregate.details = result.details;
         if (result.isError !== undefined) aggregate.isError = result.isError;
         if (result.usage !== undefined) aggregate.usage = result.usage;
-        if (result.terminate !== undefined) aggregate.terminate = result.terminate;
         current = {
           content: result.content ?? current.content,
           details: result.details ?? current.details,
@@ -436,45 +414,10 @@ export class HookRegistry implements Hooks {
           usage: result.usage ?? current.usage,
         };
       } catch (error) {
-        await this.reportError(normalizeError(error), "after_tool", event.head, context);
+        await this.reportError(normalizeError(error), "after_tool", event.head);
       }
     }
     return Object.keys(aggregate).length === 0 ? undefined : aggregate;
-  }
-
-  private invokeToolRegistration(
-    name: "before_tool" | "after_tool",
-    registration: HookRegistration,
-    event: HookInvocation<"before_tool"> | HookInvocation<"after_tool">,
-    context: Context,
-  ): Promise<unknown> {
-    return context.telemetryContext.startSpan(
-      {
-        name: "uji.harness.hook",
-        attributes: {
-          "uji.head.name": event.head,
-          "uji.operation.id": event.runId,
-          "uji.hook.name": name,
-          "uji.hook.registration_id": registration.id,
-        },
-      },
-      async (span) => {
-        try {
-          const result = await registration.handler(event, context);
-          const blocked =
-            name === "before_tool" &&
-            result !== null &&
-            typeof result === "object" &&
-            "block" in result &&
-            result.block !== undefined;
-          span.setAttributes({ "uji.hook.outcome": blocked ? "blocked" : "completed" });
-          return result;
-        } catch (error) {
-          span.setAttributes({ "uji.hook.outcome": "failed" });
-          throw error;
-        }
-      },
-    );
   }
 
   private registrationsFor(name: HookName): HookRegistration[] {

@@ -1,5 +1,5 @@
 /**
- * Result + tagged errors, ported from pi-agent-core.
+ * Result, ported from pi-agent-core.
  *
  * Based on https://github.com/earendil-works/pi/blob/main/packages/agent/src/harness/result.ts
  */
@@ -14,26 +14,3 @@ export const Result = {
     return { ok: false, error };
   },
 };
-
-export interface TaggedErrorValue<Tag extends string> extends Error {
-  readonly _tag: Tag;
-}
-
-export interface TaggedErrorFactory<Tag extends string> {
-  new <Props extends { message: string }>(props: Props): TaggedErrorValue<Tag> & Readonly<Props>;
-  is(value: unknown): value is TaggedErrorValue<Tag>;
-}
-
-export function TaggedError<Tag extends string>(tag: Tag): TaggedErrorFactory<Tag> {
-  class Tagged extends Error {
-    readonly _tag = tag;
-    constructor(props: { message: string }) {
-      super(props.message);
-      Object.assign(this, props);
-    }
-    static is(value: unknown): boolean {
-      return value instanceof Error && (value as { _tag?: string })._tag === tag;
-    }
-  }
-  return Tagged as unknown as TaggedErrorFactory<Tag>;
-}

@@ -13,7 +13,7 @@ crash and resume, an agent loop with tool calling, provider auth, and the
 clients that attach to them.
 
 * **[@uji-ai/core](packages/core)**: agent loop, harness, SQLite sessions, plugins, skills,
-  compaction, hooks, and the tools: read, bash, edit, write, grep, find, ls
+  compaction, hooks, and the tools: read, bash, edit, write, ls
 * **[@uji-ai/ai](packages/ai)**: unified multi-provider API. OpenAI, Anthropic, Google,
   OpenCode. Credentials, OAuth, event streams
 * **[@uji-ai/schema](packages/schema)**: neutral `Message`, `Model`, `Tool`, and `Skill` contracts
@@ -69,13 +69,14 @@ bin. "Shipped" means the source is here and runs.
 
 ## Development
 
-pnpm only. `mise.toml` pins Node 26 and Bun 1.3.14. `grep` and `find` shell out to `rg`.
+pnpm only. `mise.toml` pins Node 26 and Bun 1.3.14. Keep ripgrep (`rg`) on `PATH`. There is no
+grep or find tool. Agents can run any available search command through `bash`; the default prompt
+does not prescribe one.
 
 ```sh
 mise install
 pnpm install
 pnpm format && pnpm lint && pnpm typecheck
-pnpm --dir packages/tui test
 ```
 
 Run from source:

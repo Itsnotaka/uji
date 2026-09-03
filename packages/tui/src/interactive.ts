@@ -1,32 +1,29 @@
+import { stat } from "node:fs/promises";
+import { join } from "node:path";
 import process from "node:process";
 import open from "open";
 import { createCliRenderer, decodePasteBytes, RenderableEvents } from "@opentui/core";
-import type { KeyEvent, PasteEvent } from "@opentui/core";
+import type { CliRenderer, KeyEvent, PasteEvent } from "@opentui/core";
 import { getSupportedThinkingLevels } from "@uji-ai/ai";
 import type { Api, AuthInteraction, AuthPrompt, Model, Models, Provider } from "@uji-ai/ai";
 import {
-  buildSessionContext,
-  calculateContextTokens,
-  estimateContextTokens,
-  formatSkillInvocation,
-  getLastAssistantUsage,
-  SKILLS_PLUGIN_ID,
-  toolResultText,
-  watchPluginDirectories,
   WorkspaceTrustRequired,
+  collectAbandonedEntries,
+  navigationTarget,
+  projectSessionTree,
+  sessionId as parseSessionId,
+  watchPluginDirectories,
 } from "@uji-ai/core";
 import type {
-  AgentHarness,
-  Entry,
-  HarnessEvent,
-  RunOutcome,
-  SqliteSessionRepo,
-  SuspendedOperation,
+  PendingItem,
+  SessionEvent,
+  SessionId,
   ThinkingLevel,
   TrustedWorkspace,
+  Uji,
   WorkspaceTrustStore,
 } from "@uji-ai/core";
-import type { Usage } from "@uji-ai/schema";
+import type { JsonValue, Skill, UserMessage } from "@uji-ai/schema";
 import {
   cachedAuthenticatedModels,
   createCliModels,
@@ -34,31 +31,36 @@ import {
   loadAuthenticatedModels,
   loadProviderCatalog,
   providerAuthStatuses,
+  requireModel as requireCatalogModel,
   requireProvider,
 } from "./catalog.ts";
+import type { ProviderAuthStatus } from "./catalog.ts";
 import {
   ComposerParts,
   discoverMentionFiles,
-  foldAttachments,
   PASTE_COLLAPSE_LINES,
   pasteLineCount,
-  PromptHistory,
   resolveComposerImagePaste,
   resolveComposerPaste,
+  SessionDrafts,
 } from "./composer.ts";
 import type { ComposerPart, MentionFile } from "./composer.ts";
-import { ComposerTags } from "./composer-tags.ts";
-import { discoverDirectorySuggestions } from "./directory-autocomplete.ts";
+import { ComposerMarkers } from "./composer-markers.ts";
+import { browseHistory, PromptHistory } from "./prompt-history.ts";
+import { discoverDirectorySuggestions, resolveDirectory } from "./directory-autocomplete.ts";
 import {
-  oneLine,
+  clockDuration,
   parseComposerSubmission,
   partsText,
+  retryCause,
   shortId,
-  providerCacheTtlMs,
+  TERMINAL_TITLE_BASE,
+  terminalTitle,
 } from "./format.ts";
 import type { ParsedSlashCommand, PowerlineState } from "./format.ts";
-import { HarnessHost } from "./harness-host.ts";
-import type { CreateHostedHarness } from "./harness-host.ts";
+import { UjiHost } from "./uji-host.ts";
+import { createChatNamer } from "./session-title.ts";
+import type { ChatNamer } from "./session-title.ts";
 import { createChatKeymap, registerChatLayer, registerSelectionLayer } from "./keymap.ts";
 import {
   createTuiShutdown,
@@ -66,63 +68,77 @@ import {
   escapeIntent,
   isComposerTextKey,
   nextThinkingLevel,
-  resumeSessionHint,
+  stoppedTurnIntent,
   tuiKeyAction,
 } from "./lifecycle.ts";
 import { editInExternalEditor, resolveExternalEditor } from "./external-editor.ts";
 import type { RunFlags } from "./run.ts";
 import {
-  createHarness,
-  openHarness,
+  hostFallbacks,
+  manifestPluginOptions,
   pluginDirectories,
   preferredRunProvider,
-  resolveCliPlugins,
   resolveRuntime,
   skillDirectories,
 } from "./run.ts";
 import type { ResolvedRuntime } from "./run.ts";
 import { FileSettingsStore, TRANSPORTS } from "./settings.ts";
 import type { ResolvedSettings } from "./settings.ts";
+import { notifyRunEvent, RUN_NOTIFICATION_MODES } from "./notifications.ts";
+import type { RunNotificationMode } from "./notifications.ts";
 import { createTuiRenderLog, renderLogError } from "./render-log.ts";
 import type { TuiRenderLog } from "./render-log.ts";
+import { nextToSteer } from "./pending-gutter.ts";
 import { PickerCancelled } from "./picker.ts";
 import type { Choice, ChoiceAction, MenuScreen } from "./picker.ts";
 import { SlashAutocomplete } from "./slash-autocomplete.ts";
+import { selectTreeEntry } from "./tree-selector.ts";
+import type { TreeFilter } from "./tree-selector.ts";
 import { watchSessionBranch } from "./session-observer.ts";
 import {
   acceptSlashCommand,
   availableSlashCommands,
+  expandInlineSkills,
+  hasInlineSkills,
   resolveSlashCommand,
   skillPaletteItems,
   slashCommandLabel,
 } from "./slash.ts";
 import type { SlashCommand } from "./slash.ts";
-import { appendAuthUrl, appendNote, ConversationTurnBlock, entryNote } from "./transcript.ts";
-import { THEME } from "./theme.ts";
+import { appendAuthUrl, ConversationTurnBlock } from "./transcript.ts";
+import { resolveThemeMode, themeForMode } from "./theme.ts";
+import type { ThemeMode } from "./theme.ts";
 import { type Severity, updateSeverity } from "./cli-style.ts";
 import { describeUpdateOutcome, selfUpdate } from "./update.ts";
+import { collectWorkspaceUsage, usageCard } from "./usage.ts";
 import { checkForUpdate } from "./version.ts";
+import { cellIndex, displayWidth, graphemes } from "./width.ts";
 import {
   AUTH_URL_HINTS,
   BUSY_HINTS,
   BUSY_COMPOSER_PLACEHOLDER,
   COMPOSER_PLACEHOLDER,
   CTRL_C_EXIT_HINT,
+  DELIVERY,
   IDLE_HINTS,
-  SCROLLBACK_BUSY_HINTS,
-  SCROLLBACK_HINTS,
+  keycap,
+  TOOL_CALL_DISPLAY_MODES,
 } from "./constants.ts";
 import { readWorkspaceStatus } from "./workspace.ts";
 import { createWorkspaceTrustStore, requestWorkspaceTrust } from "./workspace-trust.ts";
 import type { WorkspaceTrustDeclineAction } from "./workspace-trust.ts";
 
 import {
+  applyUiTheme,
   buildUi,
   closeInlineMenu,
+  commitTranscriptEntry,
   ComposerStatus,
-  flash,
-  note,
+  notice,
+  navigateTranscriptMessage,
   openInlineMenu,
+  openUsageCard,
+  openUserTurn,
   replaceTranscript,
   selectChoice,
   setHints,
@@ -131,125 +147,161 @@ import {
   turnNote,
 } from "./tui.ts";
 import type { Ui } from "./tui.ts";
+import { SKILLS_PLUGIN_ID, formatSkillInvocation } from "@uji-ai/core/plugins";
+import { newId, type Entry } from "@uji-ai/core/store";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function refreshHints(ui: Ui, harness: AgentHarness): void {
-  const busy = harness.state.isStreaming || harness.state.isCompacting;
-  setHints(
-    ui,
-    ui.focus.isUsing(ui.scroll)
-      ? busy
-        ? SCROLLBACK_BUSY_HINTS
-        : SCROLLBACK_HINTS
-      : busy
-        ? BUSY_HINTS
-        : IDLE_HINTS,
-  );
+function refreshHints(ui: Ui, busy: boolean): void {
+  setHints(ui, busy ? BUSY_HINTS : IDLE_HINTS);
 }
 
-function markEntryRendered(ui: Ui, entryId: string): void {
-  if (!ui.renderedEntries.delete(entryId)) ui.renderedEntries.add(entryId);
+/**
+ * Close the open turn. A run stopped before it answered gives its message back
+ * to the composer instead of settling to a `! Stopped` line, and the turn
+ * leaves the screen with it. The block goes in the same tick the decision is
+ * made, so the stopped line is never drawn and then taken away.
+ */
+function closeActiveTurn(ui: Ui): void {
+  const turn = ui.activeTurn;
+  ui.activeTurn = undefined;
+  if (turn === undefined) return;
+  const retract =
+    turn.result === "aborted" &&
+    stoppedTurnIntent({
+      unanswered: turn.unanswered,
+      hasDraft: ui.input.plainText.trim() !== "",
+    }) === "retract" &&
+    ui.retractPrompt?.() === true;
+  if (retract) turn.discard();
+  else turn.settle();
 }
 
-async function answerAsk(
+function concealComposerInput(ui: Ui): () => void {
+  const input = ui.input;
+  const previousContentChange = input.onContentChange;
+  const paint = (): void => {
+    input.extmarks.clear();
+    let offset = 0;
+    for (const grapheme of graphemes(input.plainText)) {
+      const width = grapheme === "\n" ? 1 : displayWidth(grapheme);
+      if (width === 0) continue;
+      input.extmarks.create({
+        start: offset,
+        end: offset + width,
+        virtual: true,
+        data: "●".repeat(width),
+      });
+      offset += width;
+    }
+  };
+  input.onContentChange = (event) => {
+    previousContentChange?.(event);
+    paint();
+  };
+  paint();
+  return () => {
+    input.onContentChange = previousContentChange;
+    input.extmarks.clear();
+  };
+}
+
+/**
+ * One line typed into the composer under its own prompt label: enter resolves
+ * it, escape rejects with `PickerCancelled`. The composer's submit handler and
+ * placeholder come back either way.
+ */
+function readComposerLine(
   ui: Ui,
-  harness: AgentHarness,
-  event: Extract<HarnessEvent, { type: "ask" }>,
-): Promise<void> {
-  const { request } = event;
-  const title =
-    request.message === undefined
-      ? request.title
-      : `${request.title} · ${request.message.split("\n")[0] ?? ""}`;
-  try {
-    if (request.kind === "confirm") {
-      const picked = await selectChoice(ui, title, [
-        { id: "yes", label: "Yes" },
-        { id: "no", label: "No" },
-      ]);
-      harness.answer(event.askId, picked === "yes");
-      return;
-    }
-    if (request.kind === "select") {
-      const picked = await selectChoice(
-        ui,
-        title,
-        request.options.map((option) => ({
-          id: option.value,
-          label: option.label,
-          description: option.description,
-        })),
-        { selectedId: request.default },
-      );
-      harness.answer(event.askId, picked);
-      return;
-    }
-    const answered = await new Promise<string>((resolve, reject) => {
-      turnNote(ui, title, ui.transcript.theme.foreground);
-      ui.input.placeholder = request.placeholder ?? "";
-      const previousPrompt = ui.prompt.content;
-      const previousSubmit = ui.input.onSubmit;
-      ui.prompt.content = "input > ";
-      ui.inputMode = "auth";
-      let settled = false;
-      const finish = (): void => {
-        ui.renderer.keyInput.off("keypress", onKeyPress);
-        ui.input.placeholder =
-          harness.state.isStreaming || harness.state.isCompacting
-            ? BUSY_COMPOSER_PLACEHOLDER
-            : COMPOSER_PLACEHOLDER;
-        ui.prompt.content = previousPrompt;
-        ui.inputMode = "chat";
-        ui.input.onSubmit = previousSubmit;
-      };
-      const onEnter = (): void => {
-        if (settled) return;
-        settled = true;
-        const text = ui.input.plainText;
-        const value = text === "" && request.default !== undefined ? request.default : text;
-        ui.input.clear();
-        finish();
-        turnNote(ui, `→ ${value}`);
-        resolve(value);
-      };
-      const onCancel = (): void => {
-        if (settled) return;
-        settled = true;
-        finish();
-        reject(new PickerCancelled());
-      };
-      const onKeyPress = (key: KeyEvent): void => {
-        if (key.name !== "escape") return;
-        key.preventDefault();
-        key.stopPropagation();
-        onCancel();
-      };
-      ui.renderer.keyInput.on("keypress", onKeyPress);
-      ui.input.onSubmit = onEnter;
-      ui.input.focus();
-    });
-    harness.answer(event.askId, answered);
-  } catch (error) {
-    if (!(error instanceof PickerCancelled)) {
-      harness.dismissAsk(event.askId);
-      throw error;
-    }
-    if (request.default !== undefined) harness.answer(event.askId, request.default);
-    else harness.dismissAsk(event.askId);
-  }
+  isBusy: () => boolean,
+  options: { placeholder?: string; prompt?: string; default?: string },
+): Promise<string> {
+  ui.dismissInfoPanel?.();
+  if (ui.selecting) return Promise.reject(new Error("Another panel is already open"));
+  return new Promise<string>((resolve, reject) => {
+    ui.input.placeholder = options.placeholder ?? "";
+    const previousPrompt = ui.prompt.content;
+    const previousSubmit = ui.input.onSubmit;
+    ui.prompt.content = options.prompt ?? "input > ";
+    ui.inputMode = "auth";
+    let settled = false;
+    const finish = (): void => {
+      ui.renderer.keyInput.off("keypress", onKeyPress);
+      ui.input.placeholder = isBusy() ? BUSY_COMPOSER_PLACEHOLDER : COMPOSER_PLACEHOLDER;
+      ui.prompt.content = previousPrompt;
+      ui.inputMode = "chat";
+      ui.input.onSubmit = previousSubmit;
+    };
+    const onEnter = (): void => {
+      if (settled) return;
+      settled = true;
+      const text = ui.input.plainText;
+      const value = text === "" && options.default !== undefined ? options.default : text;
+      ui.input.clear();
+      finish();
+      resolve(value);
+    };
+    const onCancel = (): void => {
+      if (settled) return;
+      settled = true;
+      finish();
+      reject(new PickerCancelled());
+    };
+    const onKeyPress = (key: KeyEvent): void => {
+      if (key.name !== "escape") return;
+      key.preventDefault();
+      key.stopPropagation();
+      onCancel();
+    };
+    ui.renderer.keyInput.on("keypress", onKeyPress);
+    ui.input.onSubmit = onEnter;
+    ui.input.focus();
+  });
 }
 
-export function wireHarness(
-  ui: Ui,
-  harness: AgentHarness,
-  status: ComposerStatus,
-  cwd: string,
-  isVisible: () => boolean = () => true,
-): () => void {
-  let queueVersion = 0;
+/** What the wire reads from a host: the SDK, active session, run state, and events. */
+interface WireSessionHost {
+  readonly sdk: Uji;
+  readonly sessionId: SessionId;
+  readonly state: Pick<UjiHost["state"], "operation">;
+  subscribe(listener: (event: SessionEvent) => void): () => void;
+}
+
+/** The footer's context segment, from core's usage fold. */
+async function usageStatus(host: WireSessionHost): Promise<Partial<PowerlineState>> {
+  const context = await host.sdk.runs.context({ sessionId: host.sessionId });
+  return {
+    tokens: context.usageTokens,
+    ...(context.percent === undefined ? {} : { pct: context.percent }),
+  };
+}
+
+interface WireSessionOptions {
+  status: ComposerStatus;
+  cwd: string;
+  /** Names the chat when a user message lands. */
+  namer?: ChatNamer;
+  runNotifications: () => RunNotificationMode;
+  /** Setting badges moved; the composition re-lists and patches the status. */
+  onPluginsChanged?: () => void;
+  isVisible?: () => boolean;
+}
+
+/**
+ * Bridge the active session's `watch` stream onto the terminal. The durable
+ * transcript is drawn by the branch watcher over storage; this handles what
+ * only the live stream knows: streaming deltas at their part identity, tool
+ * progress, run state, retry banners, the pending queue, and diagnostics.
+ */
+function wireSession(ui: Ui, host: WireSessionHost, options: WireSessionOptions): () => void {
+  const { status, cwd } = options;
+  const isVisible = options.isVisible ?? (() => true);
+  // The directory watcher reactivates plugins on every save under a plugin or
+  // skill directory, so this event repeats when nothing about the set changed.
+  // Note the set only when it actually moves.
+  let lastPluginSignature: string | undefined;
 
   const ensureTurn = (): ConversationTurnBlock => {
     ui.activeTurn ??= new ConversationTurnBlock(ui.transcript);
@@ -262,149 +314,121 @@ export function wireHarness(
 
   const refreshWorkspace = (): void => {
     void readWorkspaceStatus(cwd).then((workspace) => {
-      if (!isVisible()) return;
-      status.set({
-        workspace: workspace.name,
-        branch: workspace.branch,
-        dirty: workspace.dirty,
-      });
+      if (isVisible()) status.patch(workspace);
     });
   };
 
-  const refreshUsage = (usage: Usage): void => {
-    void harness.session.getBranch("main").then((branch) => {
-      if (!isVisible()) return;
-      const tokens = estimateContextTokens(buildSessionContext(branch)).tokens;
-      const contextWindow = harness.state.model.contextWindow;
-      status.set({
-        tokens: calculateContextTokens(usage),
-        ...(contextWindow > 0 ? { pct: Math.round((tokens / contextWindow) * 100) } : {}),
-      });
-    });
+  const refreshUsage = (): void => {
+    void usageStatus(host)
+      .then((usage) => {
+        if (isVisible()) status.patch(usage);
+      })
+      .catch(() => undefined);
   };
 
-  const cacheTtlPatch = (provider: string): Partial<PowerlineState> => {
-    const ttl = providerCacheTtlMs(provider);
-    return ttl === undefined ? {} : { cacheTtlMs: ttl };
+  const countQueue = (): void => {
+    status.patch({ queued: ui.queue.pending.length });
   };
-  const unsubscribe = harness.subscribe((event) => {
+
+  const unsubscribe = host.subscribe((event) => {
     if (!isVisible()) return;
-    switch (event.type) {
-      case "agent_start":
-        status.set({ runState: "working" });
-        ui.input.placeholder = BUSY_COMPOSER_PLACEHOLDER;
-        refreshHints(ui, harness);
+    switch (event.kind) {
+      case "text_delta":
+        ensureTurn().appendAssistantDelta(event.contentIndex, event.delta, event.entryId);
         break;
-      case "turn_start":
-        ui.activeTurn?.nextStep();
+      case "reasoning_delta":
+        ensureTurn().appendReasoningDelta(event.contentIndex, event.delta, event.entryId);
         break;
-      case "message_start":
-        if (event.message.role === "user") {
-          ui.activeTurn?.settle();
-          ui.activeTurn = new ConversationTurnBlock(ui.transcript);
-          ui.activeTurn.addUser(event.message.content);
-        }
+      case "tool_progress":
+        ensureTurn().updateTool(event.callId, event.progress.text, event.progress.title);
         break;
-      case "message_update":
-        ensureTurn().updateAssistant(event.assistantMessageEvent);
-        break;
-      case "message_end":
-        ui.steeringStatus.resolve(event.entryId);
-        markEntryRendered(ui, event.entryId);
-        if (event.message.role === "assistant") ensureTurn().finishAssistant(event.message);
-        if (event.message.role === "toolResult") {
-          ensureTurn().finishTool(
-            event.message.toolCallId,
-            event.message.toolName,
-            toolResultText(event.message.content),
-            { isError: event.message.isError, details: event.message.details },
-          );
-        }
-        break;
-      case "tool_execution_start":
-        ui.transcript.cwd = cwd;
-        ensureTurn().startTool(event.toolCallId, event.toolName, event.args);
-        status.set({ runState: "running tool" });
-        break;
-      case "tool_execution_update":
-        ensureTurn().updateTool(event.toolCallId, toolResultText(event.partialResult.content));
-        break;
-      case "tool_execution_end":
-        ensureTurn().finishTool(
-          event.toolCallId,
-          event.toolName,
-          toolResultText(event.result.content),
-          { isError: event.isError, details: event.result.details },
-        );
-        status.set({ runState: "working" });
-        break;
-      case "compaction_start":
-        status.set({ runState: "compacting" });
-        ui.input.placeholder = BUSY_COMPOSER_PLACEHOLDER;
-        refreshHints(ui, harness);
-        runNote(
-          event.reason === "manual" ? "Compacting…" : "Auto-compacting…",
-          ui.transcript.theme.tool,
-        );
-        break;
-      case "compaction_end":
-        status.set({ runState: harness.state.isStreaming ? "working" : "idle" });
-        if (!harness.state.isStreaming) ui.input.placeholder = COMPOSER_PLACEHOLDER;
-        if (event.outcome === "completed") {
-          markEntryRendered(ui, event.entry.id);
-          if (ui.activeTurn === undefined) {
-            appendNote(
-              ui.transcript,
-              `Compacted · ${String(event.entry.tokensBefore)} tokens`,
-              ui.transcript.theme.ok,
-            );
-          } else {
-            ui.activeTurn.addCompaction(event.entry.summary, event.entry.tokensBefore);
+      case "message": {
+        // A deferred item leaves for the record without a `queue_consumed`.
+        ui.queue.resolve(event.entryId);
+        countQueue();
+        if (event.turn.kind !== "turn") break;
+        for (const part of event.turn.parts) {
+          if (part.kind === "user") {
+            // Drawn eagerly so streaming deltas join this turn; the branch
+            // watcher's later fold of the same entry is an identity no-op.
+            openUserTurn(ui, part.entryId, part.content);
+            options.namer?.onUserMessage();
           }
-        } else if (event.outcome === "aborted") {
-          runNote("Compaction stopped");
-        } else {
-          runNote(`Compaction failed: ${event.error.message}`, ui.transcript.theme.error);
+          if (part.kind === "tool" && part.result === undefined) {
+            ui.transcript.cwd = cwd;
+          }
+          if (part.kind === "assistant") refreshUsage();
         }
-        refreshHints(ui, harness);
-        break;
-      case "turn_end": {
-        if (event.message.role !== "assistant") break;
-        const { message } = event;
-        ensureTurn().finishAssistant(message);
-        if (message.stopReason !== "aborted" && message.errorMessage !== undefined) {
-          runNote(`Error: ${message.errorMessage}`, ui.transcript.theme.error);
-        }
-        refreshUsage(message.usage);
         break;
       }
-      case "queue_update":
-        queueVersion += 1;
-        ui.steeringStatus.sync(
-          event.items.filter((item) => item.delivery === "steer").map((item) => item.entryId),
-        );
-        status.set({ queued: event.items.length });
+      case "run_started":
+        ui.input.placeholder = BUSY_COMPOSER_PLACEHOLDER;
+        refreshHints(ui, true);
+        if (event.operation === "compaction") runNote("Compacting…", ui.transcript.theme.tool);
         break;
-      case "agent_end":
-        ui.activeTurn?.settle();
-        ui.activeTurn = undefined;
-        status.set({
-          runState: "idle",
-          stoppedAt: Date.now(),
-          ...cacheTtlPatch(harness.state.model.provider),
-        });
+      case "compacting":
+        if (event.reason !== "manual") runNote("Auto-compacting…", ui.transcript.theme.tool);
+        break;
+      case "run_finished": {
+        const { operation } = host.state;
+        if (event.outcome.kind === "failed") {
+          const prefix =
+            operation === "compaction"
+              ? "Compaction failed"
+              : operation === "navigation"
+                ? "Navigation failed"
+                : "Error";
+          runNote(`${prefix}: ${event.outcome.error.message}`, ui.transcript.theme.error);
+        }
+        if (operation === "run") {
+          closeActiveTurn(ui);
+          notifyRunEvent({
+            end: event.outcome,
+            mode: options.runNotifications(),
+            renderer: ui.renderer,
+          });
+        }
         ui.input.placeholder = COMPOSER_PLACEHOLDER;
-        refreshHints(ui, harness);
+        refreshHints(ui, false);
         refreshWorkspace();
+        refreshUsage();
         break;
-      case "handler_error": {
-        const owner =
-          event.kind === "hook"
-            ? `hook ${event.hook}`
-            : event.kind === "event"
-              ? `listener ${event.event}`
-              : `plugin ${event.plugin}`;
-        runNote(`${owner}: ${event.error}`, ui.transcript.theme.error);
+      }
+      case "retry_scheduled": {
+        // Backoff is otherwise indistinguishable from a hang, so name the cause and the wait.
+        runNote(
+          `${retryCause(event.message)} Retrying in ${clockDuration(Math.max(0, event.at - Date.now()))} (${String(event.attempt)}/${String(event.maxAttempts)})`,
+          ui.transcript.theme.warning,
+        );
+        break;
+      }
+      case "retry_started":
+        break;
+      case "queued":
+        ui.queue.upsert(event.item);
+        countQueue();
+        break;
+      case "queue_consumed":
+      case "queue_cancelled":
+        ui.queue.resolve(event.entryId);
+        countQueue();
+        break;
+      case "plugins_changed": {
+        // Badges and skills can move without the id set moving, so they are
+        // re-read on every reactivation; only the note is gated on the set.
+        options.onPluginsChanged?.();
+        const failed = event.plugins.filter((plugin) => plugin.status === "failed");
+        const signature = event.plugins
+          .map((plugin) =>
+            plugin.status === "failed" ? `${plugin.id}!${plugin.error}` : `${plugin.id}`,
+          )
+          .join(" ");
+        if (signature === lastPluginSignature) break;
+        lastPluginSignature = signature;
+        runNote(
+          `plugins: ${String(event.plugins.length - failed.length)} active${failed.length === 0 ? "" : `, ${String(failed.length)} failed`}`,
+          failed.length === 0 ? undefined : ui.transcript.theme.error,
+        );
         break;
       }
       case "diagnostic":
@@ -421,32 +445,33 @@ export function wireHarness(
             : undefined,
         );
         break;
-      case "plugin_updated": {
-        const failed = event.plugins.filter((plugin) => plugin.status === "failed");
-        runNote(
-          `plugins: ${String(event.plugins.length - failed.length)} active${failed.length === 0 ? "" : `, ${String(failed.length)} failed`}`,
-          failed.length === 0 ? undefined : ui.transcript.theme.error,
-        );
+      case "name_changed":
+        ui.renderer.setTerminalTitle(terminalTitle(event.name));
+        break;
+      // The branch watcher draws durable entries; run bookkeeping needs no
+      // row. A waiting run's question is already on screen as its pending
+      // tool call, and the composer is how it gets answered.
+      case "head_moved":
+      case "claim":
+      case "compaction":
+        break;
+      case "run_waiting": {
+        // Render the ask from the event alone; the composer answers it.
+        const { question, options } = questionAskFrom(event.args);
+        if (question !== undefined) {
+          const lines = [
+            question,
+            ...options.map(
+              (option, index) =>
+                `  ${String(index + 1)}. ${option.label}${option.description === undefined ? "" : ` - ${option.description}`}`,
+            ),
+            "Reply with a number, a label, or your own answer. Esc dismisses.",
+          ];
+          notice(ui, lines.join("\n"));
+        }
         break;
       }
-      case "ask":
-        void answerAsk(ui, harness, event).catch((error: unknown) => {
-          runNote(
-            `ask failed: ${error instanceof Error ? error.message : String(error)}`,
-            ui.transcript.theme.error,
-          );
-        });
-        break;
-      case "ask_answered":
-        if (event.source === "client")
-          runNote(`Answered: ${event.answer}`, ui.transcript.theme.dim);
-        break;
-      case "config_update":
-        if (event.property === "settings") {
-          void settingStatuses(harness).then((statuses) => {
-            if (isVisible()) status.set({ statuses });
-          });
-        }
+      case "synced":
         break;
       default: {
         const _exhaustive: never = event;
@@ -454,28 +479,17 @@ export function wireHarness(
       }
     }
   });
-  const snapshotVersion = queueVersion;
-  void harness.pendingQueue().then((items) => {
-    if (!isVisible() || queueVersion !== snapshotVersion) return;
-    ui.steeringStatus.sync(
-      items.filter((item) => item.delivery === "steer").map((item) => item.entryId),
-    );
-    status.set({ queued: items.length });
-  });
+  // The cold read; from here the queue follows its events.
+  void host.sdk.messages
+    .pending({ sessionId: host.sessionId })
+    .then((items) => {
+      if (!isVisible()) return;
+      ui.queue.sync(items);
+      countQueue();
+    })
+    .catch(() => undefined);
+  refreshUsage();
   return unsubscribe;
-}
-
-export function shouldReloadTranscript(
-  ui: Ui,
-  harness: Pick<AgentHarness, "state">,
-  leafId: string | null,
-): boolean {
-  if (leafId !== null && ui.renderedEntries.delete(leafId)) return false;
-  if (leafId !== null && harness.state.isBusy) {
-    ui.renderedEntries.add(leafId);
-    return false;
-  }
-  return !harness.state.isBusy;
 }
 
 function openAuthUrl(ui: Ui, input: string): void {
@@ -483,19 +497,19 @@ function openAuthUrl(ui: Ui, input: string): void {
   try {
     url = new URL(input);
   } catch {
-    note(ui, "Couldn't open URL. Copy to browser.", ui.transcript.theme.error);
+    notice(ui, "Couldn't open URL. Copy to browser.", ui.transcript.theme.error);
     return;
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    note(ui, "Couldn't open URL. Copy to browser.", ui.transcript.theme.error);
+    notice(ui, "Couldn't open URL. Copy to browser.", ui.transcript.theme.error);
     return;
   }
   void open(url.toString()).catch(() => {
-    note(ui, "Couldn't open URL. Copy to browser.", ui.transcript.theme.error);
+    notice(ui, "Couldn't open URL. Copy to browser.", ui.transcript.theme.error);
   });
 }
 
-export function userPromptHistory(entries: readonly Entry[]): string[] {
+function userPromptHistory(entries: readonly Entry[]): string[] {
   return entries.flatMap((entry) => {
     if (entry.type !== "message" || entry.message.role !== "user") return [];
     const text = partsText(entry.message.content);
@@ -503,7 +517,7 @@ export function userPromptHistory(entries: readonly Entry[]): string[] {
   });
 }
 
-export async function chooseTrustedWorkspace(
+async function chooseTrustedWorkspace(
   ui: Ui,
   store: WorkspaceTrustStore,
   cwd: string,
@@ -552,17 +566,23 @@ function createTuiInteraction(ui: Ui, signal: AbortSignal): AuthInteraction {
         );
       }
       return new Promise<string>((resolve, reject) => {
-        note(ui, prompt.message, ui.transcript.theme.foreground);
+        if (prompt.type === "secret" && ui.input.plainText !== "") {
+          reject(new Error("Clear the composer before entering a secret"));
+          return;
+        }
+        notice(ui, prompt.message, ui.transcript.theme.foreground);
         ui.input.placeholder = prompt.placeholder ?? "";
         const previousPrompt = ui.prompt.content;
         const previousSubmit = ui.input.onSubmit;
         ui.prompt.content = prompt.type === "secret" ? "key > " : "login > ";
         ui.inputMode = "auth";
+        const reveal = prompt.type === "secret" ? concealComposerInput(ui) : undefined;
         let settled = false;
         const finish = (): void => {
           promptSignal.removeEventListener("abort", onAbort);
           ui.input.placeholder = COMPOSER_PLACEHOLDER;
           ui.prompt.content = previousPrompt;
+          reveal?.();
           ui.inputMode = "chat";
           ui.input.onSubmit = previousSubmit;
         };
@@ -572,12 +592,13 @@ function createTuiInteraction(ui: Ui, signal: AbortSignal): AuthInteraction {
           const value = ui.input.plainText;
           ui.input.clear();
           finish();
-          note(ui, prompt.type === "secret" ? "→ ●●●" : `→ ${value}`);
+          notice(ui, prompt.type === "secret" ? "→ ●●●" : `→ ${value}`);
           resolve(value);
         };
         const onAbort = (): void => {
           if (settled) return;
           settled = true;
+          if (prompt.type === "secret") ui.input.clear();
           finish();
           reject(new Error("Login cancelled"));
         };
@@ -594,7 +615,7 @@ function createTuiInteraction(ui: Ui, signal: AbortSignal): AuthInteraction {
       switch (event.type) {
         case "auth_url":
           setHints(ui, AUTH_URL_HINTS);
-          note(
+          notice(
             ui,
             event.instructions ?? "Open this URL to continue:",
             ui.transcript.theme.foreground,
@@ -610,18 +631,18 @@ function createTuiInteraction(ui: Ui, signal: AbortSignal): AuthInteraction {
             openUrl: (url) => openAuthUrl(ui, url),
             prefix: "Visit ",
           });
-          note(ui, `Enter code: ${event.userCode}`, ui.transcript.theme.ok);
+          notice(ui, `Enter code: ${event.userCode}`, ui.transcript.theme.ok);
           break;
         case "info":
         case "progress":
-          note(ui, event.message);
+          notice(ui, event.message);
           break;
       }
     },
   };
 }
 
-export async function loginProviderViaTui(
+async function loginProviderViaTui(
   ui: Ui,
   models: Models,
   provider: Provider,
@@ -635,7 +656,7 @@ export async function loginProviderViaTui(
   ui.renderer.keyInput.on("keypress", onKeyPress);
   ui.authenticating = true;
   try {
-    note(ui, `Logging in to ${provider.name}…`, ui.transcript.theme.tool);
+    notice(ui, `Logging in to ${provider.name}…`, ui.transcript.theme.tool);
     const { oauth, apiKey } = provider.auth;
     let mode: "oauth" | "api_key" = oauth !== undefined ? "oauth" : "api_key";
     if (oauth !== undefined && apiKey?.login !== undefined) {
@@ -657,8 +678,8 @@ export async function loginProviderViaTui(
     await loadProviderCatalog(models, provider.id);
     const auth = await models.getAuth(provider.id);
     if (auth === undefined) return undefined;
-    note(ui, `Logged in to ${provider.name}`, ui.transcript.theme.ok);
-    return { models, provider: requireProvider(models, provider.id), auth };
+    notice(ui, `Logged in to ${provider.name}`, ui.transcript.theme.ok);
+    return { models, provider: requireProvider(models, provider.id) };
   } finally {
     ui.authenticating = false;
     setHints(ui, previousHints);
@@ -666,120 +687,110 @@ export async function loginProviderViaTui(
   }
 }
 
-function entryLabel(entry: Entry): string {
-  if (entry.type !== "message") return entry.type;
-  const { message } = entry;
-  const line = oneLine(foldAttachments(partsText(message.content)));
-  return `${message.role}: ${line}`;
-}
-
-/** Name for the picker, or undefined for a session nothing was ever sent to. */
-async function sessionLabel(
-  repo: SqliteSessionRepo,
-  sessionId: string,
-): Promise<string | undefined> {
-  const reader = await repo.open(sessionId);
-  try {
-    if ((await reader.getLeafId("main")) === null) return undefined;
-    return (await reader.getName()) ?? shortId(sessionId);
-  } finally {
-    await reader.close().catch(() => undefined);
-  }
-}
-
-const TREE_ROOT_ID = "tree:root";
-
 /** The user turns on a branch, oldest first: the only entries that can be edited. */
-export function userMessageEntries(entries: readonly Entry[]): Entry[] {
+function userMessageEntries(entries: readonly Entry[]): Entry[] {
   return entries.filter((entry) => entry.type === "message" && entry.message.role === "user");
 }
 
-function messageChoices(entries: readonly Entry[]): Choice[] {
-  return entries.map((entry, index) => ({
-    id: entry.id,
-    label: oneLine(
-      foldAttachments(entry.type === "message" ? partsText(entry.message.content) : ""),
-    ),
-    description: `${String(index + 1)} of ${String(entries.length)} \u00b7 ${new Date(entry.timestamp).toLocaleString()}`,
-  }));
+const THEME_CHOICES = [
+  { id: "dark", label: "Dark" },
+  { id: "light", label: "Light" },
+] as const satisfies readonly Choice[];
+
+/** pi's "Summarize branch?" answers, in its order. */
+const SUMMARY_CHOICES: readonly Choice[] = [
+  { id: "none", label: "No summary", description: "Leave the branch as it is" },
+  { id: "summarize", label: "Summarize", description: "Keep what the branch was about" },
+  {
+    id: "custom",
+    label: "Summarize with custom prompt",
+    description: "Say what the summary should focus on",
+  },
+];
+
+interface OpenTreeOptions {
+  /** Rows to show first; the tree's default hides tool results and bookkeeping. */
+  readonly filter?: TreeFilter;
+  /** Row to highlight; defaults to the head's leaf. */
+  readonly selectedId?: string;
 }
 
-function treeChoices(entries: Entry[]): Choice[] {
-  return [
-    {
-      id: TREE_ROOT_ID,
-      label: "Start over",
-      description: "Branch from the beginning of this chat",
-    },
-    ...entries.map((entry) => ({
-      id: entry.id,
-      label: entryLabel(entry),
-      description: `${shortId(entry.id)} · ${new Date(entry.timestamp).toLocaleString()}`,
-    })),
-  ];
-}
-
-type CommandTarget = { sessionId: string; harness: AgentHarness };
-
-export interface CommandContext {
-  repo: SqliteSessionRepo;
-  getTarget: () => CommandTarget;
+interface CommandContext {
+  getHost: () => UjiHost;
   getRuntime: () => ResolvedRuntime;
+  getThemeMode: () => ThemeMode;
   getTrustedWorkspace: () => Promise<TrustedWorkspace>;
   switchRuntime: (runtime: ResolvedRuntime, model: string) => Promise<void>;
   changeDirectory: (directory: string) => Promise<void>;
   changeThinkingLevel: (level: ThinkingLevel) => Promise<void>;
+  changeTheme: (mode: ThemeMode) => Promise<void>;
   refreshPluginState: () => Promise<void>;
+  rerenderTranscript: () => Promise<void>;
   resumeSession: (sessionId: string) => Promise<void>;
   newSession: () => Promise<void>;
   nameSession: (name: string) => Promise<void>;
+  nameFromThread: () => Promise<string | undefined>;
   openCommandPalette: () => Promise<void>;
   openSettings: () => Promise<void>;
   openSkillPalette: () => Promise<void>;
-  /** Move the active head to an entry, or to the start of the chat with `null`. */
-  navigateTo: (entryId: string | null) => Promise<void>;
+  /** The session tree: pick an entry, answer the summary question, move the head. */
+  openTree: (options: OpenTreeOptions) => Promise<void>;
   shutdown: () => Promise<void>;
 }
 
 const slashCommandCache = new WeakMap<
-  AgentHarness,
+  UjiHost,
   {
-    pluginCommands: ReturnType<AgentHarness["getCommands"]>;
-    skills: ReturnType<AgentHarness["getResources"]>;
+    pluginCommands: UjiHost["commands"];
+    skills: UjiHost["skills"];
     projected: SlashCommand[];
   }
 >();
 
-export function slashCommandsForHarness(harness: AgentHarness): SlashCommand[] {
-  const pluginCommands = harness.getCommands();
-  const skills = harness.getResources();
-  const cached = slashCommandCache.get(harness);
+function slashCommandsForHost(host: UjiHost): SlashCommand[] {
+  const pluginCommands = host.commands;
+  const skills = host.skills;
+  const cached = slashCommandCache.get(host);
   if (cached?.pluginCommands === pluginCommands && cached.skills === skills) {
     return cached.projected;
   }
   const projected = availableSlashCommands(pluginCommands, skills);
-  slashCommandCache.set(harness, { pluginCommands, skills, projected });
+  slashCommandCache.set(host, { pluginCommands, skills, projected });
   return projected;
 }
 
+type SlashCommandTarget =
+  | { kind: "builtin"; command: NonNullable<ReturnType<typeof resolveSlashCommand>> }
+  | { kind: "plugin" }
+  | { kind: "skill"; skill: Skill }
+  | { kind: "message" };
+
+/** Resolve the current host's namespace once, before the composer decides how to submit. */
+function resolveSlashCommandTarget(host: UjiHost, name: string): SlashCommandTarget {
+  const command = resolveSlashCommand(name);
+  if (command !== undefined) return { kind: "builtin", command };
+  if (host.commands.has(name)) return { kind: "plugin" };
+  const skill = host.skills.get(name);
+  return skill === undefined ? { kind: "message" } : { kind: "skill", skill };
+}
+
 /** Badges from plugin settings: each setting's current choice contributes its `status`, if any. */
-export async function activeSettingBadges(
-  harness: AgentHarness,
+async function activeSettingBadges(
+  host: UjiHost,
 ): Promise<ReadonlyMap<string, { label: string; status: string }>> {
   const badges = new Map<string, { label: string; status: string }>();
-  for (const [id, setting] of harness.getSettings()) {
-    const current = await setting.read();
-    const status = setting.choices.find((choice) => choice.id === current)?.status;
-    if (status !== undefined) badges.set(id, { label: setting.label, status });
+  for (const setting of await host.sdk.plugins.settings.list({ sessionId: host.sessionId })) {
+    const status = setting.choices.find((choice) => choice.id === setting.current)?.status;
+    if (status !== undefined) badges.set(setting.id, { label: setting.label, status });
   }
   return badges;
 }
 
-export async function settingStatuses(harness: AgentHarness): Promise<readonly string[]> {
-  return [...(await activeSettingBadges(harness)).values()].map((badge) => badge.status);
+async function settingStatuses(host: UjiHost): Promise<readonly string[]> {
+  return [...(await activeSettingBadges(host)).values()].map((badge) => badge.status);
 }
 
-export async function activateLoggedInRuntime({
+async function activateLoggedInRuntime({
   currentProviderId,
   runtime,
   switchRuntime,
@@ -792,8 +803,17 @@ export async function activateLoggedInRuntime({
   await switchRuntime(runtime, defaultModel(runtime.models, runtime.provider.id).id);
 }
 
-async function pickProvider(ui: Ui, models: Models, selectedId?: string): Promise<Provider> {
-  const statuses = await providerAuthStatuses(models);
+type ProviderPickerPurpose = "login" | "logout" | "switch";
+
+function providerPickerChoices({
+  models,
+  statuses,
+  purpose,
+}: {
+  models: Models;
+  statuses: readonly ProviderAuthStatus[];
+  purpose: ProviderPickerPurpose;
+}): Choice[] {
   const ordered = statuses.toSorted(
     (left, right) => Number(right.kind === "authenticated") - Number(left.kind === "authenticated"),
   );
@@ -802,19 +822,42 @@ async function pickProvider(ui: Ui, models: Models, selectedId?: string): Promis
     const { provider } = status;
     const count = models.getModels(provider.id).length;
     const detail =
-      count === 0
+      purpose !== "switch" || count === 0
         ? provider.id
         : `${provider.id} · default ${defaultModel(models, provider.id).id}`;
-    const connection =
+    const connection: Choice["status"] =
       status.kind === "authenticated"
-        ? `logged in${status.auth.source === undefined ? "" : ` via ${status.auth.source}`}`
-        : "not logged in";
+        ? {
+            text: `logged in${status.auth.source === undefined ? "" : ` via ${status.auth.source}`}`,
+            tone: "ok",
+          }
+        : { text: "not logged in", tone: "dim" };
     choices.push({
       id: provider.id,
       label: provider.name,
-      description: `${detail} · ${connection}`,
+      description: detail,
+      status: connection,
     });
   }
+  return choices;
+}
+
+async function pickProvider({
+  ui,
+  models,
+  purpose,
+  selectedId,
+}: {
+  ui: Ui;
+  models: Models;
+  purpose: ProviderPickerPurpose;
+  selectedId?: string;
+}): Promise<Provider> {
+  const choices = providerPickerChoices({
+    models,
+    statuses: await providerAuthStatuses(models),
+    purpose,
+  });
   const id = await selectChoice(ui, "Provider", choices, { selectedId });
   return requireProvider(models, id);
 }
@@ -827,7 +870,7 @@ async function runtimeForProvider(
   const auth = await models.getAuth(provider.id);
   if (auth !== undefined) {
     await loadProviderCatalog(models, provider.id);
-    return { models, provider: requireProvider(models, provider.id), auth };
+    return { models, provider: requireProvider(models, provider.id) };
   }
   return loginProviderViaTui(ui, models, provider);
 }
@@ -851,7 +894,7 @@ async function runtimeForModel(
   const provider = requireProvider(current.models, model.provider);
   const auth = await current.models.getAuth(provider.id);
   if (auth === undefined) throw new Error(`${provider.name} is not logged in`);
-  return { models: current.models, provider, auth };
+  return { models: current.models, provider };
 }
 
 function modelChoiceId(model: Model<Api>): string {
@@ -905,46 +948,89 @@ function settingValue(row: SettingRow): string {
   return row.choices().find((choice) => choice.id === current)?.label ?? current;
 }
 
-export async function runCommand(
+/** The question tool's args, if this waiting call is one; empty otherwise. */
+function questionAskFrom(args: JsonValue): {
+  question?: string;
+  options: { label: string; description?: string }[];
+} {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return { options: [] };
+  const question = typeof args.question === "string" ? args.question : undefined;
+  const options = Array.isArray(args.options)
+    ? args.options.flatMap((option) => {
+        if (typeof option !== "object" || option === null || Array.isArray(option)) return [];
+        if (typeof option.label !== "string") return [];
+        return [
+          {
+            label: option.label,
+            ...(typeof option.description === "string" ? { description: option.description } : {}),
+          },
+        ];
+      })
+    : [];
+  return question === undefined ? { options: [] } : { question, options };
+}
+
+async function runCommand(
   ui: Ui,
   context: CommandContext,
   parsed: ParsedSlashCommand,
-  delivery: "steer" | "queue" = "steer",
+  options: {
+    delivery?: "steer" | "queue";
+    target?: SlashCommandTarget;
+  } = {},
 ): Promise<void> {
-  const target = context.getTarget();
-  const commandDefinition = resolveSlashCommand(parsed.name);
-  if (commandDefinition === undefined) {
-    if (target.harness.getCommands().has(parsed.name)) {
-      const output = await target.harness.runCommand(parsed.name, parsed.argument);
+  const host = context.getHost();
+  const delivery = options.delivery ?? "steer";
+  const target = options.target ?? resolveSlashCommandTarget(host, parsed.name);
+  const sendAsMessage = async (): Promise<void> => {
+    await host.sdk.messages.send({
+      sessionId: host.sessionId,
+      content: `/${parsed.name}${parsed.argument === "" ? "" : ` ${parsed.argument}`}`,
+      delivery,
+    });
+  };
+
+  switch (target.kind) {
+    case "plugin": {
+      const outcome = await host.sdk.plugins.commands.run({
+        sessionId: host.sessionId,
+        name: parsed.name,
+        argument: parsed.argument,
+      });
       await context.refreshPluginState();
-      if (output !== undefined) note(ui, output);
+      if (outcome.kind === "failed") throw new Error(outcome.message);
+      if (outcome.kind === "ran" && outcome.output !== undefined) notice(ui, outcome.output);
+      if (outcome.kind === "not_found") await sendAsMessage();
       return;
     }
-    const skill = target.harness.getResources().get(parsed.name);
-    if (skill !== undefined) {
+    case "skill":
       // pi's agent-session pattern: expand the skill to its invocation text,
       // then admit it like chat input so it steers or queues while a run is
-      // active instead of failing with "a run is already active".
-      const result = await target.harness.submit(
-        formatSkillInvocation(skill, parsed.argument === "" ? undefined : parsed.argument),
-        { delivery },
-      );
-      if (!result.ok) throw result.error;
-      if (result.value.disposition === "queued") {
-        const invocation =
-          parsed.argument === "" ? `/${parsed.name}` : `/${parsed.name} ${parsed.argument}`;
-        if (delivery === "steer") {
-          ui.steeringStatus.show(result.value.entryId, invocation);
-        } else {
-          note(ui, `Queued: ${invocation}`);
-        }
-      }
+      // active instead of failing with "a run is already active". A queued
+      // invocation shows up through core's queue events like any other.
+      await host.sdk.messages.send({
+        sessionId: host.sessionId,
+        content: formatSkillInvocation(
+          target.skill,
+          parsed.argument === "" ? undefined : parsed.argument,
+        ),
+        delivery,
+      });
       return;
+    case "message":
+      // A contribution can disappear after autocomplete selected it. Treat the
+      // unresolved invocation as chat text instead of dropping the submission.
+      await sendAsMessage();
+      return;
+    case "builtin":
+      break;
+    default: {
+      const _exhaustive: never = target;
+      return _exhaustive;
     }
-    note(ui, `Unknown command: /${parsed.name}. Try /help.`, ui.transcript.theme.error);
-    return;
   }
-  const command = commandDefinition.name;
+
+  const command = target.command.name;
   const { argument } = parsed;
 
   if (command === "help") {
@@ -960,19 +1046,20 @@ export async function runCommand(
 
   if (command === "resume") {
     if (argument !== "") throw new Error("/resume opens the chat picker and takes no argument");
-    const currentId = target.sessionId;
+    const currentId = host.sessionId;
     const sessions: Choice[] = [];
-    for (const session of (await context.repo.list()).reverse()) {
-      const label = await sessionLabel(context.repo, session.id);
-      if (label === undefined) continue;
+    const { items } = await host.sdk.sessions.list();
+    for (const session of [...items].reverse()) {
+      if (session.heads[0]?.entryId === null) continue;
+      const label = session.name ?? shortId(session.sessionId);
       sessions.push({
-        id: session.id,
-        label: `${label}${session.id === currentId ? " (current)" : ""}`,
-        description: `${new Date(session.createdAt).toLocaleString()} · ${shortId(session.id)}`,
+        id: session.sessionId,
+        label: `${label}${session.sessionId === currentId ? " (current)" : ""}`,
+        description: `${new Date(session.createdAt).toLocaleString()} · ${shortId(session.sessionId)}`,
       });
     }
     if (sessions.length === 0) {
-      flash(ui, "No saved chats");
+      notice(ui, "No saved chats");
       return;
     }
     const sessionId = await selectChoice(ui, "Resume chat", sessions, { selectedId: currentId });
@@ -986,33 +1073,56 @@ export async function runCommand(
     return;
   }
 
-  const { harness } = target;
-  const session = harness.session;
-
   if (command === "settings") {
     if (argument !== "") throw new Error("/settings takes no argument");
     await context.openSettings();
     return;
   }
 
+  if (command === "theme") {
+    if (argument !== "") throw new Error("/theme opens the theme picker and takes no argument");
+    if (host.state.busy) throw new Error("Wait for the current operation before changing theme");
+    const selected = await selectChoice(ui, "Theme", THEME_CHOICES, {
+      selectedId: context.getThemeMode(),
+    });
+    const mode = THEME_CHOICES.find((choice) => choice.id === selected)?.id;
+    if (mode === undefined) throw new Error("Theme is no longer available");
+    await context.changeTheme(mode);
+    return;
+  }
+
   if (command === "name") {
     if (argument === "") {
-      note(ui, "Usage: /name <chat name>", ui.transcript.theme.error);
+      notice(ui, "Usage: /name <chat name>", ui.transcript.theme.error);
       return;
     }
     await context.nameSession(argument);
     return;
   }
 
+  if (command === "title") {
+    if (argument !== "") {
+      throw new Error("/title takes no argument. /name <name> sets one by hand");
+    }
+    const title = await context.nameFromThread();
+    if (title !== undefined) notice(ui, `Chat named ${title}`, ui.transcript.theme.ok);
+    return;
+  }
+
   if (command === "login") {
-    if (harness.state.isStreaming || harness.state.isCompacting) {
+    if (host.state.busy) {
       throw new Error("Wait for the current operation before logging in");
     }
     const current = context.getRuntime();
     const models = current.models;
     const provider =
       argument === ""
-        ? await pickProvider(ui, models, current.provider.id)
+        ? await pickProvider({
+            ui,
+            models,
+            purpose: "login",
+            selectedId: current.provider.id,
+          })
         : requireProvider(models, argument);
     const runtime = await loginProviderViaTui(ui, models, provider);
     if (runtime === undefined) throw new Error(`Couldn't log in to ${provider.name}`);
@@ -1025,47 +1135,83 @@ export async function runCommand(
   }
 
   if (command === "logout") {
-    if (harness.state.isStreaming || harness.state.isCompacting) {
+    if (host.state.busy) {
       throw new Error("Wait for the current operation before logging out");
     }
     const current = context.getRuntime();
     const provider =
       argument === ""
-        ? await pickProvider(ui, current.models, current.provider.id)
+        ? await pickProvider({
+            ui,
+            models: current.models,
+            purpose: "logout",
+            selectedId: current.provider.id,
+          })
         : requireProvider(current.models, argument);
     await current.models.logout(provider.id);
-    note(ui, `Logged out of ${provider.name}`, ui.transcript.theme.ok);
+    notice(ui, `Logged out of ${provider.name}`, ui.transcript.theme.ok);
     return;
   }
 
   if (command === "compact") {
-    if (harness.state.isStreaming || harness.state.isCompacting) {
+    if (host.state.busy) {
       throw new Error("Wait for the current operation before compacting");
     }
-    const result = await harness.compact(
-      argument === "" ? undefined : { customInstructions: argument },
+    const outcome = await host.sdk.runs.compact({
+      sessionId: host.sessionId,
+      ...(argument === "" ? {} : { customInstructions: argument }),
+    });
+    if (outcome.kind === "nothing_to_compact") {
+      notice(ui, "Nothing to compact");
+      return;
+    }
+    if (outcome.kind === "failed") throw new Error(outcome.message);
+    return;
+  }
+
+  if (command === "usage") {
+    if (argument !== "") throw new Error("/usage takes no argument");
+    // Durable numbers open at once over what this host has already observed.
+    const report = await collectWorkspaceUsage(host.store, host.sessionId);
+    const activeProvider = host.model.provider;
+    const refreshing = host.shouldRefreshAccountLimits();
+    const panel = openUsageCard(
+      ui,
+      usageCard(report, host.cachedAccountLimits(), { activeProvider, refreshing }),
     );
-    if (!result.ok) {
-      if (result.error._tag === "NothingToCompact") {
-        note(ui, result.error.message);
-        return;
-      }
-      throw result.error;
+    if (refreshing) {
+      void host.accountLimits().then(
+        (limits) => {
+          if (panel.destroyed) return;
+          panel.show(usageCard(report, limits, { activeProvider, refreshing: false }));
+        },
+        () => {
+          if (panel.destroyed) return;
+          panel.show(
+            usageCard(report, host.cachedAccountLimits(), { activeProvider, refreshing: false }),
+          );
+        },
+      );
     }
     return;
   }
 
   if (command === "provider") {
-    if (harness.state.isStreaming || harness.state.isCompacting) {
+    if (host.state.busy) {
       throw new Error("Wait for the current operation before switching provider");
     }
     const current = context.getRuntime();
     const provider =
       argument === ""
-        ? await pickProvider(ui, current.models, current.provider.id)
+        ? await pickProvider({
+            ui,
+            models: current.models,
+            purpose: "switch",
+            selectedId: current.provider.id,
+          })
         : requireProvider(current.models, argument);
     if (provider.id === current.provider.id) {
-      flash(ui, `Already using ${provider.name}`);
+      notice(ui, `Already using ${provider.name}`);
       return;
     }
     const runtime = await runtimeForProvider(ui, current.models, provider);
@@ -1075,11 +1221,11 @@ export async function runCommand(
   }
 
   if (command === "model") {
-    if (harness.state.isStreaming || harness.state.isCompacting) {
+    if (host.state.busy) {
       throw new Error("Wait for the current operation before switching model");
     }
     const currentRuntime = context.getRuntime();
-    const currentModel = harness.state.model.id;
+    const currentModel = host.model.id;
     if (argument === "") {
       const { models } = currentRuntime;
       const choiceId = await selectChoice(ui, "Model", cachedModelChoices(models), {
@@ -1102,7 +1248,7 @@ export async function runCommand(
       selectedModel.provider === currentRuntime.provider.id &&
       selectedModel.id === currentModel
     ) {
-      flash(ui, `Already using ${selectedModel.provider}/${selectedModel.id}`);
+      notice(ui, `Already using ${selectedModel.provider}/${selectedModel.id}`);
       return;
     }
     const nextRuntime = await runtimeForModel(currentRuntime, selectedModel);
@@ -1111,17 +1257,17 @@ export async function runCommand(
   }
 
   if (command === "effort") {
-    if (harness.state.isStreaming || harness.state.isCompacting) {
+    if (host.state.busy) {
       throw new Error("Wait for the current operation before changing thinking level");
     }
-    const levels = getSupportedThinkingLevels(harness.state.model);
+    const levels = getSupportedThinkingLevels(host.model);
     const selected =
       argument === ""
         ? await selectChoice(
             ui,
             "Thinking level",
             levels.map((level) => ({ id: level, label: level })),
-            { selectedId: harness.state.thinkingLevel },
+            { selectedId: host.thinkingLevel },
           )
         : argument;
     const level = levels.find((candidate) => candidate === selected);
@@ -1134,7 +1280,7 @@ export async function runCommand(
 
   if (command === "cd") {
     if (argument === "") {
-      note(ui, "Usage: /cd <directory>", ui.transcript.theme.error);
+      notice(ui, "Usage: /cd <directory>", ui.transcript.theme.error);
       return;
     }
     await context.changeDirectory(argument);
@@ -1142,58 +1288,35 @@ export async function runCommand(
   }
 
   if (command === "tree") {
-    if (harness.state.isStreaming || harness.state.isCompacting) {
+    if (host.state.busy) {
       throw new Error("Wait for the current operation before changing the session branch");
     }
-    if (argument !== "") throw new Error("/tree opens the branch picker and takes no argument");
-    const entries = await session.findEntries();
-    if (entries.length === 0) {
-      flash(ui, "No messages to branch from");
-      return;
-    }
-    const leafId = await session.getLeafId("main");
-    const selected = await selectChoice(ui, "Session branch", treeChoices(entries), {
-      selectedId: leafId ?? TREE_ROOT_ID,
-    });
-    await context.navigateTo(selected === TREE_ROOT_ID ? null : selected);
+    if (argument !== "") throw new Error("/tree opens the session tree and takes no argument");
+    await context.openTree({});
     return;
   }
 
   if (command === "edit") {
-    if (harness.state.isStreaming || harness.state.isCompacting) {
+    if (host.state.busy) {
       throw new Error("Wait for the current operation before changing message history");
     }
     if (argument !== "") throw new Error("/edit opens the message picker and takes no argument");
-    const sent = userMessageEntries(await session.getBranch("main"));
-    if (sent.length === 0) {
-      flash(ui, "No messages to edit");
-      return;
-    }
-    const selected = await selectChoice(ui, "Edit message", messageChoices(sent), {
-      selectedId: sent.at(-1)?.id,
-    });
-    await context.navigateTo(selected);
+    await context.openTree({ filter: "users" });
     return;
   }
 
   if (command === "plugins") {
     if (argument !== "") throw new Error("/plugins takes no argument");
-    notePlugins(ui, harness);
+    await notePlugins(ui, host);
     return;
   }
 
   if (command === "reload") {
     if (argument !== "") throw new Error("/reload takes no argument");
-    const resolved = await resolveCliPlugins(
-      await context.getTrustedWorkspace(),
-      harness.state.model,
-    );
-    for (const failure of resolved.failures) {
-      note(ui, `Plugin ${failure.path}: ${failure.error}`, ui.transcript.theme.error);
-    }
-    await harness.plugins.activate(resolved.plugins);
-    await context.refreshPluginState();
-    noteSkillsLoaded(ui, harness);
+    if (host.state.busy) throw new Error("Wait for the current operation before reloading");
+    await host.reloadPlugins(await context.getTrustedWorkspace());
+    await context.rerenderTranscript();
+    await noteReloaded(ui, host);
     return;
   }
 
@@ -1203,8 +1326,8 @@ export async function runCommand(
       // A transcript note cannot rewrite itself, so percent events are dropped
       // rather than stacking ten rows under one download.
       report: (event) => {
-        if (event.kind === "downloading") note(ui, `Downloading ${event.asset}…`);
-        else if (event.kind === "verified") note(ui, "Checksum verified.");
+        if (event.kind === "downloading") notice(ui, `Downloading ${event.asset}…`);
+        else if (event.kind === "verified") notice(ui, "Checksum verified.");
       },
     });
     const noteColor: Record<Severity, string | undefined> = {
@@ -1212,7 +1335,7 @@ export async function runCommand(
       warn: ui.transcript.theme.warning,
       fail: ui.transcript.theme.error,
     };
-    note(ui, describeUpdateOutcome(outcome), noteColor[updateSeverity(outcome)]);
+    notice(ui, describeUpdateOutcome(outcome), noteColor[updateSeverity(outcome)]);
     return;
   }
 
@@ -1225,36 +1348,53 @@ export async function runCommand(
   command satisfies never;
 }
 
-export function noteSkillsLoaded(ui: Ui, harness: AgentHarness): void {
-  const count = harness.getResources().size;
-  note(ui, `${String(count)} ${count === 1 ? "skill" : "skills"} loaded`);
+function noteSkillsLoaded(ui: Ui, host: UjiHost): void {
+  const count = host.skills.size;
+  notice(ui, `${String(count)} ${count === 1 ? "skill" : "skills"} loaded`);
 }
 
-function notePlugins(ui: Ui, harness: AgentHarness): void {
-  const plugins = harness.plugins.list();
+async function noteReloaded(ui: Ui, host: UjiHost): Promise<void> {
+  const pluginCount = (await host.sdk.plugins.list({ sessionId: host.sessionId })).length;
+  const skillCount = host.skills.size;
+  notice(
+    ui,
+    `Reloaded ${String(pluginCount)} ${pluginCount === 1 ? "plugin" : "plugins"} and ${String(skillCount)} ${skillCount === 1 ? "skill" : "skills"}, then redrew the chat`,
+    ui.transcript.theme.ok,
+  );
+}
+
+async function notePlugins(ui: Ui, host: UjiHost): Promise<void> {
+  const plugins = await host.sdk.plugins.list({ sessionId: host.sessionId });
   if (plugins.length === 0) {
-    note(ui, "No plugins");
+    notice(ui, "No plugins");
     return;
   }
   for (const plugin of plugins) {
     const where = plugin.path === undefined ? plugin.source : `${plugin.source} ${plugin.path}`;
     if (plugin.status === "failed") {
-      note(ui, `${plugin.id} ${where} failed: ${plugin.error}`, ui.transcript.theme.error);
+      notice(ui, `${plugin.id} ${where} failed: ${plugin.error}`, ui.transcript.theme.error);
     } else {
-      note(ui, `${plugin.id} ${where}`);
+      notice(ui, `${plugin.id} ${where}`);
     }
   }
-  const commands = [...harness.getCommands().keys()];
-  if (commands.length > 0) note(ui, `Commands: ${commands.map((name) => `/${name}`).join(" ")}`);
+  const commands = [...host.commands.keys()];
+  if (commands.length > 0) notice(ui, `Commands: ${commands.map((name) => `/${name}`).join(" ")}`);
 }
 
 /** A plugin's question. Confirm and select open the picker; input captures the composer. */
 
 export type TuiExit = { kind: "quit" } | { kind: "signal"; signal: "SIGINT" | "SIGTERM" };
 
-export async function runTui(flags: RunFlags): Promise<TuiExit> {
-  const renderLog = createTuiRenderLog();
-  const renderer = await createCliRenderer({
+interface RunTuiOptions {
+  /** Use an existing renderer when embedding or driving the TUI. */
+  renderer?: CliRenderer;
+  /** Runs after the session and renderer have closed. */
+  onSessionClosed?: (sessionId: SessionId) => void;
+}
+
+/** The renderer the binary runs on. */
+export function createTuiRenderer(): Promise<CliRenderer> {
+  return createCliRenderer({
     exitOnCtrlC: false,
     enableMouseMovement: true,
     clearOnShutdown: true,
@@ -1264,6 +1404,16 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
     // in half-size steps, which is the difference between a lurch and a slide.
     targetFps: 60,
   });
+}
+
+/**
+ * Boots the interactive TUI. The renderer defaults to the real terminal. The
+ * QA driver passes a renderer so the same boot path can run under scripted
+ * keystrokes without writing application output into the test reporter.
+ */
+export async function runTui(flags: RunFlags, options: RunTuiOptions = {}): Promise<TuiExit> {
+  const renderLog = createTuiRenderLog();
+  const renderer = options.renderer ?? (await createTuiRenderer());
   renderLog?.attach(renderer);
   renderLog?.record({ kind: "run_started" });
   const startupAbort = new AbortController();
@@ -1279,10 +1429,15 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       });
     });
   });
-  const ui = buildUi(renderer, THEME);
+  let themeMode = resolveThemeMode();
+  const ui = buildUi(renderer, themeForMode(themeMode));
   ui.transcript.openPath = (path) => {
     void open(path);
   };
+  // A notice is the client talking. The next key is the user talking, so the
+  // slot goes back to the transcript. Registered before every handler that
+  // raises one, so the key that caused a notice never also dismisses it.
+  renderer.keyInput.on("keypress", () => ui.ephemeral.release("notice"));
   let slashAutocomplete: SlashAutocomplete;
   let shutdown: (() => Promise<void>) | undefined;
   let exit: TuiExit = { kind: "quit" };
@@ -1350,69 +1505,53 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
     }
     if (resolvedRuntime === undefined) throw new Error("login failed");
 
-    const opened = await openHarness(resolvedRuntime, flags, {
-      settings,
-      workspace: initialWorkspace,
+    const fallbacks = hostFallbacks(resolvedRuntime, settings, {
+      model: flags.model,
+      effort: flags.effort,
     });
-    const { suspended, sessionId, repo } = opened;
-    const settingsByHarness = new WeakMap<AgentHarness, ResolvedSettings>();
-    settingsByHarness.set(opened.harness, settings);
-    const createTrustedHarness: CreateHostedHarness = async (runtime, session, options) => {
-      const workspace = await trustStore.require(options.cwd);
-      const nextSettings = await settingsStore.read(workspace.cwd);
-      const created = await createHarness(
-        runtime,
-        session,
-        { model: options.model, effort: options.effort, settings: nextSettings },
-        workspace,
-      );
-      settingsByHarness.set(created.harness, nextSettings);
-      return created;
-    };
-    const host = new HarnessHost({
-      harness: opened.harness,
-      runtime: resolvedRuntime,
-      sessionId,
-      cwd: opened.harness.env.cwd,
-      createHarness: createTrustedHarness,
-      authorizeWorkspace: async (cwd) => {
-        const workspace = await chooseTrustedWorkspace(
-          ui,
-          trustStore,
-          cwd,
-          "cancel",
-          undefined,
-          renderLog,
-        );
-        if (workspace === undefined) throw new WorkspaceTrustRequired(cwd);
-        return workspace.cwd;
+    const opened = await UjiHost.open(
+      {
+        workspace: initialWorkspace,
+        settings,
+        runtime: resolvedRuntime,
+        model: fallbacks.model,
+        thinkingLevel: fallbacks.thinkingLevel,
+        report: (message) => notice(ui, message, ui.transcript.theme.error),
       },
-      // Draw what a transition writes and claim it, so the head move it causes
-      // does not rebuild a transcript that is already correct.
-      beforeAppend: (entries) => {
-        for (const entry of entries) {
-          markEntryRendered(ui, entry.id);
-          const text = entryNote(entry);
-          if (text !== undefined) note(ui, text);
-        }
-      },
-    });
-    const syncSettingsFromHarness = (): void => {
-      const current = settingsByHarness.get(host.harness);
-      if (current === undefined) throw new Error("Current harness has no resolved settings");
-      settings = current;
-    };
-    const setCurrentSettings = (next: ResolvedSettings): void => {
-      settings = next;
-      settingsByHarness.set(host.harness, next);
-    };
+      flags.resume,
+    );
+    // `/cd` swaps the host for one composed against the next workspace; every
+    // closure reads this binding, so the swap is one assignment.
+    let host = opened.host;
+    /** The launch workspace's store; `/cd` must not strand the chat elsewhere. */
+    const storePath = join(initialWorkspace.cwd, ".uji", "sessions.db");
+    // Naming is host UX. The old plugin id still configures its prompt or turns it off.
+    const naming = await manifestPluginOptions(host.cwd, "session-title");
+    const namer = naming.disabled
+      ? undefined
+      : createChatNamer({
+          runtime: () => ({ models: host.runtime.models, primary: host.model }),
+          session: () => host.storage,
+          ...(naming.options === undefined ? {} : { options: naming.options }),
+        });
+    if (namer !== undefined) disposers.push(() => namer.dispose());
     ui.transcript.cwd = host.cwd;
+    ui.transcript.toolCalls = settings.toolCalls;
     const composerParts = new ComposerParts();
-    const composerTags = new ComposerTags({
+    const sessionDrafts = new SessionDrafts();
+    const saveVisibleDraft = (): void => {
+      sessionDrafts.save(host.sessionId, ui.input.plainText, composerParts.current);
+    };
+    const restoreDraft = (sessionId: string): void => {
+      const draft = sessionDrafts.read(sessionId);
+      composerParts.restore(draft?.parts ?? []);
+      setInputText(ui.input, draft?.text ?? "");
+    };
+    const composerMarkers = new ComposerMarkers({
       renderer,
-      tags: ui.composerTagRow,
+      input: ui.input,
       preview: ui.composerPreview,
-      syntaxStyle: ui.transcript.syntaxStyle,
+      previewSyntaxStyle: ui.transcript.syntaxStyle,
       theme: ui.transcript.theme,
       nextId: ui.nextId,
       fileBody: (part) => composerParts.fileBody(part),
@@ -1430,7 +1569,6 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         }
       },
       getHarness: () => ({ close: () => host.close() }),
-      repo,
       renderer,
     });
     let shutdownStarted = false;
@@ -1450,15 +1588,15 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
           kind: "shutdown_completed",
           activeResources: process.getActiveResourcesInfo(),
         });
-        process.stdout.write(`${resumeSessionHint(host.sessionId)}\n`);
+        options.onSessionClosed?.(host.sessionId);
       }
     };
-    void checkForUpdate().then(async (notice) => {
-      if (notice === undefined || shutdownStarted) return;
+    void checkForUpdate().then(async (release) => {
+      if (release === undefined || shutdownStarted) return;
       if (!settings.autoUpdate) {
-        note(
+        notice(
           ui,
-          `Update available: ${notice.version} · /update to install`,
+          `Update available: ${release.version} · /update to install`,
           ui.transcript.theme.warning,
         );
         return;
@@ -1466,46 +1604,31 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       const outcome = await selfUpdate();
       if (shutdownStarted) return;
       if (outcome.kind === "updated") {
-        note(ui, describeUpdateOutcome(outcome));
+        notice(ui, describeUpdateOutcome(outcome));
         return;
       }
-      note(
+      notice(
         ui,
-        `Update available: ${notice.version} · ${describeUpdateOutcome(outcome)}`,
+        `Update available: ${release.version} · ${describeUpdateOutcome(outcome)}`,
         ui.transcript.theme.warning,
       );
     });
-    const usageStatus = async (): Promise<Partial<PowerlineState>> => {
-      const branch = await host.harness.session.getBranch("main");
-      const lastUsage = getLastAssistantUsage(branch);
-      const tokens = estimateContextTokens(buildSessionContext(branch)).tokens;
-      const contextWindow = host.harness.state.model.contextWindow;
-      return {
-        ...(lastUsage === undefined ? {} : { tokens: calculateContextTokens(lastUsage) }),
-        ...(contextWindow > 0 ? { pct: Math.round((tokens / contextWindow) * 100) } : {}),
-      };
-    };
-    const model = host.harness.state.model.id;
-    const workspace = await readWorkspaceStatus(host.cwd);
+    /** The whole footer for the active session; the wire's cold read fills the queue. */
+    const sessionStatus = async (): Promise<PowerlineState> => ({
+      ...(await readWorkspaceStatus(host.cwd)),
+      provider: host.model.provider,
+      model: host.model.id,
+      effort: host.thinkingLevel,
+      statuses: await settingStatuses(host),
+      queued: 0,
+      ...(await usageStatus(host)),
+    });
     const status = new ComposerStatus(
       renderer,
       ui.powerline,
       ui.transcript.theme,
       () => ui.input.focused || ui.inputBox.focused,
-      {
-        runState: "idle",
-        workspace: workspace.name,
-        branch: workspace.branch,
-        dirty: workspace.dirty,
-        model,
-        effort: host.harness.state.thinkingLevel,
-        statuses: await settingStatuses(host.harness),
-        queued: 0,
-        ...(await usageStatus()),
-        ...(providerCacheTtlMs(host.harness.state.model.provider) === undefined
-          ? {}
-          : { cacheTtlMs: providerCacheTtlMs(host.harness.state.model.provider) }),
-      },
+      await sessionStatus(),
     );
     disposers.push(() => status.dispose());
     // The composer's border swaps color on focus; the rule that closes its
@@ -1515,312 +1638,328 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       disposers.push(() => ui.input.off(event, status.repaint));
     }
     const refreshPluginState = async (): Promise<void> => {
-      status.set({ statuses: await settingStatuses(host.harness) });
+      status.patch({ statuses: await settingStatuses(host) });
     };
-    const unsubscribeHarness = host.bind((harness, cwd) =>
-      wireHarness(ui, harness, status, cwd, () => harness === host.harness),
-    );
-    disposers.push(unsubscribeHarness);
-    const unsubscribeSettings = host.bind((harness) =>
-      harness.subscribe(async (event) => {
-        if (event.type !== "agent_start") return;
-        await settingsStore.updateGlobal({
+    const rerenderTranscript = async (): Promise<void> => {
+      const branch = await host.storage.getBranch("main");
+      const open = await host.sdk.runs.current({ sessionId: host.sessionId });
+      replaceTranscript(ui, branch, { openLastTurn: open !== undefined });
+      renderer.requestRender();
+    };
+    const changeTheme = async (mode: ThemeMode): Promise<void> => {
+      themeMode = mode;
+      applyUiTheme(ui, themeForMode(mode));
+      composerMarkers.retheme(ui.transcript.syntaxStyle);
+      slashAutocomplete.retheme(ui.transcript.theme);
+      status.repaint();
+      await rerenderTranscript();
+      notice(ui, `Theme: ${mode}`, ui.transcript.theme.ok);
+    };
+    // A watched reload is background work: it earns a line only when the set of
+    // skills changed. /reload always reports, because it was asked for.
+    let lastSkillCount = host.skills.size;
+    const noteSkillsIfMoved = (): void => {
+      const count = host.skills.size;
+      if (count === lastSkillCount) return;
+      lastSkillCount = count;
+      noteSkillsLoaded(ui, host);
+    };
+    let stopSessionWire = (): void => undefined;
+    const wireActiveSession = (): void => {
+      stopSessionWire();
+      renderer.setTerminalTitle(terminalTitle(host.name));
+      const wiredHost = host;
+      const wiredSessionId = host.sessionId;
+      const isVisible = (): boolean => host === wiredHost && host.sessionId === wiredSessionId;
+      stopSessionWire = wireSession(ui, wiredHost, {
+        status,
+        cwd: wiredHost.cwd,
+        namer,
+        runNotifications: () => settings.runNotifications,
+        onPluginsChanged: () => {
+          void refreshPluginState();
+          noteSkillsIfMoved();
+        },
+        isVisible,
+      });
+    };
+    wireActiveSession();
+    disposers.push(() => stopSessionWire());
+    // Saved defaults follow what actually runs: the first run of a session
+    // records the provider, model, and effort it started with.
+    disposers.push(
+      host.subscribe((event) => {
+        if (event.kind !== "run_started" || event.operation !== "run") return;
+        void settingsStore.updateGlobal({
           defaultProvider: host.runtime.provider.id,
-          defaultModel: harness.state.model.id,
-          defaultThinkingLevel: harness.state.thinkingLevel ?? "off",
+          defaultModel: host.model.id,
+          defaultThinkingLevel: host.thinkingLevel,
         });
       }),
     );
-    disposers.push(unsubscribeSettings);
-    const unsubscribeWatcher = host.bind((harness, cwd) =>
+    disposers.push(
       watchPluginDirectories({
         directories: [
-          ...pluginDirectories(cwd),
-          ...skillDirectories(cwd).map((path) => ({ path })),
+          ...pluginDirectories(host.cwd),
+          ...skillDirectories(host.cwd).map((path) => ({ path })),
         ],
         onChange: async () => {
-          const resolved = await resolveCliPlugins(
-            await trustStore.require(cwd),
-            harness.state.model,
-          );
-          for (const failure of resolved.failures) {
-            note(ui, `Plugin ${failure.path}: ${failure.error}`, ui.transcript.theme.error);
-          }
-          await harness.plugins.activate(resolved.plugins);
-          await refreshPluginState();
-          noteSkillsLoaded(ui, harness);
+          await host.reloadPlugins(await trustStore.require(host.cwd));
         },
         onError: (error) =>
-          note(ui, `plugin reload failed: ${error.message}`, ui.transcript.theme.error),
+          notice(ui, `plugin reload failed: ${error.message}`, ui.transcript.theme.error),
       }),
     );
-    disposers.push(unsubscribeWatcher);
-    const initialBranch = await host.harness.session.getBranch("main");
+    const initialBranch = await host.storage.getBranch("main");
     const promptHistory = new PromptHistory();
     promptHistory.replace(userPromptHistory(initialBranch));
-    // Keyed on the session: a model, thinking level, or directory change swaps
-    // the harness but keeps the session, and restarting the watch there would
-    // republish the whole branch and redraw the chat for nothing.
-    const unsubscribeSessionObserver = host.bind(
-      (harness) => {
-        const watched = harness.session;
-        const isCurrent = (): boolean => host.harness.session === watched;
-        return watchSessionBranch(watched, {
-          head: "main",
-          // Rebuild only for head moves the live event path did not draw.
-          shouldReload: (leafId) =>
-            !isCurrent() || shouldReloadTranscript(ui, host.harness, leafId),
-          onBranch(entries) {
-            if (!isCurrent()) return;
-            promptHistory.replace(userPromptHistory(entries));
-            if (host.harness.state.isBusy) return;
-            replaceTranscript(ui, entries);
-          },
-          onError(error) {
-            if (isCurrent()) {
-              note(ui, `Session watch failed: ${error.message}`, ui.transcript.theme.error);
-            }
-          },
-        });
-      },
-      { dependsOn: (harness) => harness.session },
-    );
-    disposers.push(unsubscribeSessionObserver);
+    // Keyed on the session: switching restarts the watch there, and a restart
+    // would republish the whole branch and redraw the chat for nothing.
+    let stopBranchWatch = (): void => undefined;
+    const watchActiveBranch = (): void => {
+      stopBranchWatch();
+      const watched = host.storage;
+      const isCurrent = (): boolean => host.storage === watched;
+      stopBranchWatch = watchSessionBranch(watched, {
+        head: "main",
+        // A linear commit folds into the chat in place. The local run's own
+        // commits were already drawn under the same identities, so the fold
+        // is a no-op for them; a write from another process appends.
+        onAppend(entry) {
+          if (isCurrent()) commitTranscriptEntry(ui, entry);
+        },
+        onBranch(entries) {
+          if (!isCurrent()) return;
+          promptHistory.replace(userPromptHistory(entries));
+          if (host.state.busy) return;
+          replaceTranscript(ui, entries);
+        },
+        onError(error) {
+          if (isCurrent()) {
+            notice(ui, `Session watch failed: ${error.message}`, ui.transcript.theme.error);
+          }
+        },
+      });
+    };
+    watchActiveBranch();
+    disposers.push(() => stopBranchWatch());
+    // A name left in the title bar of a shell that outlives uji is a lie.
+    disposers.push(() => renderer.setTerminalTitle(TERMINAL_TITLE_BASE));
 
     const switchRuntime = async (
       nextRuntime: ResolvedRuntime,
       nextModel: string,
     ): Promise<void> => {
-      const badgesBefore = await activeSettingBadges(host.harness);
-      if (!(await host.switchRuntime(nextRuntime, nextModel))) {
-        flash(ui, `Already using ${nextModel}`);
+      const model = requireCatalogModel(nextRuntime.models, nextRuntime.provider.id, nextModel);
+      if (
+        host.runtime.provider.id === nextRuntime.provider.id &&
+        host.model.id === model.id &&
+        host.model.provider === model.provider
+      ) {
+        notice(ui, `Already using ${nextModel}`);
         return;
       }
-      syncSettingsFromHarness();
-      status.set({
-        model: nextModel,
-        effort: host.harness.state.thinkingLevel,
-        statuses: await settingStatuses(host.harness),
+      const badgesBefore = await activeSettingBadges(host);
+      host.runtime = nextRuntime;
+      const outcome = await host.configureModel(model);
+      if (outcome === "deferred") notice(ui, `Model changes after this run: ${model.id}`);
+      status.patch({
+        provider: model.provider,
+        model: model.id,
+        effort: host.thinkingLevel,
+        statuses: await settingStatuses(host),
       });
-      setCurrentSettings({
+      settings = {
         ...settings,
         defaultProvider: nextRuntime.provider.id,
         defaultModel: nextModel,
-      });
+      };
       await settingsStore.updateGlobal({
         defaultProvider: nextRuntime.provider.id,
         defaultModel: nextModel,
       });
-      const settingsAfter = host.harness.getSettings();
+      const badgesAfter = await activeSettingBadges(host);
       for (const [id, badge] of badgesBefore) {
-        if (!settingsAfter.has(id)) note(ui, `${badge.label} unavailable for ${nextModel}`);
+        if (!badgesAfter.has(id)) notice(ui, `${badge.label} unavailable for ${nextModel}`);
       }
     };
 
     const changeDirectory = async (input: string): Promise<void> => {
-      const nextCwd = await host.changeDirectory(input);
-      if (nextCwd === undefined) {
-        flash(ui, `Already in ${host.cwd}`);
+      if (host.state.busy) {
+        throw new Error("Wait for the current operation before changing directory");
+      }
+      const requested = resolveDirectory(host.cwd, input);
+      const info = await stat(requested);
+      if (!info.isDirectory()) throw new Error(`Not a directory: ${requested}`);
+      const workspace = await chooseTrustedWorkspace(
+        ui,
+        trustStore,
+        requested,
+        "cancel",
+        undefined,
+        renderLog,
+      );
+      if (workspace === undefined) throw new WorkspaceTrustRequired(requested);
+      if (workspace.cwd === host.cwd) {
+        notice(ui, `Already in ${host.cwd}`);
         return;
       }
-      syncSettingsFromHarness();
-      const workspace = await readWorkspaceStatus(host.cwd);
+      const nextSettings = await settingsStore.read(workspace.cwd);
+      const next = await UjiHost.open(
+        {
+          workspace,
+          settings: nextSettings,
+          runtime: host.runtime,
+          model: host.model,
+          thinkingLevel: host.thinkingLevel,
+          storePath,
+          report: (message) => notice(ui, message, ui.transcript.theme.error),
+        },
+        { kind: "session", id: host.sessionId },
+      );
+      const previous = host;
+      host = next.host;
+      settings = nextSettings;
+      // The cwd_change entry is the durable record; the transcript draws it.
+      await host.storage.admitEntry(
+        { type: "custom", id: newId("e"), customType: "cwd_change", data: { cwd: workspace.cwd } },
+        "main",
+      );
+      rewireActiveSession();
+      void previous.parkAndClose();
       ui.transcript.cwd = host.cwd;
-      status.set({
-        workspace: workspace.name,
-        branch: workspace.branch,
-        dirty: workspace.dirty,
-      });
-      // The claimed cwd_change entry already drew the new directory.
+      ui.transcript.toolCalls = settings.toolCalls;
+      status.patch(await readWorkspaceStatus(host.cwd));
       await refreshMentionFiles(host.cwd);
     };
 
     const changeThinkingLevel = async (level: ThinkingLevel, announce = true): Promise<void> => {
-      if (!(await host.changeThinkingLevel(level))) {
-        if (announce) flash(ui, `Already using ${level}`);
+      if (host.thinkingLevel === level) {
+        if (announce) notice(ui, `Already using ${level}`);
         return;
       }
-      syncSettingsFromHarness();
-      status.set({ effort: host.harness.state.thinkingLevel });
-      setCurrentSettings({ ...settings, defaultThinkingLevel: level });
+      const outcome = await host.configureThinking(level);
+      if (outcome === "deferred") notice(ui, `Thinking level changes after this run: ${level}`);
+      status.patch({ effort: host.thinkingLevel });
+      settings = { ...settings, defaultThinkingLevel: level };
       await settingsStore.updateGlobal({ defaultThinkingLevel: level });
-      if (announce) note(ui, `Thinking level: ${level}`, ui.transcript.theme.ok);
+      if (announce) notice(ui, `Thinking level: ${level}`, ui.transcript.theme.ok);
     };
 
-    const settleVisibleRun = (harness: AgentHarness, outcome: RunOutcome): void => {
-      if (host.harness !== harness) return;
-      if (ui.activeTurn !== undefined) {
-        if (outcome.kind === "failed") {
-          ui.activeTurn.addNote(`Error: ${outcome.error.message}`, ui.transcript.theme.error);
-        }
-        if (outcome.kind === "completed") ui.activeTurn.settle();
-        else ui.activeTurn.settle(outcome.kind);
-        ui.activeTurn = undefined;
+    /**
+     * Everything keyed to the active session, restarted after a session or
+     * workspace switch: the wire (which carries the title) and the branch fold.
+     * `attach()` inside the host already resumes an orphaned operation and
+     * follows a live claim without contesting it (design record, "Who runs?").
+     */
+    const rewireActiveSession = (): void => {
+      wireActiveSession();
+      watchActiveBranch();
+    };
+
+    /**
+     * Compaction and transport are composition inputs, so changing one
+     * recomposes: a fresh host over the same workspace, store, and session.
+     * Cheap and rare; the alternative is a mutable register the SDK refuses.
+     */
+    const reopenWithSettings = async (next: ResolvedSettings): Promise<void> => {
+      if (host.state.busy) {
+        throw new Error("Wait for the current operation before changing settings");
       }
+      const workspace = await trustStore.require(host.cwd);
+      const previous = host;
+      const replacement = await UjiHost.open(
+        {
+          workspace,
+          settings: next,
+          runtime: host.runtime,
+          model: host.model,
+          thinkingLevel: host.thinkingLevel,
+          storePath,
+          report: (message) => notice(ui, message, ui.transcript.theme.error),
+        },
+        { kind: "session", id: host.sessionId },
+      );
+      host = replacement.host;
+      settings = next;
+      rewireActiveSession();
+      void previous.parkAndClose();
     };
-
-    const failVisibleOperation = (harness: AgentHarness, message: string): void => {
-      if (host.harness !== harness) return;
-      turnNote(ui, message, ui.transcript.theme.error);
-      if (!harness.state.isStreaming && !harness.state.isCompacting) {
-        ui.activeTurn?.settle("failed");
-        ui.activeTurn = undefined;
-      }
-    };
-
-    const syncVisibleHarnessState = (harness: AgentHarness): void => {
-      if (host.harness !== harness) return;
-      status.set({
-        runState: harness.state.isCompacting
-          ? "compacting"
-          : harness.state.isStreaming
-            ? "working"
-            : "idle",
-      });
-      ui.input.placeholder =
-        harness.state.isStreaming || harness.state.isCompacting
-          ? BUSY_COMPOSER_PLACEHOLDER
-          : COMPOSER_PLACEHOLDER;
-      refreshHints(ui, harness);
-    };
-
-    const resumeSuspended = (harness: AgentHarness): void => {
-      status.set({ runState: "resuming" });
-      ui.input.placeholder = BUSY_COMPOSER_PLACEHOLDER;
-      void harness
-        .resume()
-        .then((result) => {
-          if (!result.ok) {
-            failVisibleOperation(harness, `Resume failed: ${result.error.message}`);
-            return;
-          }
-          if (result.value.operation === "run") settleVisibleRun(harness, result.value);
-        })
-        .catch((error: unknown) => {
-          failVisibleOperation(
-            harness,
-            `Resume failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        })
-        .finally(() => syncVisibleHarnessState(harness));
-    };
-
-    const observeStartedRun = (harness: AgentHarness): void => {
-      void harness
-        .waitForIdle()
-        .then((result) => {
-          if (result?.ok === true && !("operation" in result.value)) {
-            settleVisibleRun(harness, result.value);
-          }
-        })
-        .catch((error: unknown) => {
-          failVisibleOperation(
-            harness,
-            `Run failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        })
-        .finally(() => syncVisibleHarnessState(harness));
-    };
-
-    const showRunner = async (
-      nextSessionId: string,
-      nextSuspended: readonly SuspendedOperation[],
-    ): Promise<void> => {
-      ui.input.clear();
+    const showSession = async ({
+      sessionId,
+      announce,
+    }: {
+      sessionId: string;
+      announce: boolean;
+    }): Promise<void> => {
+      restoreDraft(sessionId);
       ui.input.placeholder = COMPOSER_PLACEHOLDER;
       ui.focus.reset();
-      refreshHints(ui, host.harness);
-      const branch = await host.harness.session.getBranch("main");
+      refreshHints(ui, host.state.busy);
+      const branch = await host.storage.getBranch("main");
       ui.transcript.cwd = host.cwd;
-      const hasSuspendedRun = nextSuspended.some((operation) => operation.kind === "run");
-      replaceTranscript(ui, branch, {
-        openLastTurn: host.harness.state.isStreaming || hasSuspendedRun,
-      });
+      ui.transcript.toolCalls = settings.toolCalls;
+      // An open operation means a run is live here or resumable by attach.
+      const open = await host.sdk.runs.current({ sessionId: host.sessionId });
+      replaceTranscript(ui, branch, { openLastTurn: open !== undefined });
       promptHistory.replace(userPromptHistory(branch));
-      const workspace = await readWorkspaceStatus(host.cwd);
-      status.set({
-        runState: host.harness.state.isCompacting
-          ? "compacting"
-          : host.harness.state.isStreaming
-            ? "working"
-            : "idle",
-        workspace: workspace.name,
-        branch: workspace.branch,
-        dirty: workspace.dirty,
-        model: host.harness.state.model.id,
-        effort: host.harness.state.thinkingLevel,
-        statuses: await settingStatuses(host.harness),
-        queued: 0,
-        ...(await usageStatus()),
-      });
-      turnNote(ui, `Resumed ${shortId(nextSessionId)} · ${String(branch.length)} entries`);
-      if (nextSuspended.length > 0) resumeSuspended(host.harness);
+      status.replace(await sessionStatus());
+      if (announce) {
+        turnNote(ui, `Resumed ${shortId(sessionId)} · ${String(branch.length)} entries`);
+      }
+      if (open?.kind === "orphaned") {
+        turnNote(ui, "Resuming…", ui.transcript.theme.tool);
+      } else if (open?.kind === "live") {
+        notice(ui, "Another uji is running this chat; following along.");
+      }
     };
 
     let switchingSession = false;
     const resumeSession = async (nextSessionId: string): Promise<void> => {
       if (nextSessionId === host.sessionId) {
-        note(ui, `Already in ${shortId(nextSessionId)}`);
+        notice(ui, `Already in ${shortId(nextSessionId)}`);
         return;
       }
       if (switchingSession) throw new Error("A chat switch is already in progress");
       switchingSession = true;
       try {
-        const { suspended: nextSuspended } = await host.activateSession(nextSessionId, () =>
-          repo.open(nextSessionId),
-        );
-        syncSettingsFromHarness();
-        await showRunner(nextSessionId, nextSuspended);
+        saveVisibleDraft();
+        await host.activateSession(parseSessionId(nextSessionId));
+        rewireActiveSession();
+        await showSession({ sessionId: nextSessionId, announce: true });
       } finally {
         switchingSession = false;
       }
     };
 
     const newSession = async (): Promise<void> => {
-      const session = await repo.create();
-      const metadata = await session.getMetadata();
-      await host.switchSession(session, metadata.id);
-      syncSettingsFromHarness();
-      ui.input.clear();
-      ui.input.placeholder = COMPOSER_PLACEHOLDER;
-      ui.focus.reset();
-      refreshHints(ui, host.harness);
-      replaceTranscript(ui, []);
-      promptHistory.replace([]);
-      status.set({
-        runState: "idle",
-        statuses: await settingStatuses(host.harness),
-        queued: 0,
-        tokens: undefined,
-        pct: undefined,
-      });
+      saveVisibleDraft();
+      const info = await host.newSession();
+      rewireActiveSession();
+      await showSession({ sessionId: info.sessionId, announce: false });
     };
 
     const nameSession = async (name: string): Promise<void> => {
-      await host.harness.session.setName(name);
-      note(ui, `Chat named ${name}`, ui.transcript.theme.ok);
+      await host.sdk.sessions.rename({ sessionId: host.sessionId, name });
+      notice(ui, `Chat named ${name}`, ui.transcript.theme.ok);
     };
 
     let commandContext: CommandContext;
 
     const openSettings = async (): Promise<void> => {
-      if (host.harness.state.isStreaming || host.harness.state.isCompacting) {
+      if (host.state.busy) {
         throw new Error("Wait for the current operation before changing settings");
       }
       if (ui.selecting) throw new Error("Another menu is already open");
 
-      // Prefetched because read() is durable-storage I/O and settingValue()
-      // runs during a sync render.
-      const pluginSettings = [...host.harness.getSettings()];
-      const settingValues = new Map(
-        await Promise.all(
-          pluginSettings.map(async ([id, setting]) => [id, await setting.read()] as const),
-        ),
-      );
-      const pluginRows = pluginSettings.map(([id, setting]): SettingRow => ({
-        id: `plugin:${id}`,
+      // One resolved snapshot: current() runs during a sync render, and applying
+      // writes durable storage, so the row patches its own copy afterwards.
+      const pluginSettings = await host.sdk.plugins.settings.list({ sessionId: host.sessionId });
+      const settingValues = new Map(pluginSettings.map((setting) => [setting.id, setting.current]));
+      const pluginRows = pluginSettings.map((setting): SettingRow => ({
+        id: `plugin:${setting.id}`,
         label: setting.label,
-        current: () => settingValues.get(id) ?? setting.choices[0].id,
+        current: () => settingValues.get(setting.id) ?? setting.choices[0].id,
         choices: () =>
           setting.choices.map((choice) => ({
             id: choice.id,
@@ -1828,8 +1967,13 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
             ...(choice.description === undefined ? {} : { description: choice.description }),
           })),
         apply: async (choiceId) => {
-          await setting.apply(choiceId);
-          settingValues.set(id, choiceId);
+          const outcome = await host.sdk.plugins.settings.apply({
+            sessionId: host.sessionId,
+            id: setting.id,
+            choiceId,
+          });
+          if (outcome.kind !== "applied") throw new Error(`Could not set ${setting.label}`);
+          settingValues.set(setting.id, choiceId);
           await refreshPluginState();
         },
       }));
@@ -1838,7 +1982,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         {
           id: "model",
           label: "Model",
-          current: () => `${host.runtime.provider.id}/${host.harness.state.model.id}`,
+          current: () => `${host.runtime.provider.id}/${host.model.id}`,
           choices: () => cachedModelChoices(host.runtime.models),
           load: () => reloadModelChoices(host.runtime.models),
           apply: (choiceId) => switchToModelChoice(host.runtime, choiceId, switchRuntime),
@@ -1846,14 +1990,14 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         {
           id: "thinking",
           label: "Thinking level",
-          current: () => host.harness.state.thinkingLevel ?? "off",
+          current: () => host.thinkingLevel,
           choices: () =>
-            getSupportedThinkingLevels(host.harness.state.model).map((level) => ({
+            getSupportedThinkingLevels(host.model).map((level) => ({
               id: level,
               label: level,
             })),
           apply: async (choiceId) => {
-            const level = getSupportedThinkingLevels(host.harness.state.model).find(
+            const level = getSupportedThinkingLevels(host.model).find(
               (candidate) => candidate === choiceId,
             );
             if (level === undefined) throw new Error(`Unsupported thinking level: ${choiceId}`);
@@ -1870,8 +2014,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
           ],
           apply: async (choiceId) => {
             const compaction = { ...settings.compaction, enabled: choiceId === "on" };
-            host.harness.setCompactionSettings(compaction);
-            setCurrentSettings({ ...settings, compaction });
+            await reopenWithSettings({ ...settings, compaction });
             await settingsStore.updateGlobal({ compaction: { enabled: compaction.enabled } });
           },
         },
@@ -1885,8 +2028,56 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
           ],
           apply: async (choiceId) => {
             const autoUpdate = choiceId === "on";
-            setCurrentSettings({ ...settings, autoUpdate });
+            settings = { ...settings, autoUpdate };
             await settingsStore.updateGlobal({ autoUpdate });
+          },
+        },
+        {
+          id: "run-notifications",
+          label: "Run alerts",
+          current: () => settings.runNotifications,
+          choices: () => [
+            { id: "alert", label: "alert", description: "Show an alert when each run stops" },
+            {
+              id: "sound",
+              label: "alert + sound",
+              description: "Show the alert and ring the terminal bell",
+            },
+            { id: "off", label: "off", description: "Don't alert when runs stop" },
+          ],
+          apply: async (choiceId) => {
+            const runNotifications = RUN_NOTIFICATION_MODES.find(
+              (candidate) => candidate === choiceId,
+            );
+            if (runNotifications === undefined) {
+              throw new Error(`Unknown run alert mode: ${choiceId}`);
+            }
+            settings = { ...settings, runNotifications };
+            await settingsStore.updateGlobal({ runNotifications });
+          },
+        },
+        {
+          id: "tool-calls",
+          label: "Tool calls",
+          current: () => settings.toolCalls,
+          choices: () => [
+            {
+              id: "auto",
+              label: "auto",
+              description: "Group consecutive calls; edits stay full cards",
+            },
+            { id: "compact", label: "compact", description: "Group every call, edits included" },
+            { id: "detailed", label: "detailed", description: "One full card per call" },
+          ],
+          apply: async (choiceId) => {
+            const toolCalls = TOOL_CALL_DISPLAY_MODES.find((candidate) => candidate === choiceId);
+            if (toolCalls === undefined) throw new Error(`Unknown tool call display: ${choiceId}`);
+            settings = { ...settings, toolCalls };
+            ui.transcript.toolCalls = toolCalls;
+            // Presentation only, so redraw the record instead of recomposing
+            // the host. The menu opens while idle, which makes this safe.
+            await rerenderTranscript();
+            await settingsStore.updateGlobal({ toolCalls });
           },
         },
         {
@@ -1897,8 +2088,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
           apply: async (choiceId) => {
             const transport = TRANSPORTS.find((candidate) => candidate === choiceId);
             if (transport === undefined) throw new Error(`Unknown transport: ${choiceId}`);
-            host.harness.setStreamOptions({ transport });
-            setCurrentSettings({ ...settings, transport });
+            await reopenWithSettings({ ...settings, transport });
             await settingsStore.updateGlobal({ transport });
           },
         },
@@ -1908,7 +2098,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       return new Promise<void>((resolve) => {
         const close = (): void => {
           closeInlineMenu(ui, menu);
-          refreshHints(ui, host.harness);
+          refreshHints(ui, host.state.busy);
           resolve();
         };
 
@@ -1961,7 +2151,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
     };
 
     const openCommandPalette = async (): Promise<void> => {
-      const commands = availableSlashCommands(host.harness.getCommands(), new Map());
+      const commands = availableSlashCommands(host.commands, new Map());
       const selectedName = await selectChoice(
         ui,
         "Commands",
@@ -1976,7 +2166,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       if (resolveSlashCommand(selected.name) !== undefined) {
         const acceptance = acceptSlashCommand(selected, "return");
         if (acceptance.action === "complete") {
-          prefillComposer(acceptance.text);
+          prefillComposer(acceptance.token);
           return;
         }
       }
@@ -1984,9 +2174,9 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
     };
 
     const openSkillPalette = async (): Promise<void> => {
-      const items = skillPaletteItems(host.harness.getResources());
+      const items = skillPaletteItems(host.skills);
       if (items.length === 0) {
-        flash(ui, "No skills found. Add SKILL.md to .uji/skills.");
+        notice(ui, "No skills found. Add SKILL.md to .uji/skills.");
         return;
       }
       const selectedName = await selectChoice(ui, "Skills", items);
@@ -1995,11 +2185,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
 
     const focusComposer = (): void => {
       ui.focus.reset();
-      refreshHints(ui, host.harness);
-    };
-    const focusScrollback = (): void => {
-      ui.focus.use(ui.scroll);
-      refreshHints(ui, host.harness);
+      refreshHints(ui, host.state.busy);
     };
     const clearComposer = (): void => {
       composerParts.clear();
@@ -2009,113 +2195,306 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
     };
 
     const requireEditableHistory = (): void => {
-      if (host.harness.state.isStreaming || host.harness.state.isCompacting) {
+      if (host.state.busy) {
         throw new Error("Wait for the current operation before changing message history");
       }
     };
 
+    /** Put a message that just left the record into the composer, files and all. */
+    const handBackMessage = (sent: UserMessage, told: string): void => {
+      setInputText(ui.input, composerParts.load(sent.content));
+      promptHistory.resetBrowse();
+      focusComposer();
+      notice(ui, told, ui.transcript.theme.ok);
+    };
+
     /**
-     * Landing on a message you sent takes it back instead of parking under it:
-     * the head moves to its parent, the replies it drew leave the transcript,
-     * and the message returns to the composer with its files and images still
-     * attached. That round trip is the only way to edit what you already said,
-     * so it never drops the text it pulls out of the chat. Any other entry is a
-     * plain head move.
-     *
-     * Based on pi's `navigateTree`, which prefills its editor for the same reason:
-     * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/session/agent-session.ts
+     * pi's "Summarize branch?" question. Escape hands the tree back; cancelling
+     * the focus text asks the question again.
      */
-    const navigateTo = async (entryId: string | null): Promise<void> => {
+    const askSummary = async (): Promise<
+      { kind: "chosen"; summary?: { customInstructions?: string } } | { kind: "back" }
+    > => {
+      while (true) {
+        let choice: string;
+        try {
+          choice = await selectChoice(ui, "Summarize the branch you are leaving?", SUMMARY_CHOICES);
+        } catch (error) {
+          if (error instanceof PickerCancelled) return { kind: "back" };
+          throw error;
+        }
+        if (choice === "none") return { kind: "chosen" };
+        if (choice === "summarize") return { kind: "chosen", summary: {} };
+        notice(ui, "What should the summary focus on?", ui.transcript.theme.foreground);
+        try {
+          const focus = await readComposerLine(ui, () => host.state.busy, {
+            prompt: "focus > ",
+            placeholder: "the failing test, the approach that was dropped…",
+          });
+          return {
+            kind: "chosen",
+            summary: focus.trim() === "" ? {} : { customInstructions: focus.trim() },
+          };
+        } catch (error) {
+          if (!(error instanceof PickerCancelled)) throw error;
+        }
+      }
+    };
+
+    /**
+     * The tree, the summary question, and the move, in pi's order. Core
+     * re-points the head as a durable run; this only asks. Landing on a message
+     * you sent takes it back instead of parking under it: the head parks on
+     * its parent and the message returns to the composer with its files and
+     * images still attached, which is the only way to edit what you already
+     * said. Any other entry becomes the leaf. Escape in the question and a
+     * stopped summary both reopen the tree on the same row; a failed summary
+     * leaves the head where it was.
+     *
+     * Based on pi's `showTreeSelector` and `navigateTree`:
+     * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/interactive/interactive-mode.ts#L5175
+     * https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/agent-session.ts#L3030
+     */
+    const openTree = async (options: OpenTreeOptions): Promise<void> => {
       requireEditableHistory();
-      const entry = entryId === null ? undefined : await host.harness.session.getEntry(entryId);
-      if (entryId !== null && entry === undefined) {
-        throw new Error(`No entry ${shortId(entryId)} in this chat`);
-      }
-      const sent =
-        entry?.type === "message" && entry.message.role === "user" ? entry.message : undefined;
-      // Holding the returning message would mean overwriting the draft already
-      // in the composer, so refuse instead of choosing which text to lose.
-      if (sent !== undefined && ui.input.plainText.trim() !== "") {
-        throw new Error("Clear the composer before editing a message");
-      }
-      const target = sent === undefined ? entryId : (entry?.parentId ?? null);
-      const leaf = await host.harness.session.getLeafId("main");
-      if (target === leaf && sent === undefined) {
-        flash(ui, "Already at that point in the chat");
+      const entries = await host.storage.findEntries();
+      if (entries.length === 0) {
+        notice(ui, "No messages to branch from");
         return;
       }
-      // The picker was open for as long as the user took to read it.
+      const leafId = await host.storage.getLeafId("main");
+      const selectedId = await selectTreeEntry(ui, {
+        tree: projectSessionTree(entries, leafId),
+        selectedId: options.selectedId ?? leafId,
+        ...(options.filter === undefined ? {} : { filter: options.filter }),
+      });
+      const byId = new Map(entries.map((entry) => [entry.id, entry]));
+      const selected = byId.get(selectedId);
+      if (selected === undefined) throw new Error(`Entry not found: ${selectedId}`);
+      const target = navigationTarget(selected);
+      if (target.kind === "move" && target.targetId === leafId) {
+        notice(ui, "Already at that point in the chat");
+        return;
+      }
+      const takesBack = target.kind === "restore";
+      // Holding the returning message would mean overwriting the draft already
+      // in the composer, so refuse instead of choosing which text to lose.
+      if (takesBack && ui.input.plainText.trim() !== "") {
+        throw new Error("Clear the composer before editing a message");
+      }
+      const again = (): Promise<void> => openTree({ ...options, selectedId });
+      let summary: { customInstructions?: string } | undefined;
+      if (collectAbandonedEntries(byId, leafId, selectedId).entries.length > 0) {
+        const answer = await askSummary();
+        if (answer.kind === "back") return again();
+        summary = answer.summary;
+      }
+      // The pickers were open for as long as the user took to read them.
       requireEditableHistory();
-      if (target !== leaf) {
-        ui.renderedEntries.clear();
-        await host.harness.session.moveHead("main", target);
+      const outcome = await host.sdk.heads.move({
+        sessionId: host.sessionId,
+        to: selectedId,
+        ...(summary === undefined ? {} : { summary }),
+      });
+      if (outcome.kind === "not_found") throw new Error(`Entry not found: ${selectedId}`);
+      if (outcome.kind === "busy") throw new Error("Wait for the current operation");
+      if (outcome.kind === "aborted") {
+        notice(ui, "Branch summary stopped");
+        return again();
       }
-      if (sent === undefined) {
-        flash(
-          ui,
-          target === null
-            ? "Moved to the start of the chat. The next message starts a branch."
-            : `Moved to ${shortId(target)}. The next message starts a branch.`,
-          ui.transcript.theme.ok,
-        );
-      } else {
-        setInputText(ui.input, composerParts.load(sent.content));
-        promptHistory.resetBrowse();
-        flash(
-          ui,
+      if (outcome.kind === "failed") throw new Error(outcome.message);
+      // Match pi's navigation order: redraw the destination before a restored
+      // message reaches the composer, where it can be submitted immediately.
+      const branch = await host.storage.getBranch("main");
+      promptHistory.replace(userPromptHistory(branch));
+      replaceTranscript(ui, branch);
+      if (outcome.restored !== undefined) {
+        handBackMessage(
+          { role: "user", content: outcome.restored.content, timestamp: Date.now() },
           "Message moved back to the composer. Enter sends it again.",
-          ui.transcript.theme.ok,
         );
+        return;
       }
+      const movedTo = await host.storage.getLeafId("main");
+      notice(
+        ui,
+        movedTo === null
+          ? "Moved to the start of the chat. The next message starts a branch."
+          : `Moved to ${shortId(movedTo)}. The next message starts a branch.`,
+        ui.transcript.theme.ok,
+      );
       focusComposer();
     };
 
+    /**
+     * Escape stopped the run before the model said anything, so the message
+     * goes back where it was typed rather than sitting under a stopped line.
+     * It is `openTree` on the last thing you sent, minus the picker and the
+     * summary question: nothing was abandoned, because nothing was produced.
+     *
+     * Waiting for idle first is not optional. The runner still holds the head
+     * when `run_finished` arrives, and `navigate` would queue behind that claim
+     * rather than fail, which is a slower way to reach the same place.
+     */
+    const retractStoppedPrompt = async (): Promise<void> => {
+      await host.sdk.runs.wait({ sessionId: host.sessionId });
+      const branch = await host.storage.getBranch("main");
+      const sent = userMessageEntries(branch).at(-1);
+      const restore = sent === undefined ? undefined : await navigateBack(sent.id);
+      // The turn is already off screen, so a chat that cannot give the message
+      // back has to redraw itself rather than stay a message short.
+      if (restore === undefined) {
+        replaceTranscript(ui, await host.storage.getBranch("main"));
+        return;
+      }
+      handBackMessage(restore, "Stopped. Message is back in the composer.");
+    };
+
+    /** Park the head on an entry's parent and return the message it held. */
+    const navigateBack = async (entryId: string): Promise<UserMessage | undefined> => {
+      const outcome = await host.sdk.heads.move({ sessionId: host.sessionId, to: entryId });
+      if (outcome.kind === "failed") throw new Error(outcome.message);
+      if (outcome.kind === "busy") throw new Error("Wait for the current operation");
+      if (outcome.kind !== "moved" || outcome.restored === undefined) return undefined;
+      return { role: "user", content: outcome.restored.content, timestamp: Date.now() };
+    };
+
+    ui.retractPrompt = () => {
+      void retractStoppedPrompt().catch(reportCommandError);
+      return true;
+    };
+
     commandContext = {
-      repo,
-      getTarget: () => ({ sessionId: host.sessionId, harness: host.harness }),
+      getHost: () => host,
       getRuntime: () => host.runtime,
-      getTrustedWorkspace: () => trustStore.require(host.harness.env.cwd),
+      getThemeMode: () => themeMode,
+      getTrustedWorkspace: () => trustStore.require(host.cwd),
 
       switchRuntime,
       changeDirectory,
       changeThinkingLevel,
+      changeTheme,
       refreshPluginState,
+      rerenderTranscript,
       resumeSession,
       newSession,
       nameSession,
+      nameFromThread: () => {
+        if (namer === undefined) {
+          throw new Error('Chat naming is disabled ("-session-title" in .uji/uji.json)');
+        }
+        return namer.nameNow();
+      },
       openCommandPalette,
       openSettings,
       openSkillPalette,
-      navigateTo,
+      openTree,
       shutdown,
     };
 
     const reportCommandError = (error: unknown): void => {
       if (error instanceof PickerCancelled) return;
-      note(ui, `error: ${errorMessage(error)}`, ui.transcript.theme.error);
+      // A command still in flight when /quit closes the SDK fails with
+      // UjiClosed; there is no screen left to report that on.
+      if (shutdownStarted) return;
+      notice(ui, `error: ${errorMessage(error)}`, ui.transcript.theme.error);
     };
 
     /**
-     * Queued prompts are reviewed the way opencode reviews them: one keyboard
+     * Queued messages are reviewed the way opencode reviews them: one keyboard
      * menu over the composer, no pane and no mouse targets. Every action ends
-     * the menu, so the composer is never left half-owned by a list.
+     * the menu, so the composer is never left half-owned by a list. Enter and
+     * ctrl+e take a message back to the composer, ctrl+d drops it.
      *
      * Based on opencode's queued-prompt panel:
      * https://github.com/anomalyco/opencode/blob/3a31c4ea801915c0b050df4b3842997ea62b6e93/packages/opencode/src/cli/cmd/run/footer.command.tsx
      */
+    const takeQueued = async (entryId: string): Promise<boolean> => {
+      const outcome = await host.sdk.messages.cancel({ sessionId: host.sessionId, entryId });
+      if (outcome.kind === "cancelled") return true;
+      // Core sent it between the menu opening and the key: it is in the
+      // transcript now, so there is nothing left to take back.
+      notice(ui, "That message was already sent", ui.transcript.theme.warning);
+      return false;
+    };
+
     const deleteQueued = async (entryId: string): Promise<void> => {
-      const result = await host.harness.cancelQueued(entryId);
-      if (!result.ok) throw result.error;
-      flash(ui, "Removed from the queue");
+      if (await takeQueued(entryId)) notice(ui, "Removed from the queue");
+    };
+
+    /**
+     * Send the message at the front of the queue now, without taking it back
+     * to the composer first. Core keeps the same entry and the same place in
+     * line; only the lane changes, so a follow-up joins the run instead of
+     * waiting it out.
+     *
+     * Based on OpenCode v2, where the queued-prompt menu makes steer the
+     * default action on a waiting message:
+     * https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/routes/session/index.tsx
+     */
+    const steerQueued = async (entryId: string): Promise<void> => {
+      const outcome = await host.sdk.messages.redeliver({
+        sessionId: host.sessionId,
+        entryId,
+        delivery: "steer",
+      });
+      // Every non-moved outcome means the queue moved under the menu, and each
+      // is already what the key was for: the message is gone or on its way.
+      if (outcome.kind === "unchanged") {
+        notice(ui, `That message is already going out with the next step`);
+        return;
+      }
+      if (outcome.kind === "already_consumed" || outcome.kind === "not_found") {
+        notice(ui, "That message was already sent", ui.transcript.theme.warning);
+      }
+    };
+
+    /**
+     * Enter on an empty composer sends what is already waiting. There is
+     * nothing to submit, and the one thing a queue makes you want is for the
+     * next message to go now, so the empty keystroke is spent on that instead
+     * of on nothing. Steers are skipped: one is already going out.
+     *
+     * Based on OpenCode v2's `onEmptySubmit`:
+     * https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/routes/session/index.tsx
+     */
+    const steerFirstQueued = (): void => {
+      const next = nextToSteer(ui.queue.pending);
+      if (next === undefined) return;
+      void steerQueued(next.entryId).catch(reportCommandError);
+    };
+
+    const editQueued = async (item: PendingItem): Promise<void> => {
+      if (ui.input.plainText.trim() !== "") {
+        notice(ui, "Send or clear the draft first, then edit the queued message");
+        return;
+      }
+      if (!(await takeQueued(item.entryId))) return;
+      setInputText(ui.input, composerParts.load(item.content));
+      promptHistory.resetBrowse();
+      focusComposer();
+      notice(
+        ui,
+        `Back in the composer. Enter steers, ${keycap("chat.queue.submit")} queues.`,
+        ui.transcript.theme.ok,
+      );
     };
 
     const openQueue = async (): Promise<void> => {
-      const items = await host.harness.pendingQueue();
+      const items = ui.queue.pending;
       if (items.length === 0) {
-        flash(ui, "Nothing is queued");
+        notice(ui, "Nothing is queued");
         return;
       }
+      // One item still opens the list, because the row is no longer a single
+      // possible answer: send it now, edit it, or drop it are three.
+      const byId = new Map(items.map((item) => [item.entryId, item]));
+      const edit = (entryId: string): void => {
+        const item = byId.get(entryId);
+        if (item !== undefined) void editQueued(item).catch(reportCommandError);
+      };
       const actions: ChoiceAction[] = [
+        { key: "e", ctrl: true, label: "edit", run: edit },
         {
           key: "d",
           ctrl: true,
@@ -2124,16 +2503,18 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         },
       ];
       try {
-        await selectChoice(
+        const chosen = await selectChoice(
           ui,
           "Queued messages",
           items.map((item, index) => ({
             id: item.entryId,
-            label: partsText(item.message.content).replaceAll("\n", " ").trim(),
-            description: `${String(index + 1)} \u00b7 ${item.delivery === "nextRun" ? "next run" : item.delivery}`,
+            label: partsText(item.content).replaceAll("\n", " ").trim(),
+            // The same word the gutter row shows, from the same table.
+            description: `${String(index + 1)} \u00b7 ${DELIVERY[item.delivery].label}`,
           })),
-          { actions },
+          { actions, selectLabel: "send now" },
         );
+        void steerQueued(chosen).catch(reportCommandError);
       } catch (error) {
         if (!(error instanceof PickerCancelled)) throw error;
       }
@@ -2155,36 +2536,39 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       completeDirectories(query) {
         return discoverDirectorySuggestions(host.cwd, query);
       },
+      // Drops out of the composer into the ephemeral slot, which borrows its
+      // rows from the transcript's tail so no chat row moves.
+      onRows(rows) {
+        if (rows > 0) ui.ephemeral.mount(slashAutocomplete.container, rows);
+        else ui.ephemeral.release(slashAutocomplete.container);
+      },
     });
-    // Below the composer, the way every other terminal chat drops its
-    // completions: the prompt stays put while the list grows downward.
-    ui.root.insertBefore(slashAutocomplete.container, ui.hints);
     ui.closeInlineMenus = () => slashAutocomplete.close();
     // Warm the catalog so the first model menu opens on a full list.
     void loadAuthenticatedModels(host.runtime.models).catch(() => undefined);
 
     if (flags.resume.kind !== "new" && initialBranch.length > 0) {
-      replaceTranscript(ui, initialBranch, {
-        openLastTurn: suspended.some((operation) => operation.kind === "run"),
-      });
+      const open = await host.sdk.runs.current({ sessionId: host.sessionId });
+      replaceTranscript(ui, initialBranch, { openLastTurn: open !== undefined });
+      if (open?.kind === "orphaned") turnNote(ui, "Resuming…", ui.transcript.theme.tool);
+      else if (open?.kind === "live") {
+        notice(ui, "Another uji is running this chat; following along.");
+      }
       turnNote(ui, `Resumed · ${String(initialBranch.length)} entries`);
     }
-    if (suspended.length > 0) {
-      turnNote(ui, "Resuming…", ui.transcript.theme.tool);
-      resumeSuspended(host.harness);
-    }
 
-    const refreshSlashAutocomplete = (value = ui.input.plainText): void => {
+    const refreshSlashAutocomplete = (): void => {
+      // Mention discovery and other async callers can land after teardown,
+      // and a destroyed composer has no edit buffer to read.
+      if (ui.input.isDestroyed) return;
+      refreshSlashAutocompleteAt(ui.input.plainText, ui.input.cursorOffset);
+    };
+    const refreshSlashAutocompleteAt = (value: string, cursor: number): void => {
       if (ui.inputMode !== "chat" || ui.selecting) {
         slashAutocomplete.close();
         return;
       }
-      slashAutocomplete.update(
-        value,
-        slashCommandsForHarness(host.harness),
-        mentionFiles,
-        host.cwd,
-      );
+      slashAutocomplete.update(value, slashCommandsForHost(host), mentionFiles, host.cwd, cursor);
     };
     const refreshMentionFiles = async (cwd: string): Promise<void> => {
       const generation = ++mentionFilesGeneration;
@@ -2198,21 +2582,29 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       syncComposerLayout?.(event);
       composerParts.retain(ui.input.plainText);
       // OpenTUI emits content changes for programmatic setText/clear too (on a
-      // microtask, with a render following), so this is the one place the tag
-      // row syncs; clear, load, restore, and submit all funnel through here.
-      composerTags.refresh(composerParts.current);
+      // microtask, with a render following), so this is the one place the
+      // marker pills repaint; clear, load, restore, and submit all funnel
+      // through here.
+      composerMarkers.refresh(composerParts.current);
       refreshSlashAutocomplete();
       if (ui.inputMode === "chat" && ui.input.plainText !== "") {
-        refreshHints(ui, host.harness);
+        refreshHints(ui, host.state.busy);
       }
     };
     ui.input.onKeyDown = (key) => {
       if (!isComposerTextKey(key)) return;
-      if (ui.input.cursorOffset !== ui.input.plainText.length || ui.input.hasSelection()) return;
+      if (ui.input.hasSelection()) return;
       // OpenCode opens `/` from keydown instead of waiting for the textarea's
-      // content callback. Project every appended character so `/re` filters in
-      // the same input pass; the matching content callback is then a no-op.
-      refreshSlashAutocomplete(`${ui.input.plainText}${key.sequence}`);
+      // content callback. Project the typed character into the draft so `/re`
+      // filters in the same input pass; the matching content callback is then a
+      // no-op. Projecting at the cursor keeps that true mid-draft, where the
+      // second skill of a prompt gets typed.
+      const text = ui.input.plainText;
+      const index = cellIndex(text, ui.input.cursorOffset);
+      refreshSlashAutocompleteAt(
+        `${text.slice(0, index)}${key.sequence}${text.slice(index)}`,
+        ui.input.cursorOffset + displayWidth(key.sequence),
+      );
     };
     refreshSlashAutocomplete();
     void refreshMentionFiles(host.cwd);
@@ -2225,7 +2617,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       ) {
         const image = resolveComposerImagePaste(event.bytes);
         if (image === undefined) {
-          note(ui, "paste failed: unsupported image data", ui.transcript.theme.error);
+          notice(ui, "paste failed: unsupported image data", ui.transcript.theme.error);
           return;
         }
         ui.input.insertText(`${composerParts.addImage(image.image)} `);
@@ -2249,7 +2641,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
           }
         })
         .catch((error: unknown) => {
-          note(
+          notice(
             ui,
             `paste failed: ${error instanceof Error ? error.message : String(error)}`,
             ui.transcript.theme.error,
@@ -2259,7 +2651,17 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
     ui.input.onPaste = handleComposerPaste;
 
     ui.inputBox.onMouseDown = focusComposer;
-    ui.scroll.onMouseDown = focusScrollback;
+    ui.input.onMouseUp = (event) => {
+      if (event.button !== 0) return;
+      // A drag that happens to end on a pill was someone selecting text.
+      if ((renderer.getSelection()?.getSelectedText() ?? "") !== "") return;
+      // The mousedown already parked the cursor at the clicked cell, so the
+      // cursor offset is the click offset.
+      if (composerMarkers.toggleAtOffset(ui.input.cursorOffset)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
     ui.scroll.onPaste = (event) => {
       focusComposer();
       handleComposerPaste(event);
@@ -2272,42 +2674,83 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
       setInputText(ui.input, text);
     };
 
+    function toBottom() {
+      setTimeout(() => {
+        if (ui.scroll.isDestroyed) return;
+        ui.scroll.stickyScroll = true;
+        ui.scroll.scrollTo(ui.scroll.scrollHeight);
+      }, 50);
+    }
+
     let submitting = false;
     const submitComposer = (delivery: "steer" | "queue" = "steer"): void => {
       if (ui.inputMode !== "chat" || ui.selecting) return;
-      if (slashAutocomplete.visible) return;
+      if (slashAutocomplete.accepting) return;
       if (submitting) return;
       const draft = ui.input.plainText;
       const submission = parseComposerSubmission(draft);
-      if (submission.kind === "empty") return;
+      if (submission.kind === "empty") {
+        // Only enter. Queueing an empty composer would have nothing to queue.
+        if (delivery === "steer") steerFirstQueued();
+        return;
+      }
+      const skills = host.skills;
+      const commandTarget =
+        submission.kind === "command"
+          ? resolveSlashCommandTarget(host, submission.command.name)
+          : undefined;
+      // A skill named inside the draft makes the whole thing a prompt: the
+      // message carries every invocation it mentions, not only a leading one.
+      // A slash-prefixed line only becomes a command when the current host can
+      // invoke it. Unknown names remain ordinary chat text.
+      const prompting =
+        submission.kind === "prompt" ||
+        commandTarget?.kind === "message" ||
+        hasInlineSkills(draft, skills);
       // Snapshots the draft's parts synchronously, so clearing the composer on
       // the next line cannot strip them before their bodies finish loading.
-      const preparing = submission.kind === "prompt" ? composerParts.prepare(draft) : undefined;
+      const preparing = prompting
+        ? composerParts.prepare(draft, undefined, (text) => expandInlineSkills(text, skills))
+        : undefined;
       submitting = true;
       ui.input.clear();
       promptHistory.resetBrowse();
       slashAutocomplete.close();
-      if (submission.kind === "command") {
-        void runCommand(ui, commandContext, submission.command, delivery).catch(reportCommandError);
-      } else if (preparing !== undefined) {
+      if (preparing === undefined) {
+        if (submission.kind === "command" && commandTarget !== undefined) {
+          void runCommand(ui, commandContext, submission.command, {
+            delivery,
+            target: commandTarget,
+          }).catch(reportCommandError);
+        }
+      } else {
+        toBottom();
         void (async () => {
           const prepared = await preparing;
           const text = prepared.displayText;
           promptHistory.record(text);
-          const submittedHarness = host.harness;
-          const result = await submittedHarness.submit(prepared.message, { delivery });
-          if (!result.ok) {
-            restoreRejectedInput(draft, prepared.parts);
-            throw result.error;
-          }
-          if (result.value.disposition === "queued") {
-            if (delivery === "steer") {
-              ui.steeringStatus.show(result.value.entryId, text);
-            } else {
-              note(ui, `Queued: ${text}`);
+          try {
+            // A plain line answers a parked question through the reply
+            // channel. A run parked on some other tool, or no parked run at
+            // all, takes ordinary open admission.
+            const { content } = prepared.message;
+            const answered =
+              host.state.waiting &&
+              delivery === "steer" &&
+              typeof content === "string" &&
+              (
+                await host.sdk.runs.reply({
+                  sessionId: host.sessionId,
+                  toolName: "question",
+                  reply: content,
+                })
+              ).ok;
+            if (!answered) {
+              await host.sdk.messages.send({ sessionId: host.sessionId, content, delivery });
             }
-          } else {
-            observeStartedRun(submittedHarness);
+          } catch (error) {
+            restoreRejectedInput(draft, prepared.parts);
+            throw error;
           }
         })().catch(reportCommandError);
       }
@@ -2319,18 +2762,15 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
     };
     ui.input.onSubmit = () => {
       submitComposer();
-      refreshHints(ui, host.harness);
+      refreshHints(ui, host.state.busy);
     };
 
     let cyclingThinking = false;
     const cycleThinkingLevel = (): void => {
-      if (cyclingThinking || host.harness.state.isStreaming || host.harness.state.isCompacting) {
+      if (cyclingThinking || host.state.busy) {
         return;
       }
-      const next = nextThinkingLevel(
-        host.harness.state.thinkingLevel ?? "off",
-        getSupportedThinkingLevels(host.harness.state.model),
-      );
+      const next = nextThinkingLevel(host.thinkingLevel, getSupportedThinkingLevels(host.model));
       if (next === undefined) return;
       cyclingThinking = true;
       void changeThinkingLevel(next, false)
@@ -2342,7 +2782,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
 
     let cyclingModel = false;
     const cycleModel = (direction: "forward" | "backward"): void => {
-      if (cyclingModel || host.harness.state.isStreaming || host.harness.state.isCompacting) {
+      if (cyclingModel || host.state.busy) {
         return;
       }
       cyclingModel = true;
@@ -2352,8 +2792,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
           cachedAuthenticatedModels(models) ?? (await loadAuthenticatedModels(models));
         if (available.length < 2) return;
         const current = available.findIndex(
-          (model) =>
-            model.provider === host.runtime.provider.id && model.id === host.harness.state.model.id,
+          (model) => model.provider === host.runtime.provider.id && model.id === host.model.id,
         );
         const delta = direction === "forward" ? 1 : -1;
         const index = current === -1 ? 0 : (current + delta + available.length) % available.length;
@@ -2405,9 +2844,10 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         enabled: () =>
           ui.inputMode === "chat" &&
           !ui.selecting &&
-          // An open completion answers these keys itself, from the listener
-          // below. A drag selection has its own layer above this one.
-          !slashAutocomplete.visible,
+          // A completion with rows in it answers these keys itself, from the
+          // listener below; an empty one is a note and claims nothing. A drag
+          // selection has its own layer above this one.
+          !slashAutocomplete.accepting,
         commands: {
           "chat.interrupt": {
             title: "Stop the current run",
@@ -2417,39 +2857,34 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
                 inputMode: ui.inputMode,
                 authenticating: ui.authenticating,
                 hasDraft: ui.input.plainText.trim() !== "",
-                busy: host.harness.state.isStreaming || host.harness.state.isCompacting,
-                scrollbackFocused: ui.focus.isUsing(ui.scroll),
+                busy: host.state.busy || host.state.waiting,
               });
               if (intent === "ignore") return false;
               if (intent === "abort") {
-                void host.harness.abort({ continue: true });
+                void host.sdk.runs.abort({ sessionId: host.sessionId, continue: true });
                 return true;
               }
-              if (intent === "focus_composer") {
-                focusComposer();
-                return true;
-              }
-              // Double escape takes back what you said. It lists only the user
-              // turns and hands the picked one to the composer, which is pi's
-              // `showUserMessageSelector` rather than its default tree
-              // selector: landing on a tool result or an assistant reply moves
-              // the head without giving you anything to edit, and that is the
-              // one thing this is for.
-              // https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/interactive/interactive-mode.ts#L5119
-              if (doubleEscape.press()) {
-                void runCommand(ui, commandContext, { name: "edit", argument: "" }).catch(
-                  reportCommandError,
-                );
-              }
+              // Double escape opens the tree, pi's default `doubleEscapeAction`.
+              // https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/interactive/interactive-mode.ts#L2862
+              if (doubleEscape.press()) void openTree({}).catch(reportCommandError);
               return true;
             },
           },
-          "chat.focus.toggle": {
-            title: "Switch between the transcript and the composer",
-            run: () => {
-              if (ui.focus.isUsing(ui.scroll)) focusComposer();
-              else focusScrollback();
-            },
+          "chat.scroll.page.up": {
+            title: "Scroll the transcript up",
+            run: () => ui.scroll.scrollBy(-0.5, "viewport"),
+          },
+          "chat.scroll.page.down": {
+            title: "Scroll the transcript down",
+            run: () => ui.scroll.scrollBy(0.5, "viewport"),
+          },
+          "chat.message.previous": {
+            title: "Previous message",
+            run: () => navigateTranscriptMessage(ui.scroll, "previous") !== undefined,
+          },
+          "chat.message.next": {
+            title: "Next message",
+            run: () => navigateTranscriptMessage(ui.scroll, "next") !== undefined,
           },
           "chat.thinking.cycle": {
             title: "Cycle the thinking level",
@@ -2472,7 +2907,7 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
             run: openExternalEditor,
           },
           "chat.queue.open": {
-            title: "Manage queued messages",
+            title: "Edit or remove queued messages",
             run: () => {
               void openQueue().catch(reportCommandError);
             },
@@ -2483,6 +2918,13 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
               if (ui.input.plainText.trim() === "") return false;
               submitComposer("queue");
               return true;
+            },
+          },
+          "chat.tools.toggle": {
+            title: "Expand or collapse all tool output",
+            run: () => {
+              const expanded = ui.transcript.toolOutput.toggle();
+              notice(ui, `Tool output ${expanded ? "expanded" : "collapsed"}`);
             },
           },
           "chat.skills.open": {
@@ -2499,29 +2941,15 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
               void openCommandPalette().catch(reportCommandError);
             },
           },
-          // Plain up/down inside a multi-line draft move the cursor; history
-          // only takes over from the first and last line, as in a shell.
+          // Plain up/down walk the draft's rows, wrapped ones included;
+          // history only takes over from its start and end, as in a shell.
           "chat.history.previous": {
             title: "Previous message you sent",
-            run: () => {
-              if (ui.focus.isUsing(ui.scroll) || ui.input.logicalCursor.row !== 0) return false;
-              const previous = promptHistory.previous(ui.input.plainText);
-              if (previous === undefined) return false;
-              setInputText(ui.input, previous);
-              return true;
-            },
+            run: () => browseHistory(ui.input, promptHistory, "previous"),
           },
           "chat.history.next": {
             title: "Next message you sent",
-            run: () => {
-              if (ui.focus.isUsing(ui.scroll)) return false;
-              const onLastRow = ui.input.logicalCursor.row >= ui.input.lineCount - 1;
-              if (!onLastRow && promptHistory.browsing) return false;
-              const next = promptHistory.next();
-              if (next === undefined) return false;
-              setInputText(ui.input, next);
-              return true;
-            },
+            run: () => browseHistory(ui.input, promptHistory, "next"),
           },
         },
       }),
@@ -2543,18 +2971,6 @@ export async function runTui(flags: RunFlags): Promise<TuiExit> {
         key.stopPropagation();
         clearComposer();
         setHints(ui, CTRL_C_EXIT_HINT);
-        return;
-      }
-      if (
-        ui.inputMode === "chat" &&
-        !ui.selecting &&
-        ui.focus.isUsing(ui.scroll) &&
-        isComposerTextKey(key)
-      ) {
-        key.preventDefault();
-        key.stopPropagation();
-        focusComposer();
-        ui.input.insertText(key.sequence);
         return;
       }
       if (action === "shutdown") {

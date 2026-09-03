@@ -1,26 +1,23 @@
 /** Fast mode is durable plugin policy, applied only to assistant requests. */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
-import {
-  AgentHarness,
-  EventStream,
-  inlinePlugin,
-  SqliteSessionRepo,
-  systemPromptPlugin,
-} from "@uji-ai/core";
+import { EventStream } from "@uji-ai/ai";
 import type { StreamFn } from "@uji-ai/core";
-import { definePlugin } from "@uji-ai/plugin";
+import { definePlugin, inlinePlugin, systemPromptPlugin } from "@uji-ai/plugin";
 import type { AssistantMessage, AssistantMessageEvent, Model } from "@uji-ai/schema";
-import { fastModePlugin, readFastMode } from "../examples/fast-mode.ts";
+import { FAST_MODE_PLUGIN_ID, fastModePlugin, readFastMode } from "../examples/fast-mode.ts";
+import { prompt, runCommand, settingOf, TestWorkspace } from "./host.ts";
 
-const directories: string[] = [];
-afterEach(() => {
-  for (const directory of directories.splice(0))
-    rmSync(directory, { recursive: true, force: true });
+const workspaces: TestWorkspace[] = [];
+afterEach(async () => {
+  for (const workspace of workspaces.splice(0)) await workspace.close();
 });
+
+function workspace(prefix: string): TestWorkspace {
+  const created = TestWorkspace.create(prefix);
+  workspaces.push(created);
+  return created;
+}
 
 const fastModel: Model<"openai-responses"> = {
   id: "fast-model",
@@ -68,10 +65,7 @@ function stop(model: Model<"openai-responses">): ReturnType<StreamFn> {
 
 void describe("fast mode plugin", () => {
   void test("persists its selection and leaves compaction on the normal tier", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "uji-fast-mode-"));
-    directories.push(directory);
-    const repo = new SqliteSessionRepo(join(directory, "sessions.db"));
-    const session = await repo.create();
+    const world = workspace("uji-fast-mode-");
     const seen: (boolean | undefined)[] = [];
     const streamFn: StreamFn = (model, _context, options) => {
       seen.push(options?.fast);
@@ -81,36 +75,36 @@ void describe("fast mode plugin", () => {
       inlinePlugin(systemPromptPlugin("sys")),
       inlinePlugin(fastModePlugin(fastModel)),
     ];
-    const create = () =>
-      AgentHarness.create({
-        session,
+    const open = () =>
+      world.open({
         streamFn,
         plugins,
-        env: { cwd: directory },
         model: fastModel,
         compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
       });
 
-    let harness = (await create()).harness;
-    assert.equal(await readFastMode(session, fastModel), false);
-    const setting = harness.getSettings().get("fast");
-    assert.equal(await setting?.read(), "off");
-    assert.equal(await harness.runCommand("fast"), "Fast mode: on");
-    assert.equal(await setting?.read(), "on");
-    await harness.prompt("one");
-    await harness.prompt("two");
+    let sdk = await open();
+    const { sessionId } = world;
+    const currentFast = () => settingOf(sdk, sessionId, "fast");
+
+    assert.equal(await readFastMode(await world.facts(), fastModel), false);
+    assert.equal(await currentFast(), "off");
+    assert.equal(await runCommand(sdk, sessionId, "fast"), "Fast mode: on");
+    assert.equal(await currentFast(), "on");
+    await prompt(sdk, sessionId, "one");
+    await prompt(sdk, sessionId, "two");
     assert.deepEqual(seen, [true, true]);
 
     const callsBeforeCompaction = seen.length;
-    const compacted = await harness.compact();
-    assert.equal(compacted.ok, true);
+    const compacted = await sdk.runs.compact({ sessionId });
+    assert.equal(compacted.kind, "compacted");
     const compactionCalls = seen.slice(callsBeforeCompaction);
     assert.ok(compactionCalls.length > 0);
     assert.equal(
       compactionCalls.every((fast) => fast === undefined),
       true,
     );
-    await harness.close();
+    await sdk.close();
 
     const normalModel = {
       ...fastModel,
@@ -118,27 +112,20 @@ void describe("fast mode plugin", () => {
       name: "Normal model",
       modes: undefined,
     };
-    harness = (
-      await AgentHarness.create({
-        session,
-        streamFn,
-        plugins: [
-          inlinePlugin(systemPromptPlugin("sys")),
-          inlinePlugin(fastModePlugin(normalModel)),
-        ],
-        env: { cwd: directory },
-        model: normalModel,
-      })
-    ).harness;
-    assert.equal(await readFastMode(session, normalModel), false);
-    await harness.close();
+    sdk = await world.open({
+      streamFn,
+      plugins: [inlinePlugin(systemPromptPlugin("sys")), inlinePlugin(fastModePlugin(normalModel))],
+      model: normalModel,
+    });
+    assert.equal(await readFastMode(await world.facts(), normalModel), false);
+    await sdk.close();
 
-    harness = (await create()).harness;
-    assert.equal(await readFastMode(session, fastModel), true);
-    await harness.prompt("three");
+    sdk = await open();
+    assert.equal(await readFastMode(await world.facts(), fastModel), true);
+    await prompt(sdk, sessionId, "three");
     assert.equal(seen.at(-1), true);
 
-    await harness.plugins.activate([
+    await sdk.setPlugins([
       ...plugins,
       inlinePlugin(
         definePlugin({
@@ -149,75 +136,86 @@ void describe("fast mode plugin", () => {
         }),
       ),
     ]);
-    await harness.prompt("four");
+    await prompt(sdk, sessionId, "four");
     assert.equal(seen.at(-1), false);
-
-    await harness.close();
-    await session.close();
-    await repo.close();
   });
 
   void test("keeps a selection with the provider it was made for", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "uji-fast-mode-provider-"));
-    directories.push(directory);
-    const repo = new SqliteSessionRepo(join(directory, "sessions.db"));
-    const session = await repo.create();
+    const world = workspace("uji-fast-mode-provider-");
     // Same session, same advertised mode, different price per token.
     const otherModel = { ...fastModel, id: "other-fast-model", provider: "anthropic" };
     const seen: (boolean | undefined)[] = [];
     const open = (model: Model<"openai-responses">) =>
-      AgentHarness.create({
-        session,
+      world.open({
         streamFn: (requestedModel, _context, options) => {
           seen.push(options?.fast);
           return stop(requestedModel as Model<"openai-responses">);
         },
         plugins: [inlinePlugin(fastModePlugin(model))],
-        env: { cwd: directory },
         model,
       });
 
-    let harness = (await open(fastModel)).harness;
-    assert.equal(await harness.runCommand("fast"), "Fast mode: on");
-    await harness.prompt("one");
+    let sdk = await open(fastModel);
+    const { sessionId } = world;
+    assert.equal(await runCommand(sdk, sessionId, "fast"), "Fast mode: on");
+    await prompt(sdk, sessionId, "one");
     assert.equal(seen.at(-1), true);
-    await harness.close();
+    await sdk.close();
 
-    harness = (await open(otherModel)).harness;
-    assert.equal(await readFastMode(session, otherModel), false);
-    await harness.prompt("two");
+    sdk = await open(otherModel);
+    assert.equal(await readFastMode(await world.facts(), otherModel), false);
+    await prompt(sdk, sessionId, "two");
     assert.equal(seen.at(-1), undefined);
-    await harness.close();
+    await sdk.close();
 
-    harness = (await open(fastModel)).harness;
-    assert.equal(await readFastMode(session, fastModel), true);
+    sdk = await open(fastModel);
+    assert.equal(await readFastMode(await world.facts(), fastModel), true);
+  });
 
-    await harness.close();
-    await session.close();
-    await repo.close();
+  void test("applies a setting by writing the owning plugin's storage", async () => {
+    const world = workspace("uji-fast-mode-apply-");
+    const sdk = await world.open({
+      streamFn: (requestedModel) => stop(requestedModel as Model<"openai-responses">),
+      plugins: [inlinePlugin(fastModePlugin(fastModel))],
+      model: fastModel,
+    });
+    const { sessionId } = world;
+
+    const listed = await sdk.plugins.settings.list({ sessionId });
+    assert.deepEqual(
+      listed.map(({ id, owner, current }) => ({ id, owner, current })),
+      [{ id: "fast", owner: FAST_MODE_PLUGIN_ID, current: "off" }],
+    );
+
+    const apply = (id: string, choiceId: string) =>
+      sdk.plugins.settings.apply({ sessionId, id, choiceId });
+    assert.deepEqual(await apply("fast", "on"), { kind: "applied" });
+    assert.equal(await readFastMode(await world.facts(), fastModel), true);
+    assert.equal(await settingOf(sdk, sessionId, "fast"), "on");
+    // The command reads the same fact the setting wrote.
+    assert.equal(await runCommand(sdk, sessionId, "fast"), "Fast mode: off");
+
+    assert.deepEqual(await apply("fast", "sideways"), { kind: "invalid_choice" });
+    assert.deepEqual(await apply("missing", "on"), { kind: "not_found" });
   });
 
   void test("contributes nothing when the selected model does not advertise fast mode", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "uji-fast-mode-unavailable-"));
-    directories.push(directory);
-    const repo = new SqliteSessionRepo(join(directory, "sessions.db"));
-    const session = await repo.create();
+    const world = workspace("uji-fast-mode-unavailable-");
     const model = { ...fastModel, id: "normal-model", name: "Normal model", modes: undefined };
-    const { harness } = await AgentHarness.create({
-      session,
+    const sdk = await world.open({
       streamFn: (requestedModel) => stop(requestedModel as Model<"openai-responses">),
       plugins: [inlinePlugin(fastModePlugin(model))],
-      env: { cwd: directory },
       model,
     });
+    const { sessionId } = world;
 
-    assert.equal(harness.getCommands().has("fast"), false);
-    assert.equal(harness.getSettings().has("fast"), false);
-    await assert.rejects(harness.runCommand("fast"), /unknown command: fast/);
-    assert.equal(await readFastMode(session, model), false);
-
-    await harness.close();
-    await session.close();
-    await repo.close();
+    const named = (list: readonly { name?: string; id?: string }[], key: string) =>
+      list.some((item) => item.name === key || item.id === key);
+    assert.equal(named(await sdk.plugins.commands.list({ sessionId }), "fast"), false);
+    assert.equal(named(await sdk.plugins.settings.list({ sessionId }), "fast"), false);
+    assert.deepEqual(await sdk.plugins.commands.run({ sessionId, name: "fast" }), {
+      kind: "not_found",
+    });
+    assert.equal(await readFastMode(await world.facts(), model), false);
   });
 });

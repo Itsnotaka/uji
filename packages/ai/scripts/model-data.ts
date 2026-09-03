@@ -1,21 +1,30 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { type Static, type TSchema, Type } from "typebox";
+import { Value } from "typebox/value";
+import type { KnownProvider } from "../src/types.ts";
 
 export const MODEL_DATA_SCHEMA_VERSION = 3;
 export const MODEL_DATA_MANIFEST_FILE = ".manifest.json";
 
+/** Static provider catalogs Uji checks in and exposes through explicit factories. */
+export const GENERATED_MODEL_PROVIDER_IDS: readonly KnownProvider[] = [
+  "anthropic",
+  "openai",
+  "openai-codex",
+];
+
 export type ModelDataStructure = Record<string, Record<string, string>>;
 
-export interface ModelDataManifest {
-  schemaVersion: number;
-  generatedAt: string;
-  structureHash: string;
-  files: Record<string, string>;
-}
+const ModelDataManifestSchema = Type.Object({
+  schemaVersion: Type.Number(),
+  generatedAt: Type.String(),
+  structureHash: Type.String(),
+  files: Type.Record(Type.String(), Type.String()),
+});
 
-const MODEL_DATA_IMPORT_PATTERN =
-  /^import \{ [A-Z][A-Z0-9_]*_MODELS \} from "\.\/providers\/([^"/]+)\.models\.ts";$/gm;
+export type ModelDataManifest = Static<typeof ModelDataManifestSchema>;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -55,15 +64,18 @@ export function assertExactModelIds(
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+/**
+ * API group -> model id -> model. Both key levels are genuinely open; the model
+ * value is a decoder handoff to validateModelValue.
+ */
+const ModelDataFileSchema = Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown()));
 
-function readJsonObject(
+function readJsonFile<Schema extends TSchema>(
   path: string,
   description: string,
+  schema: Schema,
   errors: string[],
-): Record<string, unknown> | undefined {
+): Static<Schema> | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -73,7 +85,7 @@ function readJsonObject(
     );
     return undefined;
   }
-  if (!isRecord(parsed)) {
+  if (!Value.Check(schema, parsed)) {
     errors.push(`${description} must contain a JSON object`);
     return undefined;
   }
@@ -82,13 +94,11 @@ function readJsonObject(
 
 function readProviderStructure(path: string, providerId: string): Record<string, string> {
   const errors: string[] = [];
-  const groups = readJsonObject(path, `${providerId}.json`, errors);
+  const groups = readJsonFile(path, `${providerId}.json`, ModelDataFileSchema, errors);
   if (!groups) throw new Error(errors.join("\n"));
 
   const models = new Map<string, string>();
   for (const [api, value] of Object.entries(groups)) {
-    if (!isRecord(value))
-      throw new Error(`${path} API group ${JSON.stringify(api)} must be an object`);
     for (const modelId of Object.keys(value)) {
       if (models.has(modelId))
         throw new Error(`${path} contains model ${modelId} in more than one API group`);
@@ -99,34 +109,19 @@ function readProviderStructure(path: string, providerId: string): Record<string,
   return sortedRecord(models);
 }
 
-export function readModelDataProviderIds(packageRoot: string): string[] {
-  const aggregatorPath = join(packageRoot, "src", "models.generated.ts");
-  const aggregator = readFileSync(aggregatorPath, "utf8");
-  const providerIds = Array.from(
-    aggregator.matchAll(MODEL_DATA_IMPORT_PATTERN),
-    (match) => match[1],
-  ).sort();
-  if (providerIds.length === 0)
-    throw new Error(`No generated provider imports found in ${aggregatorPath}`);
-  if (new Set(providerIds).size !== providerIds.length) {
-    throw new Error(
-      `Generated model aggregator contains duplicate provider imports: ${aggregatorPath}`,
-    );
-  }
-  return providerIds;
-}
-
-export function readModelDataStructure(packageRoot: string): ModelDataStructure {
+export function readModelDataStructure(
+  packageRoot: string,
+  providerIds: readonly string[],
+): ModelDataStructure {
   const providersDir = join(packageRoot, "src", "providers");
   const dataDir = join(providersDir, "data");
-  const providerIds = readModelDataProviderIds(packageRoot);
   const expectedShards = providerIds.map((providerId) => `${providerId}.models.ts`).sort();
   const actualShards = readdirSync(providersDir)
     .filter((entry) => entry.endsWith(".models.ts"))
     .sort();
   if (!sameStrings(expectedShards, actualShards)) {
     throw new Error(
-      `Generated model aggregator and provider shards do not match (${describeSetDifference(expectedShards, actualShards)})`,
+      `Configured model providers and generated shards do not match (${describeSetDifference(expectedShards, actualShards)})`,
     );
   }
 
@@ -162,6 +157,26 @@ export function createModelDataManifest(
   };
 }
 
+const ModelCostSchema = Type.Object({
+  input: Type.Number(),
+  output: Type.Number(),
+  cacheRead: Type.Number(),
+  cacheWrite: Type.Number(),
+});
+
+const ModelValueSchema = Type.Object({
+  id: Type.String(),
+  provider: Type.String(),
+  api: Type.String(),
+  name: Type.String({ minLength: 1 }),
+  baseUrl: Type.String(),
+  reasoning: Type.Boolean(),
+  input: Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]), { minItems: 1 }),
+  contextWindow: Type.Number({ exclusiveMinimum: 0 }),
+  maxTokens: Type.Number({ exclusiveMinimum: 0 }),
+  cost: ModelCostSchema,
+});
+
 function validateModelValue(
   value: unknown,
   providerId: string,
@@ -170,8 +185,18 @@ function validateModelValue(
   errors: string[],
 ): void {
   const label = `${providerId}/${modelId}`;
-  if (!isRecord(value)) {
-    errors.push(`${label} must be an object`);
+  if (!Value.Check(ModelValueSchema, value)) {
+    const fields = new Set<string>();
+    for (const error of Value.Errors(ModelValueSchema, value)) {
+      const path = error.instancePath.slice(1).replaceAll("/", ".");
+      if (error.keyword === "required") {
+        for (const property of error.params.requiredProperties) {
+          fields.add(path === "" ? property : `${path}.${property}`);
+        }
+      } else if (path !== "") fields.add(path);
+    }
+    const detail = Array.from(fields).join(", ");
+    errors.push(detail === "" ? `${label} must be an object` : `${label} has invalid ${detail}`);
     return;
   }
   if (value.id !== modelId)
@@ -185,41 +210,6 @@ function validateModelValue(
     errors.push(
       `${label} has api ${JSON.stringify(value.api)}, expected ${JSON.stringify(expectedApi)}`,
     );
-  }
-  if (typeof value.name !== "string" || value.name.length === 0)
-    errors.push(`${label} has no model name`);
-  if (typeof value.baseUrl !== "string") errors.push(`${label} has no baseUrl string`);
-  if (typeof value.reasoning !== "boolean") errors.push(`${label} has no reasoning boolean`);
-  if (
-    !Array.isArray(value.input) ||
-    value.input.length === 0 ||
-    value.input.some((entry) => entry !== "text" && entry !== "image")
-  ) {
-    errors.push(`${label} has invalid input modalities`);
-  }
-  if (
-    typeof value.contextWindow !== "number" ||
-    !Number.isFinite(value.contextWindow) ||
-    value.contextWindow <= 0
-  ) {
-    errors.push(`${label} has invalid contextWindow`);
-  }
-  if (
-    typeof value.maxTokens !== "number" ||
-    !Number.isFinite(value.maxTokens) ||
-    value.maxTokens <= 0
-  ) {
-    errors.push(`${label} has invalid maxTokens`);
-  }
-  if (!isRecord(value.cost)) {
-    errors.push(`${label} has invalid cost metadata`);
-  } else {
-    for (const field of ["input", "output", "cacheRead", "cacheWrite"] as const) {
-      const cost = value.cost[field];
-      if (typeof cost !== "number" || !Number.isFinite(cost)) {
-        errors.push(`${label} has invalid cost.${field}`);
-      }
-    }
   }
 }
 
@@ -251,7 +241,12 @@ export function validateModelDataDirectory(structure: ModelDataStructure, dataDi
   }
 
   const manifestPath = join(dataDir, MODEL_DATA_MANIFEST_FILE);
-  const manifest = readJsonObject(manifestPath, "model data manifest", errors);
+  const manifest = readJsonFile(
+    manifestPath,
+    "model data manifest",
+    ModelDataManifestSchema,
+    errors,
+  );
   if (manifest?.schemaVersion !== MODEL_DATA_SCHEMA_VERSION) {
     errors.push(
       `model data schema is ${JSON.stringify(manifest?.schemaVersion)}, expected ${MODEL_DATA_SCHEMA_VERSION}`,
@@ -264,7 +259,7 @@ export function validateModelDataDirectory(structure: ModelDataStructure, dataDi
   if (manifest?.structureHash !== expectedStructureHash) {
     errors.push("model data generation stamp does not match the generated catalog");
   }
-  const manifestFiles = isRecord(manifest?.files) ? manifest.files : undefined;
+  const manifestFiles = manifest?.files;
   if (!manifestFiles) errors.push("model data manifest has no file hashes");
   else {
     const manifestFileNames = Object.keys(manifestFiles).sort();
@@ -283,15 +278,11 @@ export function validateModelDataDirectory(structure: ModelDataStructure, dataDi
     if (manifestFiles && manifestFiles[filename] !== sha256(content)) {
       errors.push(`${filename} does not match its manifest hash`);
     }
-    const groups = readJsonObject(path, filename, errors);
+    const groups = readJsonFile(path, filename, ModelDataFileSchema, errors);
     if (!groups) continue;
 
     const actualModels = new Map<string, string>();
     for (const [api, value] of Object.entries(groups)) {
-      if (!isRecord(value)) {
-        errors.push(`${filename} API group ${JSON.stringify(api)} must be an object`);
-        continue;
-      }
       for (const [modelId, model] of Object.entries(value)) {
         if (actualModels.has(modelId)) {
           errors.push(`${providerId}/${modelId} appears in more than one API group`);
@@ -323,6 +314,6 @@ export function validateModelDataDirectory(structure: ModelDataStructure, dataDi
 }
 
 export function validateGeneratedModelData(packageRoot: string): void {
-  const structure = readModelDataStructure(packageRoot);
+  const structure = readModelDataStructure(packageRoot, GENERATED_MODEL_PROVIDER_IDS);
   validateModelDataDirectory(structure, join(packageRoot, "src", "providers", "data"));
 }

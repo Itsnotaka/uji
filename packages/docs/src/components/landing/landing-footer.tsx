@@ -12,29 +12,28 @@ const source = `https://github.com/${gitConfig.user}/${gitConfig.repo}`;
  */
 const columns = [
   {
-    heading: "Core",
+    heading: "Design",
     links: [
-      { label: "Agent loop", href: "/docs/core/agent-loop" },
-      { label: "AgentHarness", href: "/docs/core/harness" },
-      { label: "Session storage", href: "/docs/core/session-storage" },
-      { label: "Stream function", href: "/docs/core/stream-fn" },
-      { label: "Tools", href: "/docs/core/tools" },
+      { label: "The log", href: "/docs/design#the-log" },
+      { label: "Heads", href: "/docs/design#heads-are-named-pointers" },
+      { label: "The turn", href: "/docs/design#the-turn" },
+      { label: "Runs", href: "/docs/design#runs" },
+      { label: "Admission", href: "/docs/design#admission-is-open" },
     ],
   },
   {
-    heading: "Guides",
+    heading: "Surface",
     links: [
-      { label: "Quickstart", href: "/docs/quickstart" },
-      { label: "Architecture", href: "/docs/architecture" },
-      { label: "Principles", href: "/docs/principles" },
-      { label: "Recipes", href: "/docs/core/recipes" },
-      { label: "Host and client", href: "/docs/host-sdk" },
+      { label: "Deployment", href: "/docs/design#deployment" },
+      { label: "The SDK", href: "/docs/design#the-sdk" },
+      { label: "Plugins", href: "/docs/design#plugins" },
+      { label: "Agents", href: "/docs/design#agents" },
+      { label: "Invariants", href: "/docs/design#invariants" },
     ],
   },
   {
     heading: "Project",
     links: [
-      { label: "Roadmap", href: "/docs/roadmap" },
       { label: "Brand", href: "/branding" },
       { label: "Source", href: source, external: true },
       { label: "llms.txt", href: "/llms.txt", external: true },

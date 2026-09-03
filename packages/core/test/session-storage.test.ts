@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { SessionError, SqliteSessionRepo } from "../src/index.ts";
+import { SessionError, SqliteSessionRepo, type SessionStorage } from "../src/store.ts";
 
 void test("appendEntries rolls back the whole batch when a later entry fails", async () => {
   const directory = mkdtempSync(join(tmpdir(), "uji-session-storage-"));
@@ -48,6 +48,45 @@ void test("appendEntries rolls back the whole batch when a later entry fails", a
     await session.close();
   } finally {
     await repo.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+void test("setNameIfCurrent writes only from the exact current name and takes no seq otherwise", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "uji-session-storage-"));
+  const path = join(directory, "sessions.db");
+  const firstRepo = new SqliteSessionRepo(path);
+  const secondRepo = new SqliteSessionRepo(path);
+  const nameItems = async (session: SessionStorage): Promise<string[]> =>
+    (await session.getLog()).flatMap((item) => (item.kind === "fact" ? [item.name] : []));
+
+  try {
+    const first = await firstRepo.create({ id: "named" });
+    const second = await secondRepo.open("named");
+
+    assert.equal(await first.setNameIfCurrent("x", "A"), false);
+    assert.equal(await first.getName(), undefined);
+    assert.deepEqual(await nameItems(first), []);
+
+    assert.equal(await first.setNameIfCurrent(undefined, "A"), true);
+    assert.equal(await first.getName(), "A");
+    assert.deepEqual(await nameItems(first), ["A"]);
+
+    // Another handle renames between this handle's read and its write.
+    await second.setName("B");
+    assert.equal(await first.setNameIfCurrent("A", "C"), false);
+    assert.equal(await first.getName(), "B");
+    assert.deepEqual(await nameItems(second), ["A", "B"]);
+
+    assert.equal(await first.setNameIfCurrent("B", "C"), true);
+    assert.equal(await second.getName(), "C");
+    assert.deepEqual(await nameItems(second), ["A", "B", "C"]);
+
+    await second.close();
+    await first.close();
+  } finally {
+    await secondRepo.close();
+    await firstRepo.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });

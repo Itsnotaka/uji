@@ -7,24 +7,18 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@uji-ai/ui";
-import {
-  IconChevronDownSmall,
-  IconPlusMedium,
-  IconSidebarHiddenRightWide,
-  IconStop,
-} from "central-icons";
+import { IconPlusMedium, IconSidebarSimpleRightWide } from "central-icons";
 import { useEffect, useState } from "react";
 
 import type { Agent, AgentId } from "../agents.ts";
 import type {
   ConversationSummary,
-  LiveToolEvent,
+  LivePart,
   RuntimeSettingsChange,
   UjiSnapshot,
 } from "../desktop-api.ts";
 import { AgentAvatar } from "./agent-avatar.tsx";
 import { Composer, ConnectBar } from "./composer.tsx";
-import { ConversationIntro } from "./conversation-intro.tsx";
 import { NoticeStack, type Notice } from "./notices.tsx";
 import { Transcript, type OptimisticMessage } from "./transcript.tsx";
 
@@ -36,8 +30,7 @@ export function ConversationWorkspace({
   conversation,
   detailsOpen,
   draft,
-  liveThinking,
-  liveTools,
+  liveParts,
   loading,
   notices,
   onAbort,
@@ -53,7 +46,6 @@ export function ConversationWorkspace({
   optimisticMessage,
   snapshot,
   stopping,
-  streamingText,
   waiting,
 }: {
   agent: Agent;
@@ -61,8 +53,7 @@ export function ConversationWorkspace({
   conversation?: ConversationSummary;
   detailsOpen: boolean;
   draft: string;
-  liveThinking: string;
-  liveTools: readonly LiveToolEvent[];
+  liveParts: readonly LivePart[];
   loading: boolean;
   notices: readonly Notice[];
   onAbort: () => void;
@@ -78,11 +69,11 @@ export function ConversationWorkspace({
   optimisticMessage?: OptimisticMessage;
   snapshot: UjiSnapshot;
   stopping: boolean;
-  streamingText: string;
   waiting: boolean;
 }) {
   const running = snapshot.running;
-  const activity = describeActivity({ liveThinking, liveTools, stopping, streamingText });
+  const activity = describeActivity({ liveParts, stopping });
+  const title = conversation?.name ?? agent.name;
 
   return (
     <main className="conversation-workspace">
@@ -90,19 +81,14 @@ export function ConversationWorkspace({
         <DropdownMenu>
           <DropdownMenuTrigger className="conversation-identity" title="Switch assistant">
             <AgentAvatar agent={agent} size="xs" />
-            <span className="identity-copy">
-              <strong>{agent.name}</strong>
-              {running ? (
-                <small className="identity-activity" data-tone={activity.tone}>
-                  <i aria-hidden="true" />
-                  {activity.label}
-                  <ElapsedTime />
-                </small>
-              ) : (
-                <small>{conversationSubtitle(agent, conversation)}</small>
-              )}
-            </span>
-            <IconChevronDownSmall size={12} />
+            <strong>{title}</strong>
+            {running && (
+              <small className="identity-activity" data-tone={activity.tone}>
+                <i aria-hidden="true" />
+                {activity.label}
+                <ElapsedTime />
+              </small>
+            )}
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="identity-menu">
             <DropdownMenuLabel>Assistants</DropdownMenuLabel>
@@ -126,18 +112,6 @@ export function ConversationWorkspace({
         </DropdownMenu>
 
         <div className="conversation-header-actions">
-          {running && (
-            <button
-              className="header-stop"
-              disabled={stopping}
-              onClick={onAbort}
-              title="Stop the response (Esc)"
-              type="button"
-            >
-              <IconStop size={11} />
-              {stopping ? "Stopping" : "Stop"}
-            </button>
-          )}
           <button
             aria-expanded={detailsOpen}
             aria-label="Open conversation details"
@@ -147,22 +121,19 @@ export function ConversationWorkspace({
             title="Conversation details"
             type="button"
           >
-            <IconSidebarHiddenRightWide size={15} />
+            <IconSidebarSimpleRightWide size={17} />
           </button>
         </div>
       </header>
 
       <Transcript
         agent={agent}
-        intro={<ConversationIntro agent={agent} onPrompt={onSend} ready={snapshot.auth.signedIn} />}
         key={snapshot.activeSessionId ?? `new:${agent.id}`}
-        liveThinking={liveThinking}
-        liveTools={liveTools}
+        liveParts={liveParts}
         loading={loading}
         onCancelQueued={onCancelQueued}
         pending={snapshot.pending}
         running={running}
-        streamingText={streamingText}
         turns={snapshot.messages}
         {...(optimisticMessage === undefined ? {} : { optimisticMessage })}
       />
@@ -212,26 +183,22 @@ function ElapsedTime() {
 }
 
 function describeActivity({
-  liveThinking,
-  liveTools,
+  liveParts,
   stopping,
-  streamingText,
 }: {
-  liveThinking: string;
-  liveTools: readonly LiveToolEvent[];
+  liveParts: readonly LivePart[];
   stopping: boolean;
-  streamingText: string;
 }): Activity {
   if (stopping) return { label: "Stopping", tone: "waiting" };
-  const activeTool = liveTools.findLast((tool) => tool.kind !== "finished");
-  if (activeTool !== undefined) return { label: `Running ${activeTool.name}`, tone: "tool" };
-  if (streamingText !== "") return { label: "Writing", tone: "writing" };
-  if (liveThinking !== "") return { label: "Reasoning", tone: "reasoning" };
+  const activeTool = liveParts.findLast((part) => part.kind === "tool");
+  if (activeTool?.kind === "tool") {
+    return { label: `Running ${activeTool.progress.title ?? "tool"}`, tone: "tool" };
+  }
+  if (liveParts.some((part) => part.kind === "text")) {
+    return { label: "Writing", tone: "writing" };
+  }
+  if (liveParts.some((part) => part.kind === "thinking")) {
+    return { label: "Reasoning", tone: "reasoning" };
+  }
   return { label: "Working", tone: "waiting" };
-}
-
-function conversationSubtitle(agent: Agent, conversation?: ConversationSummary): string {
-  const title = conversation?.name ?? conversation?.preview ?? "";
-  if (title !== "") return title;
-  return agent.role === "" ? "New chat" : agent.role;
 }

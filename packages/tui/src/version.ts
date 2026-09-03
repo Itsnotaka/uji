@@ -9,13 +9,13 @@ const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
 
 export const VERSION = packageMetadata.version;
 
-export interface ReleaseInfo {
+interface ReleaseInfo {
   /** Semver without the leading `v`. */
   version: string;
   url: string;
 }
 
-export type UpdateNotice = ReleaseInfo;
+type UpdateNotice = ReleaseInfo;
 
 export function isNewerVersion(candidate: string, current: string): boolean {
   const candidateVersion = valid(candidate.trim());
@@ -25,7 +25,7 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   );
 }
 
-export function githubHeaders(): Record<string, string> {
+function githubHeaders(): Record<string, string> {
   return {
     accept: "application/vnd.github+json",
     "User-Agent": `uji/${VERSION}`,

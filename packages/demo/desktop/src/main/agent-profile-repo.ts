@@ -18,25 +18,11 @@ export class AgentProfileRepo {
         name TEXT NOT NULL,
         role TEXT NOT NULL,
         instructions TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
+        avatar TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
       ) WITHOUT ROWID
     `);
-    const columns = new Set(
-      this.database
-        .prepare("SELECT name FROM pragma_table_info('demo_agent_profiles')")
-        .all()
-        .map((row) => row["name"]),
-    );
-    if (!columns.has("avatar")) {
-      this.database.exec(
-        "ALTER TABLE demo_agent_profiles ADD COLUMN avatar TEXT NOT NULL DEFAULT 'neutral'",
-      );
-    }
-    if (!columns.has("created_at")) {
-      this.database.exec(
-        "ALTER TABLE demo_agent_profiles ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
-      );
-    }
   }
 
   list(): Agent[] {

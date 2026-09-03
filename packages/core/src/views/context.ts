@@ -4,7 +4,7 @@ import {
   getLastAssistantUsage,
 } from "../harness/compaction/compaction.ts";
 import { buildSessionContext } from "../harness/session/context.ts";
-import type { Entry, SessionStorage } from "../harness/session/types.ts";
+import type { Entry } from "../harness/session/types.ts";
 
 export interface ContextStatus {
   /** Estimated tokens in the context that would be sent on the next step. */
@@ -34,13 +34,4 @@ export function projectContextStatus(
     ...(lastUsage === undefined ? {} : { lastTurnTokens: calculateContextTokens(lastUsage) }),
     ...(contextWindow > 0 ? { percent: Math.round((estimate.tokens / contextWindow) * 100) } : {}),
   };
-}
-
-/** Read and project context status without exposing branch reconstruction to a client. */
-export async function readContextStatus(
-  session: Pick<SessionStorage, "getBranch">,
-  options: { readonly contextWindow: number; readonly head?: string },
-): Promise<ContextStatus> {
-  const entries = await session.getBranch(options.head ?? "main");
-  return projectContextStatus(entries, options.contextWindow);
 }

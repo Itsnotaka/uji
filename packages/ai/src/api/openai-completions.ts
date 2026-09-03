@@ -18,6 +18,7 @@ import type {
   ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { resolveCacheRetention } from "../prompt-cache.ts";
 import type {
   AssistantMessage,
   CacheRetention,
@@ -28,7 +29,6 @@ import type {
   Message,
   Model,
   OpenAICompletionsCompat,
-  ProviderEnv,
   ProviderHeaders,
   SimpleStreamOptions,
   StopReason,
@@ -48,7 +48,6 @@ import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getUjiUserAgent } from "../utils/uji-user-agent.ts";
-import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import {
@@ -305,16 +304,6 @@ type ChatCompletionTextPartWithCacheControl = ChatCompletionContentPartText & {
 type ChatCompletionToolWithCacheControl = OpenAI.Chat.Completions.ChatCompletionTool & {
   cache_control?: OpenAICompatCacheControl;
 };
-
-function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEnv): CacheRetention {
-  if (cacheRetention) {
-    return cacheRetention;
-  }
-  if (getProviderEnvValue("PI_CACHE_RETENTION", env) === "long") {
-    return "long";
-  }
-  return "short";
-}
 
 export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptions> = (
   model: Model<"openai-completions">,

@@ -1,100 +1,53 @@
-export {
-  agentLoop,
-  agentLoopContinue,
-  runAgentLoop,
-  runAgentLoopContinue,
-  type AgentEventSink,
-} from "./agent-loop.ts";
-export * from "./types.ts";
-export { EventStream } from "@uji-ai/ai";
-export { toolResultContent, toolResultText } from "./utils/tool-result.ts";
+/**
+ * `@uji-ai/core`: `createUji`, `Uji`, and the SDK types. Nothing else.
+ *
+ * The main entry does not re-export storage, loop, tool, compaction, or plugin
+ * internals. Two siblings carry those: `@uji-ai/core/plugins` for plugin
+ * authoring and the built-ins, `@uji-ai/core/store` for hosts and storage
+ * backends. A client imports this entry and `@uji-ai/schema`; a client that
+ * imports `/store` has taken a dependency the design record forbids.
+ *
+ * Argued in `packages/docs/content/docs/design.mdx`, "Three entry points, not
+ * one barrel".
+ */
+export { createUji } from "./sdk/uji.ts";
+export * from "./sdk/types.ts";
 
-export {
-  AgentHarness,
-  Closed,
-  NoActiveRun,
-  NotQueued,
-  NothingToCompact,
-  NothingToResume,
-  UnknownSkill,
-  type AbortResult,
-  type AgentHarnessOptions,
-  type CompactionEvent,
-  type CompactionOutcome,
-  type CompactionReason,
-  type CompactionResult,
-  type HandlerErrorEvent,
-  type HarnessEvent,
-  type HarnessListener,
-  type HostEvent,
-  type HarnessState,
-  type HarnessTool,
-  type MessageDelivery,
-  type OperationError,
-  type PendingQueueItem,
-  type QueueCancelResult,
-  type QueueResult,
-  type ResumeOutcome,
-  type ResumeResult,
-  type RunOutcome,
-  type RunResult,
-  type SkillResult,
-  type SubmitResult,
-  type SuspendedOperation,
-} from "./harness/agent-harness.ts";
-export {
-  drive,
-  resume as resumeRun,
-  step,
-  type RunnerFinished,
-  type RunnerOptions,
-  type StepResult,
-} from "./harness/runner.ts";
-export * from "./skills.ts";
-export * from "./harness/compaction/compaction.ts";
-export { Result, TaggedError } from "./harness/result.ts";
-export {
-  BACKGROUND_CONTEXT,
-  type Context,
-  type ContextKey,
-  createContextKey,
-  withAbortSignal,
-  withCancel,
-  withContextValue,
-  withoutAbortSignal,
-  withTelemetryContext,
-} from "./harness/context.ts";
-export {
-  applyStreamOptionsPatch,
-  type HookErrorReporter,
-  type HookHandler,
-  type HookInvocation,
-  type HookMap,
-  type HookModelRef,
-  type HookName,
-  HookRegistry,
-  type Hooks,
-} from "./harness/hooks.ts";
-export type * from "./harness/types.ts";
-export * from "./plugins/index.ts";
-export {
-  COMPACTION_SUMMARY_PREFIX,
-  COMPACTION_SUMMARY_SUFFIX,
-  buildContextEntries,
-  buildSessionContext,
-  createCompactionSummaryMessage,
-  isContextMessage,
-  sessionEntryToContextMessages,
-} from "./harness/session/context.ts";
-export { SqliteSessionRepo, type SqliteSessionRepoOptions } from "./harness/session/sqlite.ts";
-export * from "./harness/session/types.ts";
+/**
+ * Client projections over the log. Clients may import nothing but this entry,
+ * so the read models they render ship from it (design record, "Views").
+ */
 export * from "./views/index.ts";
 
+/**
+ * Host composition, not internals: a host needs these to build
+ * `UjiOptions.plugins` behind workspace trust, so they sit beside `createUji`.
+ * The plugin registries, host, and scope are internals and are exported from
+ * nowhere.
+ */
 export {
-  type TrustedWorkspace,
-  WorkspaceTrustRequired,
-  type WorkspaceTrustResolution,
-  WorkspaceTrustStore,
-} from "./workspace-trust.ts";
+  resolvePlugins,
+  watchPluginDirectories,
+  type PluginDirectory,
+  type PluginManifest,
+  type ResolvedPlugins,
+} from "./plugins/sources.ts";
+/**
+ * `LoadedPlugin` is a `UjiOptions` field; `PluginInfo` and `SettingInfo` are
+ * what the `plugins` namespace returns. Authoring the things behind them is
+ * `/plugins`.
+ */
+export type { LoadedPlugin, PluginInfo, SettingInfo } from "./plugins/types.ts";
 
-export * from "./tools/index.ts";
+/** The remaining `UjiOptions` fields a host names when it composes a `Uji`. */
+export { isThinkingLevel, type StreamFn, type ThinkingLevel } from "./types.ts";
+export {
+  DEFAULT_COMPACTION_SETTINGS,
+  type CompactionSettings,
+} from "./harness/compaction/compaction.ts";
+export {
+  WorkspaceTrustRequired,
+  WorkspaceTrustStore,
+  type TrustedWorkspace,
+} from "./workspace-trust.ts";
+export { WorkspaceRegistry } from "./workspace-registry.ts";

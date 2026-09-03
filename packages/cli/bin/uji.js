@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const VERSION = "0.0.1";
+const VERSION = "0.0.2";
 const HELP = `uji
 
 Headless agent runner and terminal client for Uji

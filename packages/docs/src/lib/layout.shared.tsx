@@ -12,7 +12,7 @@ export function baseOptions(): BaseLayoutProps {
       url: "/",
     },
     links: [
-      { text: "Docs", url: docsRoute, type: "main" },
+      { text: "Docs", url: `${docsRoute}/design`, type: "main" },
       { text: "Brand", url: "/branding", type: "main" },
     ],
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,

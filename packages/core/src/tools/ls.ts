@@ -5,7 +5,7 @@
  * Based on https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/ls.ts
  */
 import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { Unsafe } from "typebox";
 import type { AgentTool } from "../types.ts";
 import { toolResultContent } from "../utils/tool-result.ts";
@@ -95,8 +95,8 @@ export function createLsTool(
   const ops = options?.operations ?? defaultLsOperations;
   return {
     name: "ls",
-    label: "ls",
     description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+    promptSnippet: "List directory contents",
     parameters: lsParameters,
     prepareArguments: parseLsParams,
     async execute(_toolCallId, { path, limit }, signal?, _onUpdate?) {
@@ -104,6 +104,7 @@ export function createLsTool(
         if (signal?.aborted) throw new Error("Operation aborted");
       };
       const dirPath = resolveToCwd(path || ".", cwd);
+      const title = relative(cwd, dirPath) || ".";
       const effectiveLimit = limit ?? DEFAULT_LIMIT;
 
       throwIfAborted();
@@ -148,7 +149,7 @@ export function createLsTool(
       }
 
       if (results.length === 0) {
-        return { content: toolResultContent("(empty directory)"), details: undefined };
+        return { content: toolResultContent("(empty directory)"), details: undefined, title };
       }
 
       const truncation = truncateHead(results.join("\n"), {
@@ -172,6 +173,7 @@ export function createLsTool(
       return {
         content: toolResultContent(output),
         details: Object.keys(details).length > 0 ? details : undefined,
+        title,
       };
     },
   };

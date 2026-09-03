@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
-export type ExternalEditorResult =
+type ExternalEditorResult =
   | { status: "completed"; text: string }
   | { status: "failed"; error: Error };
 

@@ -9,7 +9,11 @@ import { uuidv7 } from "@uji-ai/ai/utils/uuid";
 import type { Api, AssistantMessage, Message, Model, Usage } from "@uji-ai/schema";
 import type { StreamFn, ThinkingLevel } from "../../types.ts";
 import { Result, type Result as ResultValue } from "../result.ts";
-import { buildContextEntries, sessionEntryToContextMessages } from "../session/context.ts";
+import {
+  buildContextEntries,
+  createBranchSummaryMessage,
+  sessionEntryToContextMessages,
+} from "../session/context.ts";
 import type { Entry } from "../session/types.ts";
 import { addUsage } from "../utils/usage.ts";
 import {
@@ -21,7 +25,7 @@ import {
   serializeConversation,
 } from "./utils.ts";
 
-export type CompactionErrorCode = "aborted" | "summarization_failed";
+type CompactionErrorCode = "aborted" | "summarization_failed";
 
 export class CompactionError extends Error {
   readonly code: CompactionErrorCode;
@@ -42,7 +46,7 @@ function err<TError>(error: TError): { ok: false; error: TError } {
 }
 
 /** File-operation details stored on generated compaction entries. */
-export interface CompactionDetails {
+interface CompactionDetails {
   /** Files read in the compacted history. */
   readFiles: string[];
   /** Files modified in the compacted history. */
@@ -99,11 +103,15 @@ function getMessageFromEntryForCompaction(entry: Entry): Message | undefined {
   if (entry.type === "compaction") {
     return undefined;
   }
+  // A branch summary is history worth folding into the checkpoint.
+  if (entry.type === "branch_summary") {
+    return entry.summary === "" ? undefined : createBranchSummaryMessage(entry);
+  }
   return getMessageFromEntry(entry);
 }
 
 /** Generated compaction data ready to be persisted as a compaction entry. */
-export interface CompactResult<T = unknown> {
+interface CompactResult<T = unknown> {
   /** Summary text that replaces compacted history in future context. */
   summary: string;
   /** Estimated context tokens before compaction. */
@@ -314,6 +322,7 @@ function findValidCutPoints(entries: Entry[], startIndex: number, endIndex: numb
         break;
       }
       case "compaction":
+      case "branch_summary":
       case "custom":
       case "model_change":
       case "thinking_level_change":
@@ -324,11 +333,7 @@ function findValidCutPoints(entries: Entry[], startIndex: number, endIndex: numb
 }
 
 /** Find the user-visible message that starts the turn containing an entry. */
-export function findTurnStartIndex(
-  entries: Entry[],
-  entryIndex: number,
-  startIndex: number,
-): number {
+function findTurnStartIndex(entries: Entry[], entryIndex: number, startIndex: number): number {
   for (let i = entryIndex; i >= startIndex; i--) {
     const entry = entries[i];
     if (entry.type === "message") {
@@ -342,7 +347,7 @@ export function findTurnStartIndex(
 }
 
 /** Cut point selected for compaction. */
-export interface CutPointResult {
+interface CutPointResult {
   /** Index of the first entry retained after compaction. */
   firstKeptEntryIndex: number;
   /** Index of the turn-start entry when the cut splits a turn, otherwise -1. */
@@ -352,7 +357,7 @@ export interface CutPointResult {
 }
 
 /** Find the compaction cut point that keeps approximately the requested recent-token budget. */
-export function findCutPoint(
+function findCutPoint(
   entries: Entry[],
   startIndex: number,
   endIndex: number,
@@ -477,34 +482,6 @@ Use this EXACT format:
 - [Preserve important signal, add new if needed]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-
-/** Generate or update a conversation summary for compaction. */
-export async function generateSummary(
-  currentMessages: Message[],
-  streamFn: StreamFn,
-  model: Model<Api>,
-  reserveTokens: number,
-  customInstructions: string | undefined,
-  previousSummary: string | undefined,
-  thinkingLevel: ThinkingLevel | undefined,
-  retry: RetryPolicy | undefined,
-  callbacks: RetryCallbacks | undefined,
-  signal: AbortSignal | undefined,
-): Promise<ResultValue<string, CompactionError>> {
-  const result = await generateSummaryWithUsage(
-    currentMessages,
-    streamFn,
-    model,
-    reserveTokens,
-    customInstructions,
-    previousSummary,
-    thinkingLevel,
-    retry,
-    callbacks,
-    signal,
-  );
-  return result.ok ? ok(result.value.text) : err(result.error);
-}
 
 /** Generate or update a conversation summary and return its provider usage. */
 export async function generateSummaryWithUsage(

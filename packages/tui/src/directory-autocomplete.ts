@@ -1,6 +1,13 @@
 import { readdir, stat } from "node:fs/promises";
-import { join, sep } from "node:path";
-import { resolveDirectory } from "./harness-host.ts";
+import { homedir } from "node:os";
+import { join, resolve, sep } from "node:path";
+
+/** `~` expansion and relative segments against the current directory. */
+export function resolveDirectory(cwd: string, input: string): string {
+  const expanded =
+    input === "~" ? homedir() : input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
+  return resolve(cwd, expanded);
+}
 
 const MAX_DIRECTORY_RESULTS = 100;
 

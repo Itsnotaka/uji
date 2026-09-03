@@ -14,7 +14,7 @@ import type { WorkspaceTrustDecision, WorkspaceTrustDeclineAction } from "./work
 
 const RENDER_LOG_ENV = "UJI_TUI_RENDER_LOG";
 
-export interface SerializedRenderLogError {
+interface SerializedRenderLogError {
   name: string;
   message: string;
   stack: string | null;
@@ -40,7 +40,7 @@ type RendererDescription = {
     }
 );
 
-export type TuiRenderLogEvent =
+type TuiRenderLogEvent =
   | { kind: "run_started" }
   | { kind: "workspace_trust_opened"; declineAction: WorkspaceTrustDeclineAction }
   | {

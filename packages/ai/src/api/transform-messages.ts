@@ -6,7 +6,6 @@ import type {
   Model,
   TextContent,
   ToolCall,
-  ToolResultMessage,
 } from "../types.ts";
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
@@ -99,13 +98,10 @@ export function transformMessages<TApi extends Api>(
 
     // Assistant messages need transformation check
     if (msg.role === "assistant") {
-      const assistantMsg = msg as AssistantMessage;
       const isSameModel =
-        assistantMsg.provider === model.provider &&
-        assistantMsg.api === model.api &&
-        assistantMsg.model === model.id;
+        msg.provider === model.provider && msg.api === model.api && msg.model === model.id;
 
-      const transformedContent = assistantMsg.content.flatMap((block) => {
+      const transformedContent = msg.content.flatMap((block) => {
         if (block.type === "thinking") {
           // Redacted thinking is opaque encrypted content, only valid for the same model.
           // Drop it for cross-model to avoid API errors.
@@ -133,18 +129,17 @@ export function transformMessages<TApi extends Api>(
         }
 
         if (block.type === "toolCall") {
-          const toolCall = block as ToolCall;
-          let normalizedToolCall: ToolCall = toolCall;
+          let normalizedToolCall: ToolCall = block;
 
-          if (!isSameModel && toolCall.thoughtSignature) {
-            normalizedToolCall = { ...toolCall };
-            delete (normalizedToolCall as { thoughtSignature?: string }).thoughtSignature;
+          if (!isSameModel && block.thoughtSignature) {
+            normalizedToolCall = { ...block };
+            delete normalizedToolCall.thoughtSignature;
           }
 
           if (!isSameModel && normalizeToolCallId) {
-            const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);
-            if (normalizedId !== toolCall.id) {
-              toolCallIdMap.set(toolCall.id, normalizedId);
+            const normalizedId = normalizeToolCallId(block.id, model, msg);
+            if (normalizedId !== block.id) {
+              toolCallIdMap.set(block.id, normalizedId);
               normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
             }
           }
@@ -156,7 +151,7 @@ export function transformMessages<TApi extends Api>(
       });
 
       return {
-        ...assistantMsg,
+        ...msg,
         content: transformedContent,
       };
     }
@@ -179,7 +174,7 @@ export function transformMessages<TApi extends Api>(
             content: [{ type: "text", text: "No result provided" }],
             isError: true,
             timestamp: Date.now(),
-          } as ToolResultMessage);
+          });
         }
       }
       pendingToolCalls = [];
@@ -199,13 +194,12 @@ export function transformMessages<TApi extends Api>(
       // - May have partial content (reasoning without message, incomplete tool calls)
       // - Replaying them can cause API errors (e.g., OpenAI "reasoning without following item")
       // - The model should retry from the last valid state
-      const assistantMsg = msg as AssistantMessage;
-      if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+      if (msg.stopReason === "error" || msg.stopReason === "aborted") {
         continue;
       }
 
       // Track tool calls from this assistant message
-      const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];
+      const toolCalls = msg.content.filter((b) => b.type === "toolCall");
       if (toolCalls.length > 0) {
         pendingToolCalls = toolCalls;
         existingToolResultIds = new Set();

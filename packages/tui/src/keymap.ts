@@ -41,7 +41,7 @@ export interface ChatCommandSpec {
   /**
    * `false` declines the key: the binding's `preventDefault` never runs, so it
    * still reaches the composer or the scrollback. That is how `up` browses
-   * history from the first line and moves the cursor everywhere else.
+   * history from the start of the draft and moves the cursor everywhere else.
    */
   run: () => boolean | void;
 }

@@ -14,7 +14,7 @@ export function DocThumb({ kind }: { kind: ThumbKind }) {
       viewBox="0 0 160 96"
       fill="none"
       aria-hidden="true"
-      className="pointer-events-none w-full select-none text-cog-dim"
+      className="pointer-events-none w-full text-cog-dim select-none"
     >
       {THUMBS[kind]}
     </svg>

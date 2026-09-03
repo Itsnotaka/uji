@@ -2,31 +2,25 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
-import { clampThinkingLevel } from "@uji-ai/ai";
-import type { Api, AuthResult, Model, Models, Provider } from "@uji-ai/ai";
-import {
-  AgentHarness,
-  contextFilesPlugin,
-  resolvePlugins,
-  SKILLS_PLUGIN_ID,
-  skillsPlugin,
-  SqliteSessionRepo,
-  systemPromptPlugin,
-  toJsonValue,
-  toolsFsPlugin,
-} from "@uji-ai/core";
+import { clampThinkingLevel, FileCredentialStore } from "@uji-ai/ai";
+import type { AccountLimits, Api, Model, Models, Provider } from "@uji-ai/ai";
+import { createUji, isThinkingLevel, resolvePlugins } from "@uji-ai/core";
 import { fastModePlugin } from "@uji-ai/plugin/examples/fast-mode";
-import { MODEL_THINKING_LEVELS } from "@uji-ai/schema";
+import { questionPlugin } from "@uji-ai/plugin/examples/question";
+import {
+  webSearchCredentialId,
+  webSearchPlugin,
+  type WebSearchCredentials,
+} from "@uji-ai/plugin/examples/web-search";
 import type {
   PluginDirectory,
   PluginManifest,
   ResolvedPlugins,
-  SessionRepo,
-  SessionStorage,
-  SuspendedOperation,
   ThinkingLevel,
   TrustedWorkspace,
+  Uji,
 } from "@uji-ai/core";
+import type { JsonValue } from "@uji-ai/schema";
 import {
   createCliModels,
   DEFAULT_PROVIDER_ID,
@@ -35,8 +29,18 @@ import {
   requireModel,
   requireProvider,
 } from "./catalog.ts";
-import type { ResumeTarget, RunFlags } from "./flags.ts";
+import type { RunFlags } from "./flags.ts";
+import { openAICodexPlugin } from "./openai-codex-plugin.ts";
 import type { ResolvedSettings } from "./settings.ts";
+import {
+  SKILLS_PLUGIN_ID,
+  contextFilesPlugin,
+  definePlugin,
+  skillsPlugin,
+  systemPromptPlugin,
+  toolsFsPlugin,
+} from "@uji-ai/core/plugins";
+import { SqliteSessionRepo, toJsonValue } from "@uji-ai/core/store";
 
 let skillsPluginGeneration = 0;
 
@@ -46,7 +50,6 @@ export { parseFlags } from "./flags.ts";
 export interface ResolvedRuntime {
   models: Models;
   provider: Provider;
-  auth: AuthResult;
 }
 
 export function runProviderCandidates(
@@ -100,7 +103,7 @@ export async function resolveRuntime(
     const auth = await models.getAuth(provider.id);
     if (auth !== undefined) {
       await loadProviderCatalog(models, provider.id);
-      return { models, provider, auth };
+      return { models, provider };
     }
   }
   return undefined;
@@ -136,7 +139,7 @@ function parseManifestPlugin(value: unknown, index: number): ManifestPlugin {
 }
 
 /** Parse the complete `.uji/uji.json` shape before it enters the plugin host. */
-export function parsePluginManifest(value: unknown): PluginManifest {
+function parsePluginManifest(value: unknown): PluginManifest {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(".uji/uji.json must be an object");
   }
@@ -167,29 +170,190 @@ async function readManifest(cwd: string): Promise<PluginManifest | undefined> {
   return parsePluginManifest(parsed);
 }
 
+/**
+ * What the TUI's own plugins need from the client: the chat's model
+ * (`fast-mode` contributes nothing for one without the mode) and the catalog.
+ * Chat naming is host UX over `sessions.rename`, not a plugin, so nothing here
+ * needs a session handle.
+ */
+interface CliPluginContext {
+  model: Model<Api>;
+  models: Models;
+}
+
+function webSearchCredentials(): WebSearchCredentials {
+  const store = new FileCredentialStore();
+  return {
+    async read(provider) {
+      const credential = await store.read(webSearchCredentialId(provider));
+      return credential?.type === "api_key" ? credential.key : undefined;
+    },
+    async write(provider, key) {
+      const id = webSearchCredentialId(provider);
+      if (key === undefined) {
+        await store.delete(id);
+        return;
+      }
+      await store.modify(id, () => Promise.resolve({ type: "api_key", key }));
+    },
+  };
+}
+
+/**
+ * The stock delegate, so `task` works out of the box. It sees the same tool
+ * catalog as any agent (design.mdx, "Agents"); it cannot delegate further,
+ * because a child session's catalog omits `task`.
+ */
+function generalAgentPlugin() {
+  return definePlugin({
+    id: "general-agent",
+    session(api) {
+      api.agents.add((draft) => {
+        draft.set("general", {
+          id: "general",
+          mode: "subagent",
+          description: "General-purpose agent for research and multi-step side tasks.",
+        });
+      });
+    },
+  });
+}
+
 /** Host plugins the TUI preinstalls before user and project overrides. */
-export function cliBuiltinPlugins(cwd: string, model: Model<Api>) {
+function cliBuiltinPlugins(cwd: string, context: CliPluginContext) {
   return [
     systemPromptPlugin(),
+    generalAgentPlugin(),
     contextFilesPlugin({ globalDir: join(homedir(), ".uji") }),
     toolsFsPlugin(),
-    fastModePlugin(model),
+    openAICodexPlugin(context.models),
+    fastModePlugin(context.model),
+    webSearchPlugin({ credentials: webSearchCredentials() }),
+    questionPlugin,
     skillsPlugin({ directories: skillDirectories(cwd) }),
   ];
+}
+
+/** Resolve the composition fallbacks a workspace launch starts from. */
+export function hostFallbacks(
+  runtime: ResolvedRuntime,
+  settings: ResolvedSettings,
+  flags: { model?: string; effort?: string },
+): { model: Model<Api>; thinkingLevel: ThinkingLevel } {
+  const modelId = resolveRunModelId(runtime.models, runtime.provider.id, {
+    flag: flags.model,
+    environment: process.env["UJI_MODEL"],
+    settings,
+  });
+  const model = requireModel(runtime.models, runtime.provider.id, modelId);
+  const requested = flags.effort ?? process.env["UJI_EFFORT"];
+  const effort =
+    requested !== undefined && isThinkingLevel(requested)
+      ? requested
+      : (settings.defaultThinkingLevel ?? DEFAULT_THINKING_LEVEL);
+  return { model, thinkingLevel: clampThinkingLevel(model, effort) };
+}
+
+export interface OpenUjiOptions {
+  workspace: TrustedWorkspace;
+  settings: ResolvedSettings;
+  /** Read per request, so a provider switch re-points the next one. */
+  runtime: () => ResolvedRuntime;
+  /** Composition fallbacks; a session's declared config wins per run. */
+  model: Model<Api>;
+  thinkingLevel: ThinkingLevel;
+  /**
+   * Where the sessions live. Defaults to the workspace's own store; `/cd`
+   * passes the launch workspace's path, because changing the tool directory
+   * must not strand the conversation in another database.
+   */
+  storePath?: string;
+  /** Plugin load failures. */
+  report: (message: string) => void;
+  onAccountLimits?: (limits: AccountLimits) => void;
+}
+
+/**
+ * Compose the SDK for one workspace: its store, its plugin set behind trust,
+ * and the model fallbacks the caller resolved. Session selection and run
+ * inputs are SDK verbs from here on.
+ */
+export async function openUji(
+  options: OpenUjiOptions,
+): Promise<{ sdk: Uji; store: SqliteSessionRepo }> {
+  const { workspace, runtime } = options;
+  const store = new SqliteSessionRepo(
+    options.storePath ?? join(workspace.cwd, ".uji", "sessions.db"),
+  );
+  try {
+    const resolved = await resolveCliPlugins(workspace, {
+      model: options.model,
+      models: runtime().models,
+    });
+    for (const failure of resolved.failures) {
+      options.report(`plugin ${failure.path}: ${failure.error}`);
+    }
+    const sdk = await createUji({
+      store,
+      streamFn: (model, context, streamOptions) =>
+        runtime().models.streamSimple(model, context, {
+          ...streamOptions,
+          ...(options.onAccountLimits === undefined
+            ? {}
+            : { onAccountLimits: options.onAccountLimits }),
+        }),
+      models: {
+        getModels: (provider) => runtime().models.getModels(provider),
+        getModel: (provider, id) => runtime().models.getModel(provider, id),
+      },
+      model: options.model,
+      thinkingLevel: options.thinkingLevel,
+      plugins: resolved.plugins,
+      env: { cwd: workspace.cwd },
+      compaction: options.settings.compaction,
+      streamOptions: { transport: options.settings.transport },
+    });
+    return { sdk, store };
+  } catch (error) {
+    await store.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Built-ins, then `~/.uji/plugins`, then `<cwd>/.uji/plugins`. */
 export async function resolveCliPlugins(
   workspace: TrustedWorkspace,
-  model: Model<Api>,
+  context: CliPluginContext,
 ): Promise<ResolvedPlugins> {
   const { cwd } = workspace;
   return resolvePlugins({
-    builtins: cliBuiltinPlugins(cwd, model),
+    builtins: cliBuiltinPlugins(cwd, context),
     directories: pluginDirectories(cwd),
     manifest: await readManifest(cwd),
     builtinVersions: { [SKILLS_PLUGIN_ID]: `builtin:${String(++skillsPluginGeneration)}` },
   });
+}
+
+/**
+ * One plugin id's manifest entry, for host features configured the way plugins
+ * are. Chat naming reads `session-title` here even though it is host code, so
+ * the `.uji/uji.json` shape users already wrote keeps working.
+ */
+export async function manifestPluginOptions(
+  cwd: string,
+  id: string,
+): Promise<{ disabled: boolean; options?: JsonValue }> {
+  const manifest = await readManifest(cwd);
+  let disabled = false;
+  let options: JsonValue | undefined;
+  for (const entry of manifest?.plugins ?? []) {
+    if (typeof entry === "string") {
+      if (entry === `-${id}`) disabled = true;
+      continue;
+    }
+    if (entry.id === id && entry.options !== undefined) options = entry.options;
+  }
+  return { disabled, ...(options === undefined ? {} : { options }) };
 }
 
 export function pluginDirectories(cwd: string): PluginDirectory[] {
@@ -209,111 +373,4 @@ export function skillDirectories(cwd: string): string[] {
     join(homedir(), ".agents", "skills"),
     join(homedir(), ".claude", "skills"),
   ];
-}
-
-export interface OpenedHarness {
-  harness: AgentHarness;
-  suspended: SuspendedOperation[];
-  sessionId: string;
-  repo: SqliteSessionRepo;
-}
-
-export interface HarnessRuntimeOptions {
-  model?: string;
-  effort?: ThinkingLevel;
-  settings: Pick<ResolvedSettings, "compaction" | "transport">;
-}
-
-export async function openRunSession(
-  repo: SessionRepo,
-  target: ResumeTarget,
-): Promise<SessionStorage> {
-  switch (target.kind) {
-    case "new":
-      return repo.create();
-    case "latest": {
-      // Skip sessions that were created by a launch and never written to.
-      for (const { id } of (await repo.list()).reverse()) {
-        const session = await repo.open(id);
-        if ((await session.getLeafId("main")) !== null) return session;
-        await session.close();
-      }
-      return repo.create();
-    }
-    case "session":
-      return repo.open(target.id);
-    default: {
-      const _exhaustive: never = target;
-      return _exhaustive;
-    }
-  }
-}
-
-function parseThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
-  if (value === undefined) return undefined;
-  const level = MODEL_THINKING_LEVELS.find((candidate) => candidate === value);
-  if (level === undefined) {
-    throw new Error(`Unknown effort: ${value}. Use ${MODEL_THINKING_LEVELS.join(", ")}`);
-  }
-  return level;
-}
-
-export async function createHarness(
-  runtime: ResolvedRuntime,
-  session: SessionStorage,
-  options: HarnessRuntimeOptions,
-  workspace: TrustedWorkspace,
-): Promise<{ harness: AgentHarness; suspended: SuspendedOperation[] }> {
-  const model = requireModel(runtime.models, runtime.provider.id, options.model);
-  const thinkingLevel = clampThinkingLevel(model, options.effort ?? DEFAULT_THINKING_LEVEL);
-  const resolved = await resolveCliPlugins(workspace, model);
-  for (const failure of resolved.failures) {
-    process.stderr.write(`plugin ${failure.path}: ${failure.error}\n`);
-  }
-  return AgentHarness.create({
-    session,
-    streamFn: (requestedModel, context, streamOptions) =>
-      runtime.models.streamSimple(requestedModel, context, streamOptions),
-    plugins: resolved.plugins,
-    env: { cwd: workspace.cwd },
-    model,
-    thinkingLevel,
-    compaction: options.settings.compaction,
-    streamOptions: { transport: options.settings.transport },
-  });
-}
-
-export async function openHarness(
-  runtime: ResolvedRuntime,
-  flags: RunFlags,
-  options: { workspace: TrustedWorkspace; settings: ResolvedSettings },
-): Promise<OpenedHarness> {
-  const { workspace } = options;
-  const repo = new SqliteSessionRepo(join(workspace.cwd, ".uji", "sessions.db"));
-  try {
-    const session = await openRunSession(repo, flags.resume);
-    const sessionId = (await session.getMetadata()).id;
-    const model = resolveRunModelId(runtime.models, runtime.provider.id, {
-      flag: flags.model,
-      environment: process.env["UJI_MODEL"],
-      settings: options.settings,
-    });
-    const effort = parseThinkingLevel(
-      flags.effort ?? process.env["UJI_EFFORT"] ?? options.settings.defaultThinkingLevel,
-    );
-    const { harness, suspended } = await createHarness(
-      runtime,
-      session,
-      {
-        model,
-        effort,
-        settings: options.settings,
-      },
-      workspace,
-    );
-    return { harness, suspended, sessionId, repo };
-  } catch (error) {
-    await repo.close().catch(() => undefined);
-    throw error;
-  }
 }

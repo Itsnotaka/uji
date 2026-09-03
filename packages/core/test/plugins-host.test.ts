@@ -1,8 +1,7 @@
 /**
- * Host behaviour that the proof of concept does not cover: ask and answer,
- * the default when no client answers, disposal of effects, contributions to
- * prompt and commands, and a file plugin loaded from disk with same-name
- * replacement of a built-in.
+ * Host behaviour that the proof of concept does not cover: disposal of
+ * effects, contributions to prompt and commands, and a file plugin loaded
+ * from disk with same-name replacement of a built-in.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -11,17 +10,13 @@ import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import type { AssistantMessage, AssistantMessageEvent, Model, Usage } from "@uji-ai/ai";
 import { EventStream } from "@uji-ai/ai";
-import {
-  AgentHarness,
-  definePlugin,
-  type HarnessEvent,
-  inlinePlugin,
-  resolvePlugins,
-  SqliteSessionRepo,
-  systemPromptPlugin,
-  watchPluginDirectories,
-} from "../src/index.ts";
+import { resolvePlugins, watchPluginDirectories } from "../src/index.ts";
 import type { StreamFn } from "../src/types.ts";
+import { AgentHarness } from "../src/harness/agent-harness.ts";
+import { definePlugin, inlinePlugin, systemPromptPlugin } from "../src/plugins/index.ts";
+import type { EphemeralEvent } from "../src/sdk/types.ts";
+import { SqliteSessionRepo } from "../src/store.ts";
+import { prompt } from "./harness-driver.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -82,23 +77,20 @@ function stopStream(seen: string[]): StreamFn {
   };
 }
 
-async function open(
-  plugins: Parameters<typeof AgentHarness.create>[0]["plugins"],
-  askTimeoutMs = 50,
-) {
+async function open(plugins: Parameters<typeof AgentHarness.create>[0]["plugins"]) {
   const directory = tempDir("uji-plugins-host-");
   const repo = new SqliteSessionRepo(join(directory, "sessions.db"));
   const session = await repo.create();
   const seen: string[] = [];
-  const { harness } = await AgentHarness.create({
+  const harness = await AgentHarness.create({
     session,
     streamFn: stopStream(seen),
     plugins,
     env: { cwd: directory },
     model,
-    askTimeoutMs,
   });
-  const events: HarnessEvent[] = [];
+  harness.attach();
+  const events: EphemeralEvent[] = [];
   harness.subscribe((event) => {
     events.push(event);
   });
@@ -133,149 +125,56 @@ void describe("PluginHost", () => {
       ),
     ]);
     assert.equal(h.harness.getSystemPrompt(), "base\n\ncwd: /x");
-    await h.harness.prompt("go");
+    await prompt(h.harness, "go");
     assert.equal(h.seen[0], "base\n\ncwd: /x");
     assert.equal(await h.harness.runCommand("hello", "there"), "hi there");
-    assert.equal(
-      h.events.some((e) => e.type === "config_update" && e.property === "prompt"),
-      true,
-    );
     await h.close();
   });
 
   void test("settings: choices read and apply through plugin storage; the registry announces", async () => {
     const h = await open([]);
-    await h.harness.plugins.activate([
-      inlinePlugin(
-        definePlugin({
-          id: "tiers",
-          session(api) {
-            api.settings.add((d) =>
-              d.set("tier", {
-                label: "Tier",
-                choices: [
-                  { id: "fast", label: "fast", status: "fast" },
-                  { id: "normal", label: "normal" },
-                ],
-                read: async () => ((await api.storage.get("tier")) === "fast" ? "fast" : "normal"),
-                apply: (choiceId) => api.storage.set("tier", choiceId),
-              }),
-            );
-          },
-        }),
-      ),
-    ]);
-    assert.equal(
-      h.events.some((e) => e.type === "config_update" && e.property === "settings"),
-      true,
+    const tiers = inlinePlugin(
+      definePlugin({
+        id: "tiers",
+        session(api) {
+          api.settings.add((d) =>
+            d.set("tier", {
+              label: "Tier",
+              key: "tier",
+              fallback: "normal",
+              choices: [
+                { id: "fast", label: "fast", status: "fast" },
+                { id: "normal", label: "normal" },
+              ],
+            }),
+          );
+        },
+      }),
     );
-    const setting = h.harness.getSettings().get("tier");
-    assert.notEqual(setting, undefined);
-    assert.equal(await setting?.read(), "normal");
-    await setting?.apply("fast");
-    assert.equal(await setting?.read(), "fast");
+    await h.harness.plugins.activate([tiers]);
+    // Owner comes from the replaying contribution, not from the plugin's own claim.
+    assert.deepEqual(
+      (await h.harness.listSettings()).map(({ id, owner, current }) => ({ id, owner, current })),
+      [{ id: "tier", owner: "tiers", current: "normal" }],
+    );
+    assert.deepEqual(await h.harness.applySetting("tier", "fast"), { kind: "applied" });
+    assert.equal((await h.harness.listSettings())[0]?.current, "fast");
+    assert.deepEqual(await h.harness.applySetting("tier", "glacial"), { kind: "invalid_choice" });
+
     // The value survives the descriptor: a rebuilt registry reads the same storage.
     await h.harness.plugins.activate([]);
-    assert.equal(h.harness.getSettings().has("tier"), false);
+    assert.equal(h.harness.registries.settings.current().has("tier"), false);
+    assert.deepEqual(await h.harness.applySetting("tier", "fast"), { kind: "not_found" });
+    await h.harness.plugins.activate([tiers]);
+    assert.equal((await h.harness.listSettings())[0]?.current, "fast");
     await h.close();
   });
 
-  void test("ask: a client answers through answer(); without one the default is used", async () => {
-    let answered: unknown;
-    const h = await open([
-      inlinePlugin(
-        definePlugin({
-          id: "asker",
-          session(api) {
-            api.commands.add((d) =>
-              d.set("ask", {
-                description: "",
-                run: async () => {
-                  answered = await api.ask({ kind: "confirm", title: "ok?", default: false });
-                  return undefined;
-                },
-              }),
-            );
-          },
-        }),
-      ),
-    ]);
-    const off = h.harness.subscribe((event) => {
-      if (event.type === "ask") h.harness.answer(event.askId, true);
-    });
-    await h.harness.runCommand("ask");
-    assert.equal(answered, true);
-    off();
-    await h.harness.runCommand("ask");
-    assert.equal(answered, false);
-    const sources = h.events
-      .filter((e) => e.type === "ask_answered")
-      .map((e) => (e.type === "ask_answered" ? e.source : ""));
-    assert.deepEqual(sources, ["client", "default"]);
-    await h.close();
-  });
-
-  void test("close is idempotent and cancels an unanswered ask", async () => {
-    const h = await open(
-      [
-        inlinePlugin(
-          definePlugin({
-            id: "asker",
-            session(api) {
-              api.commands.add((draft) =>
-                draft.set("ask", {
-                  description: "",
-                  run: async () => {
-                    await api.ask({ kind: "confirm", title: "wait forever?" });
-                    return undefined;
-                  },
-                }),
-              );
-            },
-          }),
-        ),
-      ],
-      120_000,
-    );
-    let sawAsk: (() => void) | undefined;
-    const asked = new Promise<void>((resolve) => {
-      sawAsk = resolve;
-    });
-    h.harness.subscribe((event) => {
-      if (event.type === "ask") sawAsk?.();
-    });
-    const command = h.harness.runCommand("ask");
-    await asked;
-
-    const first = h.harness.close();
-    const second = h.harness.close();
-    assert.equal(first, second);
-    await first;
-    await assert.rejects(command, /harness is closed/);
-    await h.close();
-  });
-
-  void test("disposing a plugin aborts its effect and runs its disposer", async () => {
-    let aborted = false;
-    let disposed = false;
-    const watcher = definePlugin({
-      id: "watcher",
-      session(api) {
-        api.effect((signal) => {
-          signal.addEventListener("abort", () => {
-            aborted = true;
-          });
-          return () => {
-            disposed = true;
-          };
-        });
-      },
-    });
-    const h = await open([inlinePlugin(watcher)]);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await h.harness.plugins.activate([]);
-    assert.equal(aborted, true);
-    assert.equal(disposed, true);
+  void test("close is idempotent", async () => {
+    const h = await open([inlinePlugin(systemPromptPlugin("base"))]);
+    await Promise.all([h.harness.close(), h.harness.close()]);
+    // Closed means closed: a later verb refuses instead of half-working.
+    await assert.rejects(h.harness.abort(), { message: "harness is closed" });
     await h.close();
   });
 
@@ -297,7 +196,7 @@ void describe("PluginHost", () => {
     ]);
     assert.equal(h.harness.getSystemPrompt(), "base");
     assert.equal(
-      h.events.some((e) => e.type === "diagnostic" && e.owner === "bad" && e.message === "boom"),
+      h.events.some((e) => e.kind === "diagnostic" && e.owner === "bad" && e.message === "boom"),
       true,
     );
     await h.close();
@@ -337,7 +236,6 @@ void describe("resolvePlugins", () => {
         ["profile", "project"],
       ],
     );
-    assert.deepEqual(resolved.plugins[2]?.options, { depth: 2 });
     assert.equal(resolved.failures.length, 1);
     assert.match(resolved.failures[0]?.error ?? "", /not a plugin/);
 
@@ -367,33 +265,72 @@ void describe("resolvePlugins", () => {
   });
 });
 
+/** Reject after `ms`, clearing the timer either way so a failure cannot outlive the test. */
+async function withTimeout<T>(promise: Promise<T>, message: string, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 void describe("watchPluginDirectories", () => {
   void test("an edit under a watched directory fires onChange once per burst; stop ends it", async () => {
     const dir = tempDir("uji-plugins-watch-");
+    const debounceMs = 50;
     let fired = 0;
-    let resolveFirst: (() => void) | undefined;
-    const first = new Promise<void>((resolve) => {
-      resolveFirst = resolve;
-    });
+    let observed: (() => void) | undefined;
+    const nextChange = (): Promise<void> =>
+      new Promise<void>((resolve) => {
+        observed = resolve;
+      });
     const stop = watchPluginDirectories({
       directories: [{ path: dir }],
-      debounceMs: 50,
+      debounceMs,
       onChange: () => {
         fired += 1;
-        resolveFirst?.();
+        observed?.();
       },
     });
-    writeFileSync(join(dir, "a.ts"), "export default { id: 'a', session() {} };");
-    writeFileSync(join(dir, "b.ts"), "export default { id: 'b', session() {} };");
-    await Promise.race([
-      first,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("no change event")), 3_000)),
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    assert.equal(fired, 1);
-    stop();
+    let priming: ReturnType<typeof setInterval> | undefined;
+    // The watcher is an OS handle that keeps the process alive: it and the
+    // priming timer are released whether the assertions pass, fail, or time out.
+    try {
+      // Readiness: the native watcher reports nothing until it is live, and
+      // nothing says when that is. Touch a priming file, one touch per two
+      // debounce windows so each lands as its own burst, until one is seen.
+      const ready = nextChange();
+      let touches = 0;
+      priming = setInterval(() => {
+        touches += 1;
+        writeFileSync(join(dir, "prime.txt"), String(touches));
+      }, debounceMs * 2);
+      await withTimeout(ready, "the watcher never reported a priming touch", 10_000);
+      clearInterval(priming);
+      priming = undefined;
+      // Drain what the last touch may still have scheduled, then start counting.
+      await sleep(debounceMs * 3);
+      fired = 0;
+      const burst = nextChange();
+      // Both writes land inside one debounce window, so they are one burst.
+      writeFileSync(join(dir, "a.ts"), "export default { id: 'a', session() {} };");
+      writeFileSync(join(dir, "b.ts"), "export default { id: 'b', session() {} };");
+      await withTimeout(burst, "no change event for the burst", 5_000);
+      // Anything else from the same burst has had two full windows to land.
+      await sleep(debounceMs * 3);
+      assert.equal(fired, 1);
+    } finally {
+      if (priming !== undefined) clearInterval(priming);
+      stop();
+    }
     writeFileSync(join(dir, "c.ts"), "export default { id: 'c', session() {} };");
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await sleep(debounceMs * 4);
     assert.equal(fired, 1);
   });
 });

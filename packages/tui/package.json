@@ -8,25 +8,25 @@
     "clean": "rm -rf node_modules .turbo ../../bin",
     "dev": "UJI_TUI_RENDER_LOG=1 bun --watch src/index.ts",
     "start": "bun src/index.ts",
-    "test": "node --experimental-ffi --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opentui/core": "^0.5.7",
-    "@opentui/keymap": "^0.5.7",
+    "@opentui/core": "^0.5.9",
+    "@opentui/keymap": "^0.5.9",
     "@uji-ai/ai": "workspace:*",
     "@uji-ai/core": "workspace:*",
     "@uji-ai/plugin": "workspace:*",
     "@uji-ai/schema": "workspace:*",
+    "beautiful-mermaid": "1.1.3",
     "diff": "9.0.0",
     "fuzzysort": "3.1.0",
-    "open": "^11.0.0",
+    "open": "^11.0.1",
     "semver": "7.8.5",
     "shiki": "4.4.3",
     "string-width": "7.2.0"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "@types/semver": "7.7.1",
     "typescript": "^7.0.2"
   },

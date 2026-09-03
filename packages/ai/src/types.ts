@@ -34,6 +34,7 @@ export type {
   AssistantMessageEvent,
   ConstrainedSamplingConfig,
   Context,
+  ProviderCheckpointMaterial,
   DeferredHandle,
   DiagnosticErrorInfo,
   GrammarFormat,
@@ -76,6 +77,12 @@ export interface ThinkingBudgets {
 
 // Base options all providers share
 export type CacheRetention = "none" | "short" | "long";
+export type CachedRetention = Exclude<CacheRetention, "none">;
+
+/** Provider-owned lower bounds for prompt-cache lifetime after a confirmed read or write. */
+export interface PromptCachePolicy {
+  readonly minimumRetentionMs: Readonly<Record<CachedRetention, number>>;
+}
 
 export type Transport = "sse" | "websocket" | "websocket-cached" | "auto";
 
@@ -87,6 +94,25 @@ export type FetchFunction = typeof globalThis.fetch;
 export interface ProviderResponse {
   status: number;
   headers: Record<string, string>;
+}
+
+/** One provider subscription window, normalized as percent consumed. */
+export interface AccountLimitWindow {
+  /** Stable provider-owned bucket id, for example `five_hour` or `seven_day`. */
+  id: string;
+  usedPercent: number;
+  /** Unix timestamp in milliseconds. */
+  resetsAt?: number;
+  windowMinutes?: number;
+}
+
+/** Ephemeral account-scoped subscription state. Never conversation usage. */
+export interface AccountLimits {
+  providerId: string;
+  plan?: string;
+  windows: readonly AccountLimitWindow[];
+  /** Unix timestamp in milliseconds when the provider supplied this state. */
+  observedAt: number;
 }
 
 /** Authentication, HTTP transport, and lifecycle callbacks shared by provider requests. */
@@ -120,6 +146,8 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
    * Optional callback invoked after an HTTP response is received.
    */
   onResponse?: (response: ProviderResponse, model: TModel) => void | Promise<void>;
+  /** Account-limit telemetry observed during a provider request. */
+  onAccountLimits?: (limits: AccountLimits, model: TModel) => void | Promise<void>;
   /**
    * Optional custom HTTP headers to include in API requests.
    * Merged with provider defaults; caller values override default headers.

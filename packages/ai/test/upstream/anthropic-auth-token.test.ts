@@ -14,6 +14,14 @@ const mockState = vi.hoisted(() => ({
 vi.mock("@anthropic-ai/sdk", () => {
   function createSseResponse(): Response {
     const body = [
+      `event: rate_limit_event\ndata: ${JSON.stringify({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          rateLimitType: "five_hour",
+          utilization: 0.42,
+          resetsAt: 2_000_000_000,
+        },
+      })}\n`,
       `event: message_start\ndata: ${JSON.stringify({
         type: "message_start",
         message: {
@@ -126,6 +134,31 @@ describe("Anthropic auth token env", () => {
       auth: { apiKey: "oauth-token" },
       source: ANTHROPIC_OAUTH_TOKEN_ENV,
     });
+  });
+
+  it("reports account-limit events without adding them to the message stream", async () => {
+    const observed: unknown[] = [];
+    const stream = streamAnthropic(anthropicModel, context, {
+      headers: { Authorization: "Bearer test" },
+      onAccountLimits: (limits) => {
+        observed.push(limits);
+      },
+    });
+    await stream.result();
+
+    expect(observed).toEqual([
+      {
+        providerId: "anthropic",
+        windows: [
+          {
+            id: "five_hour",
+            usedPercent: 42,
+            resetsAt: 2_000_000_000_000,
+          },
+        ],
+        observedAt: expect.any(Number),
+      },
+    ]);
   });
 
   it("uses Authorization headers without OAuth-mode request shaping", async () => {

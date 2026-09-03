@@ -32,7 +32,7 @@ export function restoreLineEndings(text: string, ending: "\r\n" | "\n"): string 
  * - Normalize Unicode dashes/hyphens to ASCII hyphen
  * - Normalize special Unicode spaces to regular space
  */
-export function normalizeForFuzzyMatch(text: string): string {
+function normalizeForFuzzyMatch(text: string): string {
   return (
     text
       .normalize("NFKC")
@@ -132,7 +132,7 @@ function applyReplacements(content: string, replacements: TextReplacement[], off
  * from `originalContent`. The actual replacement ranges drive preservation so
  * duplicate normalized lines cannot be aligned to the wrong occurrence.
  */
-export function applyReplacementsPreservingUnchangedLines(
+function applyReplacementsPreservingUnchangedLines(
   originalContent: string,
   baseContent: string,
   replacements: TextReplacement[],
@@ -177,7 +177,7 @@ export function applyReplacementsPreservingUnchangedLines(
   return result;
 }
 
-export interface FuzzyMatchResult {
+interface FuzzyMatchResult {
   /** Whether a match was found */
   found: boolean;
   /** The index where the match starts (in the content that should be used for replacement) */
@@ -209,7 +209,7 @@ export interface AppliedEditsResult {
  * fuzzy-normalized version of the content (trailing whitespace stripped,
  * Unicode quotes/dashes normalized to ASCII).
  */
-export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
+function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
   // Try exact match first
   const exactIndex = content.indexOf(oldText);
   if (exactIndex !== -1) {
@@ -384,8 +384,17 @@ export function applyEditsToNormalizedContent(
   return { baseContent, newContent };
 }
 
+export interface FileMutationDetails {
+  /** Display-oriented diff of the changes made. */
+  diff: string;
+  /** Standard unified patch of the changes made. */
+  patch: string;
+  /** Line number of the first change in the new file. */
+  firstChangedLine?: number;
+}
+
 /** Generate a standard unified patch. */
-export function generateUnifiedPatch(
+function generateUnifiedPatch(
   path: string,
   oldContent: string,
   newContent: string,
@@ -401,7 +410,7 @@ export function generateUnifiedPatch(
  * Generate a display-oriented diff string with line numbers and context.
  * Returns both the diff string and the first changed line number (in the new file).
  */
-export function generateDiffString(
+function generateDiffString(
   oldContent: string,
   newContent: string,
   contextLines = 4,
@@ -524,4 +533,18 @@ export function generateDiffString(
   }
 
   return { diff: output.join("\n"), firstChangedLine };
+}
+
+/** Build the shared result details rendered for any file-content mutation. */
+export function generateFileMutationDetails(
+  path: string,
+  oldContent: string,
+  newContent: string,
+): FileMutationDetails {
+  const { diff, firstChangedLine } = generateDiffString(oldContent, newContent);
+  return {
+    diff,
+    patch: generateUnifiedPatch(path, oldContent, newContent),
+    firstChangedLine,
+  };
 }

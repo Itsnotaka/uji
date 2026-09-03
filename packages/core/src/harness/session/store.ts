@@ -29,6 +29,7 @@ import {
   type MessageEntry,
   type NewRecord,
   type OperationFinishedRecord,
+  type OperationStartedRecord,
   type ProvisionedEntry,
   type RunRecord,
 } from "./types.ts";
@@ -54,6 +55,11 @@ export interface SendOptions {
    */
   readonly delivery?: "steer" | "queue";
   readonly origin?: SendOrigin;
+  /**
+   * Default true. `false` stores the placed entry marked so attached hosts do
+   * not start a run for it; the next woken run drains it like any placement.
+   */
+  readonly wake?: boolean;
   /**
    * Caller-supplied idempotency key. A retry with the same key returns the
    * original receipt with `duplicate: true` and writes nothing. Each write-once
@@ -85,7 +91,8 @@ export type SendReceipt =
  *     if options.idempotencyKey exists in send_keys:
  *       return recorded receipt with duplicate: true            // write nothing
  *     claim := live claim on (session, head)                    // expires_at_ms > now
- *     if claim is undefined:
+ *     if claim is undefined, a waiting open run counts as live // see tool_waiting
+ *     if no live or waiting run:
  *       entry := writeEntry(message entry at head tip)          // + head move, one seq each
  *       receipt := { disposition: "placed", entryId }
  *     else:
@@ -215,7 +222,7 @@ export function acquireRunClaim(
  * Extends the claim iff this claimant still holds it. Matched on
  * (owner, fence) alone; expiry is deliberately not checked. Expiry lets a
  * successor take over after a crash; it does not kill a claimant merely
- * because its clock jumped while the process was suspended. Zero rows matched
+ * because its clock jumped while the process was waiting. Zero rows matched
  * means fenced out: terminal for this claimant.
  */
 export function renewRunClaim(
@@ -283,9 +290,6 @@ export interface RunWriter {
   /** Aborts when a successor fences this writer out. Release does not abort it. */
   readonly claimLost: AbortSignal;
   appendEntry(entry: ProvisionedEntry): Promise<Entry>;
-  appendEntries(entries: readonly ProvisionedEntry[]): Promise<Entry[]>;
-  /** Applies all currently pending deferred writes atomically in admission order. */
-  applyDeferred(): Promise<Entry[]>;
   appendRecord<TRecord extends RunRecord>(record: NewRecord<TRecord>): Promise<TRecord>;
   /** Deliberate re-point (navigation). Appends a head move; never deletes entries. */
   moveHead(to: string | null): Promise<void>;
@@ -341,7 +345,13 @@ export type ClaimRunOutcome =
   | { ok: true; claim: RunClaim; writer: RunWriter }
   | { ok: false; holder: { runId: string; ownerId: string; expiresAtMs: number } };
 
+import type { JsonValue } from "@uji-ai/schema";
+
 export type EntryAdmission = { disposition: "placed" } | { disposition: "deferred"; runId: string };
+
+export type ToolReplyAdmission =
+  | { ok: true; toolCallId: string }
+  | { ok: false; reason: "no_wait" | "already_replied" | "ambiguous" };
 
 /**
  * Every open session handle gets these participant and execution-coordination
@@ -357,11 +367,35 @@ export interface DurableSessionStore {
    * same `queue_cancelled` entry-id tombstones as queued messages.
    */
   admitEntry(entry: ProvisionedEntry, head?: string): Promise<EntryAdmission>;
-  /** Records an abort request for the live claimant in the same transaction. */
+  /**
+   * Records an abort request for the live claimant, or for the head's
+   * waiting open run, in the same transaction. A waiting run has no
+   * claimant; whichever host wakes it honors the abort.
+   */
   requestAbort(head?: string): Promise<{ runId: string } | undefined>;
+  /**
+   * Record a participant's answer to a waiting tool call. First writer
+   * wins: a second reply for the same call is rejected, so racing clients
+   * cannot double-answer.
+   */
+  admitToolReply(
+    input: { toolCallId?: string; toolName?: string; reply: JsonValue },
+    head?: string,
+  ): Promise<ToolReplyAdmission>;
   /** The live claim on a head, if any: sdk.runs.current at the storage layer. */
   getLiveClaim(head: string): Promise<RunClaim | undefined>;
   /** CAS a run onto a head. Expected loss is a value, not an error. */
   claimRun(head: string, runId: string): Promise<ClaimRunOutcome>;
+  /**
+   * Atomically claim the head and commit `operation_started` under it in one
+   * transaction, so a crash cannot leave a claim with no operation record.
+   * Starting an operation goes through here; `claimRun` resumes one that
+   * already has its record.
+   */
+  beginOperation(
+    head: string,
+    runId: string,
+    body: Omit<NewRecord<OperationStartedRecord>, "type" | "id" | "head" | "sourceLeafId">,
+  ): Promise<ClaimRunOutcome>;
   watch(options?: WatchOptions): AsyncIterable<LogItem>;
 }

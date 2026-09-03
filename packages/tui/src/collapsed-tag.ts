@@ -4,19 +4,19 @@ import type { ImageContent } from "@uji-ai/schema";
 import type { CliTheme } from "./theme.ts";
 
 /** Images may fill their container but never consume the whole viewport. */
-export const IMAGE_PREVIEW_MAX_VIEWPORT_RATIO = 0.5;
+const IMAGE_PREVIEW_MAX_VIEWPORT_RATIO = 0.5;
 
 export function imagePreviewMaxHeight(rendererHeight: number): number {
   return Math.max(1, Math.floor(rendererHeight * IMAGE_PREVIEW_MAX_VIEWPORT_RATIO));
 }
 
-export interface CollapsedTagContext {
+interface CollapsedTagContext {
   renderer: CliRenderer;
   theme: CliTheme;
   nextId: (prefix?: string) => string;
 }
 
-export interface CollapsedTagOptions {
+interface CollapsedTagOptions {
   id: string;
   label: () => string;
   url?: string;

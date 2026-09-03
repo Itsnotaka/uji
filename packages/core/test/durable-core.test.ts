@@ -15,23 +15,42 @@ import {
   type Usage,
 } from "@uji-ai/ai";
 import { Type } from "typebox";
+import type { ClaimRunOutcome, RunWriter } from "../src/harness/session/store.ts";
+import type { StreamFn } from "../src/types.ts";
+import type { RunnerFinished } from "../src/harness/runner.ts";
+import { ToolWait } from "../src/types.ts";
+import { AgentHarness, type AgentHarnessOptions } from "../src/harness/agent-harness.ts";
+import { HookRegistry } from "../src/harness/hooks.ts";
+import { pendingQueue, prompt, submit, waitFinished, waitForIdle } from "./harness-driver.ts";
 import {
-  AgentHarness,
-  type HarnessTool,
-  HookRegistry,
+  ToolError,
+  definePlugin,
   inlinePlugin,
+  systemPromptPlugin,
+  type HarnessTool,
+  type Plugin,
+} from "../src/plugins/index.ts";
+import {
+  SqliteSessionRepo,
+  step,
   type LogItem,
   type MessageEntry,
   type ProvisionedEntry,
   type SessionStorage,
-  SqliteSessionRepo,
   type SqliteSessionRepoOptions,
-  systemPromptPlugin,
-  step,
-  toolsPlugin,
-} from "../src/index.ts";
-import type { ClaimRunOutcome, RunWriter } from "../src/harness/session/store.ts";
-import type { StreamFn } from "../src/types.ts";
+} from "../src/store.ts";
+
+/** A plugin that contributes a fixed list of tools. */
+function toolsPlugin(tools: readonly HarnessTool[]): Plugin {
+  return definePlugin({
+    id: "tools",
+    session(api) {
+      api.tools.add((draft) => {
+        for (const tool of tools) draft.set(tool.name, tool);
+      });
+    },
+  });
+}
 
 const directories: string[] = [];
 const repositories: SqliteSessionRepo[] = [];
@@ -234,22 +253,26 @@ function interruptibleGate(settleOnAbort: boolean): InterruptibleGate {
   };
 }
 
+/** `attach` volunteers this harness as the runner; tests that call `resume()` themselves leave it off. */
 async function createHarness(
   session: SessionStorage,
   streamFn: StreamFn,
   tools: readonly HarnessTool[] = [],
+  attach = false,
+  onRunEnd?: AgentHarnessOptions["onRunEnd"],
 ): Promise<AgentHarness> {
   const plugins = [inlinePlugin(systemPromptPlugin("system"))];
   if (tools.length > 0) plugins.push(inlinePlugin(toolsPlugin(tools)));
-  return (
-    await AgentHarness.create({
-      session,
-      streamFn,
-      plugins,
-      env: { cwd: "/" },
-      model,
-    })
-  ).harness;
+  const harness = await AgentHarness.create({
+    session,
+    streamFn,
+    plugins,
+    env: { cwd: "/" },
+    model,
+    ...(onRunEnd === undefined ? {} : { onRunEnd }),
+  });
+  if (attach) harness.attach();
+  return harness;
 }
 
 function userTexts(messages: readonly Message[]): string[] {
@@ -456,7 +479,7 @@ void describe("open admission (design record: admission, invariants 5-7)", () =>
     const entries = await first.findEntries({ type: "message" });
     assert.deepEqual(
       entries.map((entry) => entry.seq),
-      [...entries.map((entry) => entry.seq)].sort((a, b) => a - b),
+      entries.map((entry) => entry.seq).sort((a, b) => a - b),
     );
     assert.equal(entries.length, 3);
     const branch = await second.getBranch("main");
@@ -479,31 +502,31 @@ void describe("open admission (design record: admission, invariants 5-7)", () =>
   void it("a queued send is drained by the running harness at its next checkpoint in seq order", async () => {
     const { first, second } = await sharedSession();
     const gate = gatedStream();
-    const harness = await createHarness(first, gate.streamFn);
-    const running = harness.prompt("initial");
+    const harness = await createHarness(first, gate.streamFn, [], true);
+    const running = prompt(harness, "initial");
     await withTimeout(gate.entered, "provider did not start");
     await second.send("external-one");
     await second.send("external-two");
     gate.release();
     const result = await running;
-    assert.equal(result.ok, true);
+    assert.equal(result.outcome.kind, "completed");
     assert.equal(userTexts(gate.contexts[1] ?? []).at(-1), "external-one");
     assert.equal(userTexts(gate.contexts[2] ?? []).at(-1), "external-two");
-    assert.deepEqual(await harness.pendingQueue(), []);
+    assert.deepEqual(await pendingQueue(harness), []);
     await harness.close();
   });
 
   void it("a send from a second process while a first-process run is live is answered by that run", async () => {
     const { first, second } = await sharedSession();
     const gate = gatedStream();
-    const harness = await createHarness(first, gate.streamFn);
-    const running = harness.prompt("initial");
+    const harness = await createHarness(first, gate.streamFn, [], true);
+    const running = prompt(harness, "initial");
     await withTimeout(gate.entered, "provider did not start");
     const receipt = await second.send("from another process");
     assert.equal(receipt.disposition, "queued");
     gate.release();
     const result = await running;
-    assert.equal(result.ok, true);
+    assert.equal(result.outcome.kind, "completed");
     assert.ok(userTexts(gate.contexts[1] ?? []).includes("from another process"));
     const branch = await second.getBranch("main");
     assert.equal(
@@ -576,7 +599,7 @@ void describe("participant tree admission (design record: admission)", () => {
     );
     assert.deepEqual(
       branch.map((entry) => entry.seq),
-      [...branch.map((entry) => entry.seq)].sort((a, b) => a - b),
+      branch.map((entry) => entry.seq).sort((a, b) => a - b),
     );
   });
 
@@ -657,14 +680,14 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
   void it("a run claims its head at start and releases at operation_finished", async () => {
     const { first, second } = await sharedSession();
     const gate = gatedStream();
-    const harness = await createHarness(first, gate.streamFn);
-    const running = harness.prompt("claim me");
+    const harness = await createHarness(first, gate.streamFn, [], true);
+    const running = prompt(harness, "claim me");
     await withTimeout(gate.entered, "provider did not start");
     const live = await second.getLiveClaim("main");
     assert.ok(live?.runId.startsWith("run_"));
     gate.release();
     const result = await running;
-    assert.equal(result.ok, true);
+    assert.equal(result.outcome.kind, "completed");
     assert.equal(await second.getLiveClaim("main"), undefined);
     assert.equal((await second.findRecords({ type: "operation_finished" })).length, 1);
     await harness.close();
@@ -672,28 +695,26 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
 
   void it("streaming overlays identify the durable entry they settle", async () => {
     const { first } = await sharedSession();
-    const harness = await createHarness(first, () => streamingFinal("streamed"));
+    const harness = await createHarness(first, () => streamingFinal("streamed"), [], true);
     const updateIds: string[] = [];
-    let settledId: string | undefined;
     harness.subscribe((event) => {
-      if (event.type === "message_update") updateIds.push(event.entryId);
-      if (event.type === "message_end" && event.message.role === "assistant") {
-        settledId = event.entryId;
-      }
+      if (event.kind === "text_delta") updateIds.push(event.entryId);
     });
-    const result = await harness.prompt("overlay");
-    assert.equal(result.ok, true);
+    const result = await prompt(harness, "overlay");
+    assert.equal(result.outcome.kind, "completed");
+    const settledId = (await first.getBranch("main")).find(
+      (entry) => entry.type === "message" && entry.message.role === "assistant",
+    )?.id;
     assert.ok(settledId !== undefined);
     assert.deepEqual(updateIds, [settledId]);
-    assert.equal((await first.getEntry(settledId))?.type, "message");
     await harness.close();
   });
 
   void it("applies a second-process deferred write before queued steering at the next checkpoint", async () => {
     const { first, second } = await sharedSession();
     const gate = gatedStream();
-    const harness = await createHarness(first, gate.streamFn);
-    const running = harness.prompt("initial");
+    const harness = await createHarness(first, gate.streamFn, [], true);
+    const running = prompt(harness, "initial");
     await withTimeout(gate.entered, "provider did not start");
     const live = await second.getLiveClaim("main");
     assert.ok(live !== undefined);
@@ -710,7 +731,7 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
 
     gate.release();
     const result = await running;
-    assert.equal(result.ok, true);
+    assert.equal(result.outcome.kind, "completed");
     const checkpointUsers = userTexts(gate.contexts[1] ?? []);
     assert.deepEqual(checkpointUsers.slice(-2), ["tree write", "queued steer"]);
     const branch = await first.getBranch("main");
@@ -724,8 +745,8 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
   void it("reconciles a deferred write before an aborted run's terminal record", async () => {
     const { first, second } = await sharedSession();
     const gate = interruptibleGate(true);
-    const harness = await createHarness(first, gate.streamFn);
-    const running = harness.prompt("initial");
+    const harness = await createHarness(first, gate.streamFn, [], true);
+    const running = prompt(harness, "initial");
     await withTimeout(gate.entered, "provider did not start");
     const admitted = await second.admitEntry({
       type: "message",
@@ -735,9 +756,9 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     assert.equal(admitted.disposition, "deferred");
 
     const aborted = await harness.abort();
-    assert.equal(aborted.ok, true);
+    assert.equal(aborted.kind, "requested");
     const result = await running;
-    assert.equal(result.ok && result.value.kind, "aborted");
+    assert.equal(result.outcome.kind, "aborted");
     const log = await second.getLog();
     const entryItem = log.find(
       (item) => item.kind === "entry" && item.entry.id === "survives-abort",
@@ -746,7 +767,7 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
       (item) =>
         item.kind === "record" &&
         item.record.type === "operation_finished" &&
-        item.record.runId === (aborted.ok ? aborted.value.runId : ""),
+        item.record.runId === (aborted.kind === "requested" ? aborted.runId : ""),
     );
     assert.ok(entryItem !== undefined && terminal !== undefined);
     assert.ok(entryItem.seq < terminal.seq);
@@ -757,8 +778,12 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     const { first, second } = await sharedSession();
     const gate = interruptibleGate(true);
     const harness = await createHarness(first, gate.streamFn);
-    const running = harness.prompt("initial");
+    // Attached only to start the run: an attached host would wake the queued
+    // steer once the head went idle, and this test reads the queue after.
+    const detach = harness.attach();
+    const running = prompt(harness, "initial");
     await withTimeout(gate.entered, "provider did not start");
+    detach();
     const queued = await second.send("survive the abort");
     assert.equal(queued.disposition, "queued");
     const requested = await second.requestAbort();
@@ -766,7 +791,7 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     await withTimeout(gate.signalAborted, "provider signal was not aborted by the durable request");
 
     const result = await running;
-    assert.equal(result.ok && result.value.kind, "aborted");
+    assert.equal(result.outcome.kind, "aborted");
     assert.equal(await second.getLiveClaim("main"), undefined);
     const terminal = await second.findRecords({
       type: "operation_finished",
@@ -775,7 +800,7 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     assert.equal(terminal.length, 1);
     assert.equal(terminal[0]?.outcome, "aborted");
     assert.deepEqual(
-      (await harness.pendingQueue()).map((item) => item.entryId),
+      (await pendingQueue(harness)).map((item) => item.entryId),
       [queued.entryId],
     );
     await harness.close();
@@ -819,7 +844,6 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     const calls: unknown[] = [];
     const tool: HarnessTool = {
       name: "replay_tool",
-      label: "Replay tool",
       description: "records recovery arguments",
       parameters: Type.Object({ value: Type.String() }),
       replay: "never",
@@ -830,7 +854,7 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     };
     const harness = await createHarness(second, () => finalStream("continued"), [tool]);
     const resumed = await harness.resume();
-    assert.equal(resumed.ok, true);
+    assert.equal(resumed?.kind, "finished");
     assert.deepEqual(calls, [{ value: "known-not-started" }]);
     const intents = await second.findRecords({ type: "tool_started", runId });
     assert.equal(intents.length, 1);
@@ -841,9 +865,9 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
   void it("SIGKILL between step commits leaves an orphan a DIFFERENT process resumes by claim", async () => {
     const options = { claimTtlMs: 120, claimHeartbeatIntervalMs: 40 };
     const { path, second } = await sharedSession(options);
-    const coreUrl = new URL("../src/index.ts", import.meta.url).href;
+    const storeUrl = new URL("../src/store.ts", import.meta.url).href;
     const script = `
-      import { SqliteSessionRepo } from ${JSON.stringify(coreUrl)};
+      import { SqliteSessionRepo } from ${JSON.stringify(storeUrl)};
       const repo = new SqliteSessionRepo(process.argv[1], {
         claimTtlMs: 120,
         claimHeartbeatIntervalMs: 40,
@@ -904,8 +928,8 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
 
     const harness = await createHarness(second, () => finalStream("resumed"));
     const resumed = await harness.resume();
-    assert.equal(resumed.ok, true);
-    if (resumed.ok) assert.equal(resumed.value.runId, "run-child");
+    assert.equal(resumed?.kind, "finished");
+    if (resumed?.kind === "finished") assert.equal(resumed.runId, "run-child");
     assert.equal(
       (await second.findRecords({ type: "operation_finished", runId: "run-child" })).length,
       1,
@@ -943,11 +967,13 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     await seeded.writer.appendEntry(input);
     await seeded.writer.release();
 
-    const coreUrl = new URL("../src/index.ts", import.meta.url).href;
+    const storeUrl = new URL("../src/store.ts", import.meta.url).href;
+    const hooksUrl = new URL("../src/harness/hooks.ts", import.meta.url).href;
     const script = `
       import { createAssistantMessageEventStream } from "@uji-ai/ai";
       import { Type } from "typebox";
-      import { HookRegistry, SqliteSessionRepo, step } from ${JSON.stringify(coreUrl)};
+      import { SqliteSessionRepo, step } from ${JSON.stringify(storeUrl)};
+      import { HookRegistry } from ${JSON.stringify(hooksUrl)};
       const model = ${JSON.stringify(model)};
       const usage = ${JSON.stringify(usage)};
       const repo = new SqliteSessionRepo(process.argv[1]);
@@ -978,7 +1004,6 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
         streamFn,
         tools: [{
           name: "checkpoint",
-          label: "Checkpoint",
           description: "commit one tool batch",
           parameters: Type.Object({}),
           execute: async () => ({ content: [{ type: "text", text: "continue" }], details: {} }),
@@ -1022,8 +1047,7 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     const projected = await second.runState(runId);
     assert.equal(projected.kind, "running");
     if (projected.kind === "running") {
-      assert.equal(projected.retryCount, 1);
-      assert.equal(projected.lastStepAttempt?.attempt, 1);
+      assert.equal(projected.turnAttempts, 1);
       assert.deepEqual(projected.unsettledToolIntents, []);
     }
 
@@ -1058,7 +1082,7 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     expireClaim(path);
     const harness = await createHarness(second, () => finalStream("continued"));
     const resumed = await harness.resume();
-    assert.equal(resumed.ok, true);
+    assert.equal(resumed?.kind, "finished");
     const settlement = await second.getEntry(seeded.resultEntryId);
     assert.equal(settlement?.type, "message");
     if (settlement?.type === "message") {
@@ -1079,7 +1103,6 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     const calls: unknown[] = [];
     const tool: HarnessTool = {
       name: "replay_tool",
-      label: "Replay tool",
       description: "records replayed arguments",
       parameters: Type.Object({ value: Type.String() }),
       replay: "safe",
@@ -1090,9 +1113,44 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     };
     const harness = await createHarness(second, () => finalStream("continued"), [tool]);
     const resumed = await harness.resume();
-    assert.equal(resumed.ok, true);
+    assert.equal(resumed?.kind, "finished");
     assert.deepEqual(calls, [{ value: "persisted" }]);
     assert.equal((await second.getEntry(seeded.resultEntryId))?.type, "message");
+    await harness.close();
+  });
+
+  void it("preserves structured errors when replaying an unsettled safe tool", async () => {
+    const { path, first, second } = await sharedSession();
+    const seeded = await seedUnsettledTool(first, "safe");
+    expireClaim(path);
+    const tool: HarnessTool = {
+      name: "replay_tool",
+      description: "fails with structured details",
+      parameters: Type.Object({ value: Type.String() }),
+      replay: "safe",
+      execute: async () => {
+        throw new ToolError({
+          content: [{ type: "text", text: "remote failure" }],
+          details: { provider: "remote" },
+          title: "Remote failure",
+          usage,
+          addedToolNames: ["remote_child"],
+        });
+      },
+    };
+    const harness = await createHarness(second, () => finalStream("continued"), [tool]);
+    const resumed = await harness.resume();
+    assert.equal(resumed?.kind, "finished");
+    const settlement = await second.getEntry(seeded.resultEntryId);
+    assert.equal(settlement?.type, "message");
+    if (settlement?.type === "message" && settlement.message.role === "toolResult") {
+      assert.equal(settlement.message.isError, true);
+      assert.deepEqual(settlement.message.details, { provider: "remote" });
+      assert.equal(settlement.message.title, "Remote failure");
+      assert.deepEqual(settlement.message.usage, usage);
+      assert.deepEqual(settlement.message.addedToolNames, ["remote_child"]);
+      assert.deepEqual(settlement.message.content, [{ type: "text", text: "remote failure" }]);
+    }
     await harness.close();
   });
 
@@ -1100,8 +1158,16 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     const options = { claimTtlMs: 160, claimHeartbeatIntervalMs: 80, watchPollIntervalMs: 5 };
     const { path, first, second } = await sharedSession(options);
     const staleGate = interruptibleGate(false);
-    const staleHarness = await createHarness(first, staleGate.streamFn);
-    const staleRun = staleHarness.prompt("take over this run");
+    // The stale harness's own drive reports the lost claim; the durable record
+    // carries the successor's outcome.
+    let staleEnded: (finished: RunnerFinished) => void = () => undefined;
+    const staleEnd = new Promise<RunnerFinished>((resolve) => {
+      staleEnded = resolve;
+    });
+    const staleHarness = await createHarness(first, staleGate.streamFn, [], true, (finished) =>
+      staleEnded(finished),
+    );
+    const staleRun = prompt(staleHarness, "take over this run");
     await withTimeout(staleGate.entered, "stale provider did not start");
     const live = await second.getLiveClaim("main");
     assert.ok(live !== undefined);
@@ -1109,20 +1175,22 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     expireClaim(path);
     const successorHarness = await createHarness(second, () => finalStream("successor"));
     const resumed = await successorHarness.resume();
-    assert.equal(resumed.ok, true);
-    assert.equal(resumed.value.operation, "run");
-    assert.equal(resumed.value.runId, live.runId);
-    assert.equal(resumed.value.kind, "completed");
+    assert.equal(resumed?.kind, "finished");
+    if (resumed?.kind === "finished") {
+      assert.equal(resumed.operation, "run");
+      assert.equal(resumed.runId, live.runId);
+      assert.equal(resumed.outcome.kind, "completed");
+    }
     await withTimeout(staleGate.signalAborted, "stale provider signal was not aborted");
 
     const fencedLog = await second.getLog();
     staleGate.release();
-    const staleResult = await staleRun;
-    assert.equal(staleResult.ok, true);
-    assert.equal(staleResult.value.kind, "failed");
-    if (staleResult.value.kind === "failed") {
-      assert.equal(staleResult.value.error.code, "claim_lost");
+    const staleResult = await withTimeout(staleEnd, "stale harness did not report its run end");
+    assert.equal(staleResult.outcome.kind, "failed");
+    if (staleResult.outcome.kind === "failed") {
+      assert.equal(staleResult.outcome.error.code, "claim_lost");
     }
+    assert.equal((await staleRun).outcome.kind, "completed");
     assert.deepEqual(await second.getLog(), fencedLog);
     assert.equal(
       (await second.findRecords({ type: "operation_finished", runId: live.runId })).length,
@@ -1179,11 +1247,306 @@ void describe("runner over claims (design record: the step, invariants 9-12)", (
     const detachB = hostB.attach();
     await first.send("one message, two hosts");
     await waitForFinishedRun(second);
-    await Promise.all([hostA.waitForIdle(), hostB.waitForIdle()]);
+    await Promise.all([waitForIdle(hostA), waitForIdle(hostB)]);
     assert.equal((await second.findRecords({ type: "operation_started" })).length, 1);
     assert.equal((await second.findRecords({ type: "operation_finished" })).length, 1);
     detachA();
     detachB();
     await Promise.all([hostA.close(), hostB.close()]);
+  });
+
+  void it("reports a live-claimed operation as running, never as waiting, and closes claim-neutrally", async () => {
+    const { first, second } = await sharedSession();
+    const gate = gatedStream();
+    const runner = await createHarness(first, gate.streamFn, [], true);
+    const running = prompt(runner, "hold the head");
+    await withTimeout(gate.entered, "provider did not start");
+    const live = await second.getLiveClaim("main");
+    assert.ok(live !== undefined);
+
+    // A second process opening the session: the operation is unfinished but
+    // claimed, which is the holder's business.
+    const observed = await createHarness(second, () => finalStream("observer"));
+
+    // resume() reports the holder instead of contesting the claim.
+    const resumed = await observed.resume();
+    assert.equal(resumed?.kind, "claimed_elsewhere");
+    if (resumed?.kind === "claimed_elsewhere") {
+      assert.equal(resumed.holder.runId, live.runId);
+    }
+    assert.equal((await second.findRecords({ type: "operation_finished" })).length, 0);
+
+    // Closing the observer writes no durable abort and does not wait for the
+    // foreign run; a hang here times the whole test out.
+    await observed.close();
+    assert.equal((await second.findRecords({ type: "abort_requested" })).length, 0);
+
+    gate.release();
+    const result = await running;
+    assert.equal(result.outcome.kind, "completed");
+    await runner.close();
+  });
+
+  void it("a hot drive holds one claim from admission to the terminal record", async () => {
+    const { first, second } = await sharedSession();
+    const tool: HarnessTool = {
+      name: "checkpoint",
+      description: "forces a second step",
+      parameters: Type.Object({}),
+      execute: async () => ({ content: [{ type: "text", text: "continue" }], details: {} }),
+    };
+    let call = 0;
+    const streamFn: StreamFn = () => {
+      call += 1;
+      if (call > 1) return finalStream("after the tool");
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() =>
+        stream.push({
+          type: "done",
+          reason: "toolUse",
+          message: {
+            ...assistant(""),
+            content: [{ type: "toolCall", id: "hold-call", name: "checkpoint", arguments: {} }],
+            stopReason: "toolUse",
+          },
+        }),
+      );
+      return stream;
+    };
+    const harness = await createHarness(first, streamFn, [tool], true);
+    const result = await prompt(harness, "two steps, one claim");
+    assert.equal(result.outcome.kind, "completed");
+    assert.equal(call, 2);
+
+    const log = await second.getLog();
+    const finishedSeq = log.find(
+      (item) => item.kind === "record" && item.record.type === "operation_finished",
+    )?.seq;
+    assert.ok(finishedSeq !== undefined);
+    const acquisitions = log.filter(
+      (item) => item.kind === "claim" && item.event.kind === "acquired",
+    );
+    assert.equal(acquisitions.length, 1);
+    // A release between steps would read as an orphan to every other attached
+    // host, inviting takeover of a live run.
+    const releasedEarly = log.filter(
+      (item) => item.kind === "claim" && item.event.kind === "released" && item.seq < finishedSeq,
+    );
+    assert.deepEqual(releasedEarly, []);
+    await harness.close();
+  });
+});
+
+void describe("wait and wake (design record slice 7)", () => {
+  /** First call asks for the tool; every later call answers with text. */
+  function askingStream(): StreamFn {
+    let call = 0;
+    return () => {
+      call += 1;
+      if (call > 1) return finalStream(`after-wake-${call}`);
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() =>
+        stream.push({
+          type: "done",
+          reason: "toolUse",
+          message: {
+            ...assistant(),
+            content: [
+              { type: "toolCall", id: "hold-call", name: "hold", arguments: { topic: "color" } },
+            ],
+            stopReason: "toolUse",
+          },
+        }),
+      );
+      return stream;
+    };
+  }
+
+  /** Suspends on execute; wake settles from the recorded reply. */
+  const holdTool: HarnessTool = {
+    name: "hold",
+    description: "waits for the user's reply",
+    parameters: Type.Object({ topic: Type.String() }),
+    replay: "never",
+    execute: async () => {
+      throw new ToolWait();
+    },
+    wake: async (_wait, context) => {
+      if (context.reply === undefined) return { kind: "wait" };
+      const text = typeof context.reply === "string" ? context.reply : "";
+      return {
+        kind: "settle",
+        result: { content: [{ type: "text", text: `answer:${text}` }], details: {} },
+      };
+    },
+  };
+
+  /** Resolves with the run id once the run is parked: waiting, unclaimed. */
+  async function awaitParked(session: SessionStorage): Promise<string> {
+    const parked = async (): Promise<string | undefined> => {
+      const open = (await session.findOpenOperations("main"))[0];
+      if (open === undefined) return undefined;
+      const state = await session.runState(open.id);
+      if (state.kind !== "running" || state.waitingCalls.length === 0) return undefined;
+      if ((await session.getLiveClaim("main")) !== undefined) return undefined;
+      return open.id;
+    };
+    const immediate = await parked();
+    if (immediate !== undefined) return immediate;
+    return withTimeout(
+      (async () => {
+        for await (const item of session.watch()) {
+          void item;
+          const now = await parked();
+          if (now !== undefined) return now;
+        }
+        throw new Error("session closed before the run parked");
+      })(),
+      "the run never parked waiting",
+    );
+  }
+
+  async function settledToolResult(
+    session: SessionStorage,
+    runId: string,
+  ): Promise<{ text: string; isError: boolean }> {
+    const intents = await session.findRecords({ type: "tool_started", runId });
+    assert.equal(intents.length, 1);
+    const entry = await session.getEntry(intents[0]?.resultEntryId ?? "missing");
+    assert.equal(entry?.type, "message");
+    if (entry?.type !== "message" || entry.message.role !== "toolResult") {
+      throw new Error("reserved entry did not settle as a tool result");
+    }
+    const first = entry.message.content[0];
+    return {
+      text: first?.type === "text" ? first.text : "",
+      isError: entry.message.isError === true,
+    };
+  }
+
+  void it("an ask outlives the asking host and a second process settles it once", async () => {
+    const { first, second } = await sharedSession();
+    const asker = await createHarness(first, askingStream(), [holdTool], true);
+    assert.equal((await submit(asker, "choose a color")).disposition, "started");
+    const runId = await awaitParked(first);
+
+    // Parked is not crashed: recovery sees nothing to settle, and the reply
+    // watermark says nothing has arrived yet.
+    const state = await first.runState(runId);
+    assert.equal(state.kind, "running");
+    if (state.kind === "running") {
+      assert.equal(state.unsettledToolIntents.length, 0);
+      assert.equal(state.waitingCalls.length, 1);
+    }
+
+    // The asking host exits. The question is durable; nothing owns the run.
+    await asker.close();
+
+    // A second process opens the session: a waiting run is not an orphan.
+    const observer = await AgentHarness.create({
+      session: second,
+      streamFn: (() => {
+        let call = 0;
+        return () => {
+          call += 1;
+          return finalStream(`second-${call}`);
+        };
+      })(),
+      plugins: [inlinePlugin(systemPromptPlugin("system")), inlinePlugin(toolsPlugin([holdTool]))],
+      env: { cwd: "/" },
+      model,
+    });
+    const detach = observer.attach();
+
+    // The answer targets the waiting call directly; it is never a message.
+    const admission = await second.admitToolReply({ toolName: "hold", reply: "blue" });
+    assert.equal(admission.ok, true);
+
+    await waitForFinishedRun(second);
+    const finished = await second.findRecords({ type: "operation_finished", runId });
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0]?.outcome, "completed");
+    // Settled from the reply, exactly once, by the process that observed it.
+    // A premature recovery would have written the interruption text instead.
+    const settled = await settledToolResult(second, runId);
+    assert.equal(settled.isError, false);
+    assert.equal(settled.text, "answer:blue");
+    // The reply lives as a record, never as a conversation message.
+    const branch = await second.getBranch("main");
+    const userTexts = branch.flatMap((entry) =>
+      entry.type === "message" && entry.message.role === "user"
+        ? [JSON.stringify(entry.message.content)]
+        : [],
+    );
+    assert.equal(
+      userTexts.some((text) => text.includes("blue")),
+      false,
+    );
+    // First writer won; a second reply for the settled call is refused.
+    const again = await second.admitToolReply({ toolName: "hold", reply: "red" });
+    assert.deepEqual(again, { ok: false, reason: "no_wait" });
+
+    detach();
+    await observer.close();
+  });
+
+  void it("a waiting batch never drives another provider turn", async () => {
+    const { first } = await sharedSession();
+    let streamCalls = 0;
+    const inner = askingStream();
+    const counting: StreamFn = (...args) => {
+      streamCalls += 1;
+      return inner(...args);
+    };
+    const asker = await createHarness(first, counting, [holdTool], true);
+    assert.equal((await submit(asker, "pick")).disposition, "started");
+    await awaitParked(first);
+    // A second call means the model saw the marker and kept going.
+    assert.equal(streamCalls, 1);
+    await asker.close();
+  });
+
+  void it("abort is the exit for a wait no handler can settle", async () => {
+    const { first, second } = await sharedSession();
+    const asker = await createHarness(first, askingStream(), [holdTool], true);
+    assert.equal((await submit(asker, "choose a color")).disposition, "started");
+    const runId = await awaitParked(first);
+    await asker.close();
+
+    // The second host lacks the tool entirely: degraded per invariant 21.
+    const bare = await createHarness(second, () => finalStream("bare"));
+    const detach = bare.attach();
+    await second.requestAbort("main");
+    await waitForFinishedRun(second);
+
+    const finished = await second.findRecords({ type: "operation_finished", runId });
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0]?.outcome, "aborted");
+    const settled = await settledToolResult(second, runId);
+    assert.equal(settled.isError, true);
+    assert.match(settled.text, /aborted while waiting/);
+    detach();
+    await bare.close();
+  });
+
+  void it("the asking process itself wakes on a reply", async () => {
+    const { first } = await sharedSession();
+    const asker = await createHarness(first, askingStream(), [holdTool], true);
+    assert.equal((await submit(asker, "pick")).disposition, "started");
+    const runId = await awaitParked(first);
+
+    const detach = asker.attach();
+    const admission = await first.admitToolReply({ toolName: "hold", reply: "green" });
+    assert.equal(admission.ok, true);
+    await waitForFinishedRun(first);
+    detach();
+
+    const finished = await first.findRecords({ type: "operation_finished", runId });
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0]?.outcome, "completed");
+    const settled = await settledToolResult(first, runId);
+    assert.equal(settled.isError, false);
+    assert.equal(settled.text, "answer:green");
+    await asker.close();
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "uji-ai",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Headless agent runner and terminal client for Uji",
   "keywords": [
     "agent",

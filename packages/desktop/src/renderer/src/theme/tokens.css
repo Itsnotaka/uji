@@ -1,0 +1,279 @@
+/*
+ * The desktop palette. Two tiers, following the Grok Bot 0.18 token system as
+ * a design reference (values only; no code is ported from it):
+ *
+ * - `--cursor-*`: the core palette per mode plus derived text/icon/bg/stroke
+ *   steps mixed from `--cursor-base`, so the whole surface re-tints from a
+ *   handful of anchors.
+ * - `--sand-*`: semantic fills, borders, and text the components name.
+ *
+ * The renderer sets `data-theme` on <html> before first paint.
+ */
+
+:root {
+  /* ── core palette (light) ── */
+  --cursor-accent: #1084fe;
+  --cursor-base: #141414;
+  --cursor-chrome: #ebebed;
+  --cursor-editor: #fcfcfc;
+  --cursor-focus: #459ffe;
+  --cursor-red: #ff263c;
+  --cursor-green: #00c972;
+  --cursor-yellow: #ff9800;
+  --cursor-orange: #ff6700;
+  --cursor-purple: #9159fe;
+  --cursor-cyan: #00bca6;
+  --cursor-magenta: #ff309b;
+  --cursor-danger: #c21d2e;
+  --cursor-warn: #ff9800;
+  --cursor-success: #00c972;
+  --cursor-added: #00c972;
+  --cursor-removed: #c21d2e;
+  --cursor-modified: #ff9800;
+  --cursor-diff-added-line-background: #00c97217;
+  --cursor-diff-added-text-background: #00c97210;
+  --cursor-diff-removed-line-background: #ff263c17;
+  --cursor-diff-removed-text-background: #ff263c10;
+  --cursor-shadow-primary: color-mix(in srgb, #000000 6%, transparent);
+
+  /* ── sand semantic tier (light) ── */
+  --sand-bg-base: #f5f5f6;
+  --sand-bg-subtle: #ebebed;
+  --sand-bg-elevated: #fcfcfc;
+  --sand-bg-scrim: #14141480;
+  --sand-text-primary: #141414;
+  --sand-text-secondary: #14141499;
+  --sand-text-tertiary: #14141466;
+  --sand-text-disabled: #1414144d;
+  --sand-text-on-primary: #fcfcfc;
+  --sand-text-on-color: #fcfcfc;
+  --sand-text-accent: #0c64c1;
+  --sand-text-success: #009957;
+  --sand-text-warning: #c27400;
+  --sand-text-danger: #c21d2e;
+  --sand-text-shimmer-base: #14141466;
+  --sand-text-shimmer-highlight: #141414;
+  --sand-border-subtle: #1414140d;
+  --sand-border-weak: #1414141a;
+  --sand-border-default: #14141426;
+  --sand-border-strong: #1414144d;
+  --sand-border-focus: #14141466;
+  --sand-border-accent: #459ffe;
+  --sand-border-accent-subtle: #1084fe2b;
+  --sand-border-danger-subtle: #ff263c2b;
+  --sand-fill-primary: #070707;
+  --sand-fill-primary-hover: #2f2f2f;
+  --sand-fill-primary-disabled: #14141426;
+  --sand-fill-secondary: #77777717;
+  --sand-fill-secondary-hover: #7777772b;
+  --sand-fill-secondary-solid: #f3f3f3;
+  --sand-fill-ghost-hover: #77777717;
+  --sand-fill-ghost-selected: #7777772b;
+  --sand-fill-elevated: #fcfcfc;
+  --sand-fill-bubble-agent: #eeeeee;
+  --sand-fill-bubble-user: #070707;
+  --sand-fill-neutral: #777777;
+  --sand-fill-accent: #1084fe;
+  --sand-fill-accent-hover: #0c64c1;
+  --sand-fill-accent-subtle: #1084fe17;
+  --sand-fill-accent-subtle-hover: #1084fe2b;
+  --sand-fill-success: #00c972;
+  --sand-fill-success-subtle: #00c97217;
+  --sand-fill-warning: #ff9800;
+  --sand-fill-warning-subtle: #ff980017;
+  --sand-fill-danger: #ff263c;
+  --sand-fill-danger-hover: #c21d2e;
+  --sand-fill-danger-subtle: #ff263c17;
+  --sand-shadow-control: #0000001f;
+  --sand-shadow-popover: 0 8px 24px #0000001a, 0 2px 8px #0000001a;
+  --sand-shadow-modal: 0 16px 48px #00000029, 0 4px 12px #0000001a;
+
+  /* conversation */
+  --uji-conversation-user-background: #14141408;
+  --uji-conversation-user-ring: #14141412;
+  --uji-conversation-technical-background: #14141405;
+  --uji-conversation-technical-ring: #14141414;
+  --uji-conversation-guide: #1414141f;
+  --uji-conversation-error-background: #ff263c0d;
+  --uji-conversation-error-ring: #ff263c2b;
+  --uji-composer-background: #fcfcfc;
+  --uji-composer-ring: #14141424;
+  --uji-composer-ring-active: #14141452;
+  --uji-composer-shadow: 0 8px 24px #0000000a, 0 2px 8px #0000000d;
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  /* ── core palette (dark) ── */
+  --cursor-base: #fcfcfc;
+  --cursor-chrome: #111111;
+  --cursor-editor: #141414;
+  --cursor-focus: #0c64c1;
+  --cursor-danger: #ff5667;
+  --cursor-removed: #ff5667;
+  --cursor-diff-added-line-background: #00c9722c;
+  --cursor-diff-added-text-background: #00c97224;
+  --cursor-diff-removed-line-background: #ff263c2c;
+  --cursor-diff-removed-text-background: #ff263c24;
+  --cursor-shadow-primary: color-mix(in srgb, #000000 20%, transparent);
+
+  /* ── sand semantic tier (dark) ── */
+  --sand-bg-base: #070707;
+  --sand-bg-subtle: #111111;
+  --sand-bg-elevated: #181818;
+  --sand-bg-scrim: #141414b2;
+  --sand-text-primary: #fcfcfc;
+  --sand-text-secondary: #fcfcfc99;
+  --sand-text-tertiary: #fcfcfc66;
+  --sand-text-disabled: #fcfcfc4d;
+  --sand-text-on-primary: #141414;
+  --sand-text-on-color: #fcfcfc;
+  --sand-text-accent: #459ffe;
+  --sand-text-success: #38d591;
+  --sand-text-warning: #ffaf38;
+  --sand-text-danger: #ff5667;
+  --sand-text-shimmer-base: #fcfcfc66;
+  --sand-text-shimmer-highlight: #fcfcfc;
+  --sand-border-subtle: #fcfcfc0d;
+  --sand-border-weak: #fcfcfc1a;
+  --sand-border-default: #fcfcfc26;
+  --sand-border-strong: #fcfcfc4d;
+  --sand-border-focus: #fcfcfc66;
+  --sand-border-accent: #0c64c1;
+  --sand-border-accent-subtle: #1084fe52;
+  --sand-border-danger-subtle: #ff263c52;
+  --sand-fill-primary: #fafafa;
+  --sand-fill-primary-hover: #d5d5d5;
+  --sand-fill-primary-disabled: #fcfcfc26;
+  --sand-fill-secondary: #7777772c;
+  --sand-fill-secondary-hover: #77777752;
+  --sand-fill-secondary-solid: #151515;
+  --sand-fill-ghost-hover: #7777772c;
+  --sand-fill-ghost-selected: #77777752;
+  --sand-fill-elevated: #2f2f2f;
+  --sand-fill-bubble-agent: #262626;
+  --sand-fill-bubble-user: #5a5a5a;
+  --sand-fill-accent-hover: #459ffe;
+  --sand-fill-accent-subtle: #1084fe2c;
+  --sand-fill-accent-subtle-hover: #1084fe52;
+  --sand-fill-success-subtle: #00c9722c;
+  --sand-fill-warning-subtle: #ff98002c;
+  --sand-fill-danger-hover: #ff5667;
+  --sand-fill-danger-subtle: #ff263c2c;
+  --sand-shadow-control: #00000066;
+  --sand-shadow-popover: 0 8px 24px #00000059, 0 2px 8px #00000040;
+  --sand-shadow-modal: 0 16px 48px #00000073, 0 4px 12px #00000040;
+
+  /* conversation */
+  --uji-conversation-user-background: #f0f0f00a;
+  --uji-conversation-user-ring: #f0f0f018;
+  --uji-conversation-technical-background: #f0f0f007;
+  --uji-conversation-technical-ring: #f0f0f01c;
+  --uji-conversation-guide: #f0f0f026;
+  --uji-conversation-error-background: #ff263c14;
+  --uji-conversation-error-ring: #ff566747;
+  --uji-composer-background: #151515;
+  --uji-composer-ring: #f0f0f024;
+  --uji-composer-ring-active: #f0f0f052;
+  --uji-composer-shadow: 0 12px 32px #00000038, 0 2px 8px #00000040;
+
+  color-scheme: dark;
+}
+
+:root {
+  /* ── derived tier: everything re-tints from --cursor-base ── */
+  --cursor-text-primary: var(--cursor-base);
+  --cursor-text-secondary: color-mix(in srgb, var(--cursor-base) 74%, transparent);
+  --cursor-text-tertiary: color-mix(in srgb, var(--cursor-base) 60%, transparent);
+  --cursor-text-quaternary: color-mix(in srgb, var(--cursor-base) 36%, transparent);
+  --cursor-text-invert: var(--cursor-editor);
+  --cursor-text-accent: var(--cursor-accent);
+  --cursor-icon-primary: var(--cursor-base);
+  --cursor-icon-secondary: color-mix(in srgb, var(--cursor-base) 66%, transparent);
+  --cursor-icon-tertiary: color-mix(in srgb, var(--cursor-base) 52%, transparent);
+  --cursor-icon-quaternary: color-mix(in srgb, var(--cursor-base) 28%, transparent);
+  --cursor-bg-primary: color-mix(in srgb, var(--cursor-base) 20%, transparent);
+  --cursor-bg-secondary: color-mix(in srgb, var(--cursor-base) 14%, transparent);
+  --cursor-bg-tertiary: color-mix(in srgb, var(--cursor-base) 8%, transparent);
+  --cursor-bg-quaternary: color-mix(in srgb, var(--cursor-base) 6%, transparent);
+  --cursor-bg-quinary: color-mix(in srgb, var(--cursor-base) 4%, transparent);
+  --cursor-bg-elevated: var(--cursor-editor);
+  --cursor-bg-chrome: var(--cursor-chrome);
+  --cursor-bg-card: var(--cursor-bg-quaternary);
+  --cursor-bg-editor: var(--cursor-editor);
+  --cursor-bg-accent: var(--cursor-accent);
+  --cursor-stroke-primary: color-mix(in srgb, var(--cursor-base) 20%, transparent);
+  --cursor-stroke-secondary: color-mix(in srgb, var(--cursor-base) 12%, transparent);
+  --cursor-stroke-tertiary: color-mix(in srgb, var(--cursor-base) 8%, transparent);
+  --cursor-stroke-quaternary: color-mix(in srgb, var(--cursor-base) 4%, transparent);
+  --cursor-stroke-focused: color-mix(in srgb, var(--cursor-focus) 40%, transparent);
+  --cursor-scrollbar-thumb: color-mix(in srgb, var(--cursor-base) 14%, transparent);
+  --cursor-scrollbar-thumb-hover: color-mix(in srgb, var(--cursor-base) 22%, transparent);
+
+  /* ── scales ── */
+  --cursor-font-family-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --cursor-font-family-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  --cursor-font-size-xs: 11px;
+  --cursor-font-size-sm: 12px;
+  --cursor-font-size-base: 13px;
+  --cursor-font-size-lg: 14px;
+  --cursor-font-size-code: 12px;
+  --cursor-line-height-xs: 14px;
+  --cursor-line-height-sm: 16px;
+  --cursor-line-height-base: 18px;
+  --cursor-line-height-lg: 22px;
+  --cursor-radius-xs: 2px;
+  --cursor-radius-sm: 4px;
+  --cursor-radius-base: 6px;
+  --cursor-radius-lg: 8px;
+  --cursor-radius-xl: 12px;
+  --cursor-radius-2xl: 14px;
+  --cursor-radius-3xl: 16px;
+  --cursor-radius-full: 9999px;
+  --cursor-duration-instant: 50ms;
+  --cursor-duration-fast: 100ms;
+  --cursor-duration-normal: 150ms;
+  --cursor-duration-slow: 200ms;
+  --cursor-easing-out: ease-out;
+  --cursor-easing-out-quint: cubic-bezier(0.16, 1, 0.3, 1);
+  --cursor-easing-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+
+  /* ── desktop layout schema ── */
+  --uji-titlebar-height: 35px;
+  --uji-sidebar-width: 260px;
+  --uji-sidebar-handle-width: 8px;
+  --uji-compact-row-height: 28px;
+  --uji-sidebar-gutter: 8px;
+  --uji-sidebar-row-padding-inline: 6px;
+  --uji-sidebar-section-gap: 8px;
+  --uji-sidebar-list-gap: 1px;
+  --uji-sidebar-icon-slot: 16px;
+  --uji-sidebar-action-size: 20px;
+  /* One trailing column for shortcuts, timestamps, and hover actions, so every
+     row label ends on the same edge. */
+  --uji-sidebar-trailing-width: 44px;
+  --uji-scrollbar-lane: 12px;
+  --uji-control-compact-height: 26px;
+  --uji-control-regular-height: 30px;
+  --uji-menu-width: 190px;
+  --uji-model-menu-width: 260px;
+  --uji-menu-max-height: min(336px, calc(100vh - 32px));
+  --uji-section-gap: 16px;
+  --uji-conversation-measure: 808px;
+  --uji-prose-measure: 608px;
+  --uji-conversation-gutter: clamp(12px, 2.25%, 18px);
+  --uji-conversation-header-height: 35px;
+  --uji-conversation-turn-gap: 18px;
+  --uji-conversation-row-gap: 7px;
+  --uji-conversation-row-min-height: 26px;
+  --uji-composer-inset: 14px;
+  --uji-workbench-rail-width: 40px;
+  --uji-workbench-panel-width: 384px;
+  --uji-workbench-header-height: 35px;
+  --uji-workbench-file-list-width: 164px;
+  --uji-diff-line-height: 20px;
+  --uji-diff-preview-max-height: 320px;
+}

@@ -8,15 +8,13 @@
  * Synced with pi 7ebf9087e.
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import process from "node:process";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
+import { defaultUjiHome } from "../utils/uji-home.ts";
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "./types.ts";
 
 export function defaultAuthPath(): string {
-  const home = process.env["UJI_HOME"] ?? join(homedir(), ".uji");
-  return join(home, "auth.json");
+  return join(defaultUjiHome(), "auth.json");
 }
 
 /**
